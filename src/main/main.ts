@@ -91,6 +91,7 @@ const SCHEDULED_TASK_CHANNEL_OPTIONS = [
   { value: 'discord', label: 'Discord' },
   { value: 'qqbot', label: 'QQ' },
   { value: 'wecom', label: 'WeCom' },
+  { value: 'popo', label: 'POPO' },
 ] as const;
 const MIME_EXTENSION_MAP: Record<string, string> = {
   'image/png': '.png',
@@ -761,6 +762,13 @@ const getOpenClawConfigSync = (): OpenClawConfigSync => {
       getWecomConfig: () => {
         try {
           return getIMGatewayManager().getConfig().wecom;
+        } catch {
+          return null;
+        }
+      },
+      getPopoConfig: () => {
+        try {
+          return getIMGatewayManager().getConfig().popo;
         } catch {
           return null;
         }
@@ -2681,7 +2689,7 @@ if (!gotTheLock) {
       // setConfig() already persists to DB synchronously, so syncOpenClawConfig just
       // needs to regenerate openclaw.json and restart the gateway once.
       const hasOpenClawChange = config.telegram || config.discord || config.dingtalk
-        || config.feishu || config.qq || config.wecom;
+        || config.feishu || config.qq || config.wecom || config.popo;
       if (hasOpenClawChange && getOpenClawEngineManager().getStatus().phase === 'running') {
         scheduleImConfigSync();
       }
@@ -2750,6 +2758,18 @@ if (!gotTheLock) {
         error: error instanceof Error ? error.message : 'Failed to get IM status',
       };
     }
+  });
+
+  ipcMain.handle('im:getLocalIp', () => {
+    const nets = os.networkInterfaces();
+    for (const name of Object.keys(nets)) {
+      for (const net of nets[name] || []) {
+        if (net.family === 'IPv4' && !net.internal) {
+          return net.address;
+        }
+      }
+    }
+    return '127.0.0.1';
   });
 
   // ---- Pairing IPC handlers ----

@@ -30,6 +30,13 @@
         "id": "wecom-openclaw-plugin",
         "npm": "@wecom/wecom-openclaw-plugin",
         "version": "1.0.11"
+      },
+      {
+        "id": "moltbot-popo",
+        "npm": "moltbot-popo",
+        "version": "1.0.62",
+        "registry": "https://npm.nie.netease.com",
+        "optional": true
       }
     ]
   },

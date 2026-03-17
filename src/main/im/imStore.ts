@@ -15,6 +15,7 @@ import {
   XiaomifengConfig,
   WecomConfig,
   WecomOpenClawConfig,
+  PopoOpenClawConfig,
   IMSettings,
   IMPlatform,
   IMSessionMapping,
@@ -26,6 +27,7 @@ import {
   DEFAULT_NIM_CONFIG,
   DEFAULT_XIAOMIFENG_CONFIG,
   DEFAULT_WECOM_CONFIG,
+  DEFAULT_POPO_CONFIG,
   DEFAULT_IM_SETTINGS,
 } from './types';
 
@@ -74,7 +76,7 @@ export class IMStore {
    * Migrate existing IM configs to ensure stable defaults.
    */
   private migrateDefaults(): void {
-    const platforms = ['dingtalk', 'feishu', 'telegram', 'discord', 'nim', 'xiaomifeng', 'qq', 'wecom'] as const;
+    const platforms = ['dingtalk', 'feishu', 'telegram', 'discord', 'nim', 'xiaomifeng', 'qq', 'wecom', 'popo'] as const;
     let changed = false;
 
     for (const platform of platforms) {
@@ -329,6 +331,7 @@ export class IMStore {
     const xiaomifeng = this.getConfigValue<XiaomifengConfig>('xiaomifeng') ?? DEFAULT_XIAOMIFENG_CONFIG;
     const qq = this.getConfigValue<QQConfig>('qq') ?? DEFAULT_QQ_CONFIG;
     const wecom = this.getConfigValue<WecomOpenClawConfig>('wecomOpenClaw') ?? DEFAULT_WECOM_CONFIG;
+    const popo = this.getConfigValue<PopoOpenClawConfig>('popo') ?? DEFAULT_POPO_CONFIG;
     const settings = this.getConfigValue<IMSettings>('settings') ?? DEFAULT_IM_SETTINGS;
 
     // Resolve enabled field: default to false for safety
@@ -351,6 +354,7 @@ export class IMStore {
       xiaomifeng: resolveEnabled(xiaomifeng, DEFAULT_XIAOMIFENG_CONFIG),
       qq: resolveEnabled(qq, DEFAULT_QQ_CONFIG),
       wecom: resolveEnabled(wecom, DEFAULT_WECOM_CONFIG),
+      popo: resolveEnabled(popo, DEFAULT_POPO_CONFIG),
       settings: { ...DEFAULT_IM_SETTINGS, ...settings },
     };
   }
@@ -379,6 +383,9 @@ export class IMStore {
     }
     if (config.wecom) {
       this.setWecomConfig(config.wecom);
+    }
+    if (config.popo) {
+      this.setPopoConfig(config.popo);
     }
     if (config.settings) {
       this.setIMSettings(config.settings);
@@ -479,6 +486,18 @@ export class IMStore {
   setWecomConfig(config: Partial<WecomOpenClawConfig>): void {
     const current = this.getWecomConfig();
     this.setConfigValue('wecomOpenClaw', { ...current, ...config });
+  }
+
+  // ==================== POPO ====================
+
+  getPopoConfig(): PopoOpenClawConfig {
+    const stored = this.getConfigValue<PopoOpenClawConfig>('popo');
+    return { ...DEFAULT_POPO_CONFIG, ...stored };
+  }
+
+  setPopoConfig(config: Partial<PopoOpenClawConfig>): void {
+    const current = this.getPopoConfig();
+    this.setConfigValue('popo', { ...current, ...config });
   }
 
   // ==================== IM Settings ====================

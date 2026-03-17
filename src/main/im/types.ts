@@ -231,9 +231,37 @@ export interface WecomGatewayStatus {
   lastOutboundAt: number | null;
 }
 
+// ==================== POPO Types ====================
+
+export interface PopoOpenClawConfig {
+  enabled: boolean;
+  appKey: string;
+  appSecret: string;
+  token: string;
+  aesKey: string;
+  webhookBaseUrl: string;
+  webhookPath: string;
+  webhookPort: number;
+  dmPolicy: 'open' | 'pairing' | 'allowlist' | 'disabled';
+  allowFrom: string[];
+  groupPolicy: 'open' | 'allowlist' | 'disabled';
+  groupAllowFrom: string[];
+  textChunkLimit: number;
+  richTextChunkLimit: number;
+  debug: boolean;
+}
+
+export interface PopoGatewayStatus {
+  connected: boolean;
+  startedAt: number | null;
+  lastError: string | null;
+  lastInboundAt: number | null;
+  lastOutboundAt: number | null;
+}
+
 // ==================== Common IM Types ====================
 
-export type IMPlatform = 'dingtalk' | 'feishu' | 'qq' | 'telegram' | 'discord' | 'nim' | 'xiaomifeng' | 'wecom';
+export type IMPlatform = 'dingtalk' | 'feishu' | 'qq' | 'telegram' | 'discord' | 'nim' | 'xiaomifeng' | 'wecom' | 'popo';
 
 export interface IMGatewayConfig {
   dingtalk: DingTalkOpenClawConfig;
@@ -244,6 +272,7 @@ export interface IMGatewayConfig {
   nim: NimConfig;
   xiaomifeng: XiaomifengConfig;
   wecom: WecomOpenClawConfig;
+  popo: PopoOpenClawConfig;
   settings: IMSettings;
 }
 
@@ -261,6 +290,7 @@ export interface IMGatewayStatus {
   nim: NimGatewayStatus;
   xiaomifeng: XiaomifengGatewayStatus;
   wecom: WecomGatewayStatus;
+  popo: PopoGatewayStatus;
 }
 
 // ==================== Media Attachment Types ====================
@@ -488,6 +518,24 @@ export const DEFAULT_WECOM_CONFIG: WecomOpenClawConfig = {
   debug: true,
 };
 
+export const DEFAULT_POPO_CONFIG: PopoOpenClawConfig = {
+  enabled: false,
+  appKey: '',
+  appSecret: '',
+  token: '',
+  aesKey: '',
+  webhookBaseUrl: '',
+  webhookPath: '/popo/callback',
+  webhookPort: 3100,
+  dmPolicy: 'open',
+  allowFrom: [],
+  groupPolicy: 'open',
+  groupAllowFrom: [],
+  textChunkLimit: 3000,
+  richTextChunkLimit: 5000,
+  debug: true,
+};
+
 export const DEFAULT_IM_SETTINGS: IMSettings = {
   systemPrompt: '',
   skillsEnabled: true,
@@ -502,6 +550,7 @@ export const DEFAULT_IM_CONFIG: IMGatewayConfig = {
   nim: DEFAULT_NIM_CONFIG,
   xiaomifeng: DEFAULT_XIAOMIFENG_CONFIG,
   wecom: DEFAULT_WECOM_CONFIG,
+  popo: DEFAULT_POPO_CONFIG,
   settings: DEFAULT_IM_SETTINGS,
 };
 
@@ -567,6 +616,14 @@ export const DEFAULT_WECOM_STATUS: WecomGatewayStatus = {
   lastOutboundAt: null,
 };
 
+export const DEFAULT_POPO_STATUS: PopoGatewayStatus = {
+  connected: false,
+  startedAt: null,
+  lastError: null,
+  lastInboundAt: null,
+  lastOutboundAt: null,
+};
+
 export const DEFAULT_IM_STATUS: IMGatewayStatus = {
   dingtalk: DEFAULT_DINGTALK_STATUS,
   feishu: DEFAULT_FEISHU_STATUS,
@@ -583,6 +640,7 @@ export const DEFAULT_IM_STATUS: IMGatewayStatus = {
   nim: DEFAULT_NIM_STATUS,
   xiaomifeng: DEFAULT_XIAOMIFENG_STATUS,
   wecom: DEFAULT_WECOM_STATUS,
+  popo: DEFAULT_POPO_STATUS,
 };
 
 // ==================== Media Marker Types ====================

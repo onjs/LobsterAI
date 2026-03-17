@@ -66,6 +66,7 @@ export const CHANNEL_PLATFORM_MAP: Record<string, IMPlatform> = {
   qqbot: 'qq',
   wecom: 'wecom',
   'wecom-openclaw-plugin': 'wecom',
+  'moltbot-popo': 'popo',
 };
 
 /** Parse a channel sessionKey into platform + conversationId.
@@ -161,6 +162,7 @@ const CHANNEL_TITLE_PREFIX: Record<string, string> = {
   qq: '[QQ]',
   wecom: '[企微]',
   'wecom-openclaw-plugin': '[企微]',
+  popo: '[POPO]',
 };
 
 export interface ChannelSessionSyncDeps {
@@ -238,9 +240,14 @@ export class OpenClawChannelSessionSync {
 
     // 5. Create new Cowork session
     const titlePrefix = CHANNEL_TITLE_PREFIX[parsed.platform] || `[${parsed.platform}]`;
-    const shortId = parsed.conversationId.length > 12
-      ? parsed.conversationId.slice(-12)
+    // For conversationIds that look like email addresses (e.g. POPO),
+    // use the local part before '@' as the display name.
+    const displayId = parsed.conversationId.includes('@')
+      ? parsed.conversationId.split('@')[0]
       : parsed.conversationId;
+    const shortId = displayId.length > 12
+      ? displayId.slice(-12)
+      : displayId;
     const title = `${titlePrefix} ${shortId}`;
     const cwd = this.getDefaultCwd();
     console.log('[ChannelSessionSync] creating new cowork session: title=', title, 'cwd=', cwd);

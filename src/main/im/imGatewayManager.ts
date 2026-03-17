@@ -1,7 +1,7 @@
 /**
  * IM Gateway Manager
  * Unified manager for DingTalk, Feishu, NIM, Xiaomifeng gateways
- * and Telegram, Discord, QQ, WeCom via OpenClaw
+ * and Telegram, Discord, QQ, WeCom, POPO via OpenClaw
  */
 
 import { EventEmitter } from 'events';
@@ -187,6 +187,8 @@ export class IMGatewayManager extends EventEmitter {
     // QQ runs via OpenClaw; no direct gateway events to forward
 
     // WeCom runs via OpenClaw; no direct gateway events to forward
+
+    // POPO runs via OpenClaw; no direct gateway events to forward
   }
 
   /**
@@ -211,6 +213,8 @@ export class IMGatewayManager extends EventEmitter {
     // QQ runs via OpenClaw; no direct reconnection needed
 
     // WeCom runs via OpenClaw; no direct reconnection needed
+
+    // POPO runs via OpenClaw; no direct reconnection needed
   }
 
   /**
@@ -291,6 +295,7 @@ export class IMGatewayManager extends EventEmitter {
         target = this.nimGateway.getNotificationTarget();
       }
       // WeCom runs via OpenClaw; notification target not managed locally
+      // POPO runs via OpenClaw; notification target not managed locally
       if (target != null) {
         this.imStore.setNotificationTarget(platform, target);
       }
@@ -311,6 +316,7 @@ export class IMGatewayManager extends EventEmitter {
         this.nimGateway.setNotificationTarget(target);
       }
       // WeCom runs via OpenClaw; notification target not managed locally
+      // POPO runs via OpenClaw; notification target not managed locally
       console.log(`[IMGatewayManager] Restored notification target for ${platform}`);
     } catch (err: any) {
       console.warn(`[IMGatewayManager] Failed to restore notification target for ${platform}:`, err.message);
@@ -465,6 +471,8 @@ export class IMGatewayManager extends EventEmitter {
 
     // WeCom runs via OpenClaw; config changes are synced via OpenClawConfigSync
 
+    // POPO runs via OpenClaw; config changes are synced via OpenClawConfigSync
+
   }
 
   /**
@@ -547,6 +555,13 @@ export class IMGatewayManager extends EventEmitter {
         lastInboundAt: null as number | null,
         lastOutboundAt: null as number | null,
       },
+      popo: {
+        connected: Boolean(config.popo?.enabled && config.popo.appKey && config.popo.appSecret && config.popo.token && config.popo.aesKey),
+        startedAt: null as number | null,
+        lastError: null as string | null,
+        lastInboundAt: null as number | null,
+        lastOutboundAt: null as number | null,
+      },
     };
   }
 
@@ -580,6 +595,11 @@ export class IMGatewayManager extends EventEmitter {
     // WeCom always uses OpenClaw mode
     if (platform === 'wecom') {
       return this.testWecomOpenClawConnectivity(configOverride);
+    }
+
+    // POPO always uses OpenClaw mode
+    if (platform === 'popo') {
+      return this.testPopoOpenClawConnectivity(configOverride);
     }
 
     const config = this.buildMergedConfig(configOverride);
@@ -791,6 +811,12 @@ export class IMGatewayManager extends EventEmitter {
       await this.syncOpenClawConfig?.();
       await this.ensureOpenClawGatewayConnected?.();
       return;
+    } else if (platform === 'popo') {
+      // POPO runs via OpenClaw gateway (moltbot-popo plugin)
+      console.log('[IMGatewayManager] POPO in OpenClaw mode, syncing config instead of starting direct gateway');
+      await this.syncOpenClawConfig?.();
+      await this.ensureOpenClawGatewayConnected?.();
+      return;
     }
 
     // Restore persisted notification target
@@ -835,13 +861,18 @@ export class IMGatewayManager extends EventEmitter {
       console.log('[IMGatewayManager] WeCom in OpenClaw mode, syncing disabled config');
       await this.syncOpenClawConfig?.();
       return;
+    } else if (platform === 'popo') {
+      // POPO runs via OpenClaw gateway
+      console.log('[IMGatewayManager] POPO in OpenClaw mode, syncing disabled config');
+      await this.syncOpenClawConfig?.();
+      return;
     }
   }
 
   /**
    * Start all enabled gateways.
    *
-   * OpenClaw platforms (dingtalk/feishu/telegram/discord/qq/wecom) are batched
+   * OpenClaw platforms (dingtalk/feishu/telegram/discord/qq/wecom/popo) are batched
    * so that `syncOpenClawConfig` + `ensureOpenClawGatewayConnected` are called
    * only **once** regardless of how many OpenClaw platforms are enabled.
    * This avoids N serial gateway restarts which cause message loss, Telegram
@@ -892,6 +923,9 @@ export class IMGatewayManager extends EventEmitter {
     }
     if (config.wecom?.enabled && config.wecom?.botId && config.wecom?.secret) {
       openClawPlatformsToStart.push('wecom');
+    }
+    if (config.popo?.enabled && config.popo?.appKey && config.popo?.appSecret && config.popo?.token && config.popo?.aesKey) {
+      openClawPlatformsToStart.push('popo');
     }
 
     if (openClawPlatformsToStart.length > 0) {
@@ -957,6 +991,11 @@ export class IMGatewayManager extends EventEmitter {
       const config = this.getConfig();
       return Boolean(config.wecom?.enabled && config.wecom.botId && config.wecom.secret);
     }
+    if (platform === 'popo') {
+      // POPO runs via OpenClaw; consider it connected when enabled and configured
+      const config = this.getConfig();
+      return Boolean(config.popo?.enabled && config.popo.appKey && config.popo.appSecret && config.popo.token && config.popo.aesKey);
+    }
     return false;
   }
 
@@ -980,6 +1019,9 @@ export class IMGatewayManager extends EventEmitter {
       } else if (platform === 'wecom') {
         // WeCom runs via OpenClaw; notifications are handled by the wecom-openclaw-plugin
         console.log('[IMGatewayManager] WeCom notification via OpenClaw not yet supported');
+      } else if (platform === 'popo') {
+        // POPO runs via OpenClaw; notifications are handled by the moltbot-popo plugin
+        console.log('[IMGatewayManager] POPO notification via OpenClaw not yet supported');
       } else if (platform === 'xiaomifeng') {
         await this.xiaomifengGateway.sendNotification(text);
       }
@@ -1005,6 +1047,9 @@ export class IMGatewayManager extends EventEmitter {
       } else if (platform === 'wecom') {
         // WeCom runs via OpenClaw; notifications are handled by the wecom-openclaw-plugin
         console.log('[IMGatewayManager] WeCom notification with media via OpenClaw not yet supported');
+      } else if (platform === 'popo') {
+        // POPO runs via OpenClaw; notifications are handled by the moltbot-popo plugin
+        console.log('[IMGatewayManager] POPO notification with media via OpenClaw not yet supported');
       } else if (platform === 'xiaomifeng') {
         await this.xiaomifengGateway.sendNotificationWithMedia(text);
       }
@@ -1394,6 +1439,59 @@ export class IMGatewayManager extends EventEmitter {
     return { platform, testedAt, verdict, checks };
   }
 
+  /**
+   * Test POPO connectivity when running via OpenClaw runtime.
+   * Validates config completeness; actual connection is handled by OpenClaw.
+   */
+  private async testPopoOpenClawConnectivity(
+    configOverride?: Partial<IMGatewayConfig>
+  ): Promise<IMConnectivityTestResult> {
+    const checks: IMConnectivityCheck[] = [];
+    const testedAt = Date.now();
+    const platform: IMPlatform = 'popo';
+
+    const mergedConfig = this.buildMergedConfig(configOverride);
+    const popoConfig = mergedConfig.popo;
+
+    // Check 1: Credentials present
+    const missing: string[] = [];
+    if (!popoConfig?.appKey) missing.push('appKey');
+    if (!popoConfig?.appSecret) missing.push('appSecret');
+    if (!popoConfig?.token) missing.push('token');
+    if (!popoConfig?.aesKey) missing.push('aesKey');
+    if (missing.length > 0) {
+      checks.push({
+        code: 'missing_credentials',
+        level: 'fail',
+        message: `缺少必要配置项: ${missing.join(', ')}`,
+        suggestion: '请补全 appKey、appSecret、token 和 aesKey 后重新测试连通性。',
+      });
+      return { platform, testedAt, verdict: 'fail', checks };
+    }
+
+    // Check 2: Config completeness passes
+    checks.push({
+      code: 'auth_check',
+      level: 'pass',
+      message: 'POPO 配置已就绪。',
+    });
+
+    // Check 3: OpenClaw Gateway running info
+    checks.push({
+      code: 'gateway_running',
+      level: 'info',
+      message: 'POPO 通过 OpenClaw 运行时运行，Bot 将在 OpenClaw Gateway 启动后自动连接。',
+    });
+
+    const verdict: IMConnectivityVerdict = checks.some(c => c.level === 'fail')
+      ? 'fail'
+      : checks.some(c => c.level === 'warn')
+        ? 'warn'
+        : 'pass';
+
+    return { platform, testedAt, verdict, checks };
+  }
+
   private buildMergedConfig(configOverride?: Partial<IMGatewayConfig>): IMGatewayConfig {
     const current = this.getConfig();
     if (!configOverride) {
@@ -1410,6 +1508,7 @@ export class IMGatewayManager extends EventEmitter {
       nim: { ...current.nim, ...(configOverride.nim || {}) },
       xiaomifeng: { ...current.xiaomifeng, ...(configOverride.xiaomifeng || {}) },
       wecom: { ...current.wecom, ...(configOverride.wecom || {}) },
+      popo: { ...current.popo, ...(configOverride.popo || {}) },
       settings: { ...current.settings, ...(configOverride.settings || {}) },
     };
   }
@@ -1453,6 +1552,14 @@ export class IMGatewayManager extends EventEmitter {
       const fields: string[] = [];
       if (!config.wecom?.botId) fields.push('botId');
       if (!config.wecom?.secret) fields.push('secret');
+      return fields;
+    }
+    if (platform === 'popo') {
+      const fields: string[] = [];
+      if (!config.popo?.appKey) fields.push('appKey');
+      if (!config.popo?.appSecret) fields.push('appSecret');
+      if (!config.popo?.token) fields.push('token');
+      if (!config.popo?.aesKey) fields.push('aesKey');
       return fields;
     }
     return config.discord.botToken ? [] : ['botToken'];
@@ -1512,6 +1619,14 @@ export class IMGatewayManager extends EventEmitter {
       }
       return `企业微信配置已就绪（Bot ID: ${botId}），通过 OpenClaw 运行。`;
 
+    }
+
+    if (platform === 'popo') {
+      const { appKey, appSecret, token, aesKey } = config.popo;
+      if (!appKey || !appSecret || !token || !aesKey) {
+        throw new Error('配置不完整');
+      }
+      return 'POPO 配置已就绪，通过 OpenClaw 运行。';
     }
 
     if (platform === 'qq') {
@@ -2136,6 +2251,7 @@ export class IMGatewayManager extends EventEmitter {
     if (platform === 'xiaomifeng') return status.xiaomifeng.startedAt;
     if (platform === 'qq') return status.qq.startedAt;
     if (platform === 'wecom') return status.wecom.startedAt;
+    if (platform === 'popo') return status.popo.startedAt;
     return status.discord.startedAt;
   }
 
@@ -2147,6 +2263,7 @@ export class IMGatewayManager extends EventEmitter {
     if (platform === 'xiaomifeng') return status.xiaomifeng.lastInboundAt;
     if (platform === 'qq') return status.qq.lastInboundAt;
     if (platform === 'wecom') return status.wecom.lastInboundAt;
+    if (platform === 'popo') return status.popo.lastInboundAt;
     return status.discord.lastInboundAt;
   }
 
@@ -2158,6 +2275,7 @@ export class IMGatewayManager extends EventEmitter {
     if (platform === 'xiaomifeng') return status.xiaomifeng.lastOutboundAt;
     if (platform === 'qq') return status.qq.lastOutboundAt;
     if (platform === 'wecom') return status.wecom.lastOutboundAt;
+    if (platform === 'popo') return status.popo.lastOutboundAt;
     return status.discord.lastOutboundAt;
   }
 
@@ -2169,6 +2287,7 @@ export class IMGatewayManager extends EventEmitter {
     if (platform === 'xiaomifeng') return status.xiaomifeng.lastError;
     if (platform === 'qq') return status.qq.lastError;
     if (platform === 'wecom') return status.wecom.lastError;
+    if (platform === 'popo') return status.popo.lastError;
     return status.discord.lastError;
   }
 
