@@ -1213,6 +1213,7 @@ const translations: Record<LanguageType, Record<string, string>> = {
     scheduledTasksFormNotifyConversationNone: '无可用会话',
     scheduledTasksToggleWarningAtPast: '该任务的执行时间已过，启用后将不会运行',
     scheduledTasksToggleWarningExpired: '该任务已过期，启用后将不会运行',
+    scheduledTasksDataAnomalyWarning: '定时任务「{name}」存在异常数据，已自动修正显示，建议重新编辑该任务',
 
     // 隐私协议弹窗
     privacyDialogTitle: '网易有道LobsterAI服务协议',
@@ -2427,6 +2428,7 @@ const translations: Record<LanguageType, Record<string, string>> = {
     scheduledTasksFormNotifyConversationNone: 'No conversations available',
     scheduledTasksToggleWarningAtPast: 'The execution time of this task has passed. It will not run after enabling',
     scheduledTasksToggleWarningExpired: 'This task has expired. It will not run after enabling',
+    scheduledTasksDataAnomalyWarning: 'Scheduled task "{name}" has abnormal data. Display has been auto-corrected. Consider re-editing this task',
 
     // Privacy dialog
     privacyDialogTitle: 'NetEase Youdao LobsterAI Terms of Service',

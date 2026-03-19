@@ -164,6 +164,9 @@ export function formatScheduleLabel(schedule: Schedule): string {
 
   if (schedule.kind === 'every') {
     const everyMs = schedule.everyMs;
+    if (!Number.isFinite(everyMs) || everyMs <= 0) {
+      return `${i18nService.t('scheduledTasksScheduleEvery')} -`;
+    }
     if (everyMs % 86_400_000 === 0) {
       return `${i18nService.t('scheduledTasksScheduleEvery')} ${everyMs / 86_400_000} ${i18nService.t('scheduledTasksFormIntervalDays')}`;
     }
@@ -189,7 +192,7 @@ export function formatDateTime(date: Date): string {
 }
 
 export function formatDuration(ms: number | null): string {
-  if (ms === null) return '-';
+  if (ms === null || !Number.isFinite(ms)) return '-';
   if (ms < 1000) return `${ms}ms`;
   if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
   return `${Math.round(ms / 60_000)}m`;
