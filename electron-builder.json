@@ -235,7 +235,6 @@
     "allowToChangeInstallationDirectory": true,
     "runAfterFinish": true,
     "deleteAppDataOnUninstall": true,
-    "perMachine": true,
     "allowElevation": true,
     "include": "scripts/nsis-installer.nsh"
   },

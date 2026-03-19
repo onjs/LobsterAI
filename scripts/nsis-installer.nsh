@@ -1,6 +1,10 @@
 !include "FileFunc.nsh"
 
 !macro customHeader
+  ; Request admin privileges for script execution (tar extract, warmup, etc.)
+  ; This does NOT change the default install path — just ensures UAC elevation.
+  RequestExecutionLevel admin
+
   ; Hide the (empty) details list — electron-builder uses 7z solid extraction
   ; which produces no per-file output, so the box would just be blank.
   ShowInstDetails nevershow
