@@ -889,7 +889,20 @@ const syncOpenClawConfig = async (
     };
   }
 
-  if (!syncResult.changed || !options.restartGatewayIfRunning) {
+  // Update secret env vars so the gateway process receives the latest
+  // plaintext credentials via environment variables (openclaw.json only
+  // contains ${VAR} placeholders, never plaintext secrets).
+  const nextSecretEnvVars = getOpenClawConfigSync().collectSecretEnvVars();
+  const prevSecretEnvVars = getOpenClawEngineManager().getSecretEnvVars();
+  const secretEnvVarsChanged = JSON.stringify(nextSecretEnvVars) !== JSON.stringify(prevSecretEnvVars);
+  getOpenClawEngineManager().setSecretEnvVars(nextSecretEnvVars);
+
+  // When secret env vars change, the running gateway must be restarted even if
+  // the caller didn't request it — the ${VAR} placeholders in openclaw.json
+  // resolve from the process environment which is fixed at spawn time.
+  const needsRestart = syncResult.changed || secretEnvVarsChanged;
+
+  if (!needsRestart || (!options.restartGatewayIfRunning && !secretEnvVarsChanged)) {
     return {
       success: true,
       changed: syncResult.changed,
