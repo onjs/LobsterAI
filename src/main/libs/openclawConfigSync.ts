@@ -944,9 +944,9 @@ export class OpenClawConfigSync {
 
     // Provider API Key
     const apiResolution = resolveRawApiConfig();
-    if (apiResolution.config?.apiKey) {
-      env.LOBSTER_PROVIDER_API_KEY = apiResolution.config.apiKey;
-    }
+    // Provider API Key — always set so stale openclaw.json with
+    // ${LOBSTER_PROVIDER_API_KEY} placeholder doesn't crash the gateway.
+    env.LOBSTER_PROVIDER_API_KEY = apiResolution.config?.apiKey || '';
 
     // MCP Bridge Secret
     const mcpBridgeCfg = this.getMcpBridgeConfig?.();
@@ -1004,6 +1004,11 @@ export class OpenClawConfigSync {
     }
     if (popoConfig?.enabled && popoConfig.token) {
       env.LOBSTER_POPO_TOKEN = popoConfig.token;
+    } else if (popoConfig?.enabled) {
+      // Provide empty fallback so stale openclaw.json files that still
+      // contain ${LOBSTER_POPO_TOKEN} from a previous webhook config
+      // don't crash the gateway with MissingEnvVarError.
+      env.LOBSTER_POPO_TOKEN = '';
     }
 
     // NIM
