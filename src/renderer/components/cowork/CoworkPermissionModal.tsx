@@ -5,6 +5,32 @@ import { i18nService } from '../../services/i18n';
 
 type DangerLevel = 'safe' | 'caution' | 'destructive';
 
+const POSITIVE_CONFIRM_PATTERNS = [
+  /\ballow\b/i,
+  /\bapprove\b/i,
+  /\bconfirm\b/i,
+  /\bcontinue\b/i,
+  /\byes\b/i,
+  /允许/,
+  /确认/,
+  /继续/,
+  /同意/,
+  /删除/,
+] as const;
+
+const NEGATIVE_CONFIRM_PATTERNS = [
+  /\bcancel\b/i,
+  /\bdeny\b/i,
+  /\breject\b/i,
+  /\babort\b/i,
+  /\bno\b/i,
+  /取消/,
+  /拒绝/,
+  /不同意/,
+  /不允许/,
+  /停止/,
+] as const;
+
 const DANGER_REASON_I18N_MAP: Record<string, string> = {
   'recursive-delete': 'dangerReasonRecursiveDelete',
   'git-force-push': 'dangerReasonGitForcePush',
@@ -58,6 +84,35 @@ type QuestionItem = {
   multiSelect?: boolean;
 };
 
+const looksPositiveConfirmOption = (label: string): boolean => {
+  return POSITIVE_CONFIRM_PATTERNS.some((pattern) => pattern.test(label));
+};
+
+const looksNegativeConfirmOption = (label: string): boolean => {
+  return NEGATIVE_CONFIRM_PATTERNS.some((pattern) => pattern.test(label));
+};
+
+const resolveConfirmModeButtons = (question: QuestionItem): { primary: QuestionOption; secondary: QuestionOption } => {
+  const [firstOption, secondOption] = question.options;
+  if (!firstOption || !secondOption) {
+    throw new Error('Confirm mode requires exactly two options.');
+  }
+
+  const firstIsNegative = looksNegativeConfirmOption(firstOption.label);
+  const secondIsNegative = looksNegativeConfirmOption(secondOption.label);
+  if (firstIsNegative && !secondIsNegative) {
+    return { primary: secondOption, secondary: firstOption };
+  }
+
+  const firstIsPositive = looksPositiveConfirmOption(firstOption.label);
+  const secondIsPositive = looksPositiveConfirmOption(secondOption.label);
+  if (!firstIsPositive && secondIsPositive) {
+    return { primary: secondOption, secondary: firstOption };
+  }
+
+  return { primary: firstOption, secondary: secondOption };
+};
+
 const CoworkPermissionModal: React.FC<CoworkPermissionModalProps> = ({
   permission,
   onRespond,
@@ -106,13 +161,18 @@ const CoworkPermissionModal: React.FC<CoworkPermissionModalProps> = ({
 
   const isQuestionTool = questions.length > 0;
 
-  // Detect simple confirm mode: 1 question with exactly 2 options (allow/deny pattern).
-  // In this case, render as a simple confirm dialog (直接 允许/拒绝) instead of
-  // requiring the user to select an option first then click submit.
+  // Detect simple confirm mode: 1 question with exactly 2 options.
+  // In this case, render a compact two-button dialog, but preserve the actual
+  // option labels instead of assuming fixed allow/deny semantics.
   const isConfirmMode = isQuestionTool
     && questions.length === 1
     && questions[0].options.length === 2
     && !questions[0].multiSelect;
+
+  const confirmModeButtons = useMemo(() => {
+    if (!isConfirmMode) return null;
+    return resolveConfirmModeButtons(questions[0]);
+  }, [isConfirmMode, questions]);
 
   const [answers, setAnswers] = useState<Record<string, string>>({});
 
@@ -144,9 +204,39 @@ const CoworkPermissionModal: React.FC<CoworkPermissionModalProps> = ({
     }
   };
 
+  const requestedCommand = useMemo(() => {
+    if (!toolInput || typeof toolInput !== 'object') {
+      return '';
+    }
+    const context = (toolInput as Record<string, unknown>).context;
+    if (!context || typeof context !== 'object') {
+      return '';
+    }
+    const requestedToolInput = (context as Record<string, unknown>).requestedToolInput;
+    if (!requestedToolInput || typeof requestedToolInput !== 'object') {
+      return '';
+    }
+    const command = (requestedToolInput as Record<string, unknown>).command;
+    return typeof command === 'string' ? command.trim() : '';
+  }, [toolInput]);
+
+  const buildQuestionAnswerResult = (question: string, answer: string): CoworkPermissionResult => {
+    return {
+      behavior: 'allow',
+      updatedInput: {
+        ...(toolInput && typeof toolInput === 'object' ? toolInput : {}),
+        answers: { [question]: answer },
+      },
+    };
+  };
+
   const { dangerLevel, dangerReasonText } = useMemo(() => {
-    // AskUserQuestion in confirm mode (delete confirmation) → show caution warning
-    if (permission.toolName === 'AskUserQuestion') {
+    const questionText = isConfirmMode ? questions[0]?.question ?? '' : '';
+    const looksLikeDeleteQuestion = requestedCommand
+      ? detectDangerLevelFromCommand(requestedCommand) !== 'safe'
+      : /\b(delete|remove|rm|unlink|rmdir|erase|del)\b/i.test(questionText) || /删除|移除/.test(questionText);
+
+    if (permission.toolName === 'AskUserQuestion' && looksLikeDeleteQuestion) {
       return { dangerLevel: 'caution' as DangerLevel, dangerReasonText: i18nService.t('dangerReasonFileDelete') };
     }
     if (permission.toolName !== 'Bash') {
@@ -165,7 +255,7 @@ const CoworkPermissionModal: React.FC<CoworkPermissionModalProps> = ({
     const reasonText = i18nKey ? i18nService.t(i18nKey) : '';
 
     return { dangerLevel: level, dangerReasonText: reasonText };
-  }, [permission.toolName, permission.toolInput]);
+  }, [isConfirmMode, permission.toolName, permission.toolInput, questions, requestedCommand]);
 
   const getSelectedValues = (question: QuestionItem): string[] => {
     const rawValue = answers[question.question] ?? '';
@@ -214,17 +304,14 @@ const CoworkPermissionModal: React.FC<CoworkPermissionModalProps> = ({
     ? i18nService.t('coworkConfirmSelection')
     : i18nService.t('coworkApprove');
 
+  const handleConfirmModeSelect = (optionLabel: string) => {
+    if (!isConfirmMode) return;
+    onRespond(buildQuestionAnswerResult(questions[0].question, optionLabel));
+  };
+
   const handleApprove = () => {
     if (isConfirmMode) {
-      // Confirm mode: auto-select the first option (allow) and respond
-      const q = questions[0];
-      onRespond({
-        behavior: 'allow',
-        updatedInput: {
-          ...(toolInput && typeof toolInput === 'object' ? toolInput : {}),
-          answers: { [q.question]: q.options[0].label },
-        },
-      });
+      handleConfirmModeSelect(confirmModeButtons?.primary.label ?? questions[0].options[0].label);
       return;
     }
 
@@ -290,14 +377,23 @@ const CoworkPermissionModal: React.FC<CoworkPermissionModalProps> = ({
               <p className="text-sm dark:text-claude-darkText text-claude-text whitespace-pre-wrap">
                 {questions[0].question}
               </p>
+              {requestedCommand && (
+                <div className="mt-3">
+                  <label className="block text-xs font-medium dark:text-claude-darkTextSecondary text-claude-textSecondary uppercase tracking-wider mb-1">
+                    {i18nService.t('coworkToolInput')}
+                  </label>
+                  <div className="px-3 py-2 rounded-lg dark:bg-claude-darkSurface bg-claude-surface max-h-40 overflow-y-auto">
+                    <pre className="text-xs dark:text-claude-darkText text-claude-text whitespace-pre-wrap break-words font-mono">
+                      {requestedCommand}
+                    </pre>
+                  </div>
+                </div>
+              )}
             </div>
           ) : isQuestionTool ? (
             <>
               {questions.map((question) => {
                 const selectedValues = getSelectedValues(question);
-                const ctx = (toolInput as Record<string, unknown>)?.context as Record<string, unknown> | undefined;
-                const reqInput = ctx?.requestedToolInput as Record<string, unknown> | undefined;
-                const command = typeof reqInput?.command === 'string' ? (reqInput.command as string).trim() : '';
                 return (
                   <div
                     key={question.question}
@@ -313,14 +409,14 @@ const CoworkPermissionModal: React.FC<CoworkPermissionModalProps> = ({
                       {question.question}
                     </div>
                     {/* 命令详情 */}
-                    {command && (
+                    {requestedCommand && (
                       <div>
                         <label className="block text-xs font-medium dark:text-claude-darkTextSecondary text-claude-textSecondary uppercase tracking-wider mb-1">
                           {i18nService.t('coworkToolInput')}
                         </label>
                         <div className="px-3 py-2 rounded-lg dark:bg-claude-darkBg bg-claude-bg max-h-40 overflow-y-auto">
                           <pre className="text-xs dark:text-claude-darkText text-claude-text whitespace-pre-wrap break-words font-mono">
-                            {command}
+                            {requestedCommand}
                           </pre>
                         </div>
                       </div>
@@ -412,17 +508,17 @@ const CoworkPermissionModal: React.FC<CoworkPermissionModalProps> = ({
         {/* Footer */}
         <div className="flex items-center justify-end gap-3 px-6 py-4 border-t dark:border-claude-darkBorder border-claude-border">
           <button
-            onClick={handleDeny}
+            onClick={isConfirmMode && confirmModeButtons ? () => handleConfirmModeSelect(confirmModeButtons.secondary.label) : handleDeny}
             className="px-4 py-2 text-sm font-medium rounded-lg dark:text-claude-darkTextSecondary text-claude-textSecondary dark:hover:bg-claude-darkSurfaceHover hover:bg-claude-surfaceHover transition-colors"
           >
-            {denyButtonLabel}
+            {isConfirmMode && confirmModeButtons ? confirmModeButtons.secondary.label : denyButtonLabel}
           </button>
           <button
             onClick={handleApprove}
             disabled={!isComplete}
             className="px-4 py-2 text-sm font-medium rounded-lg bg-claude-accent hover:bg-claude-accentHover text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {approveButtonLabel}
+            {isConfirmMode && confirmModeButtons ? confirmModeButtons.primary.label : approveButtonLabel}
           </button>
         </div>
       </div>
