@@ -2,6 +2,7 @@ import { store } from '../store';
 import { setAuthLoading, setLoggedIn, setLoggedOut, updateQuota, setProfileSummary } from '../store/slices/authSlice';
 import { setServerModels, clearServerModels } from '../store/slices/modelSlice';
 import type { Model } from '../store/slices/modelSlice';
+import { FEATURE_FLAGS } from '../../common/featureFlags';
 
 class AuthService {
   private unsubCallback: (() => void) | null = null;
@@ -15,6 +16,12 @@ class AuthService {
   async init() {
     // Clean up any existing listeners to prevent stacking on repeated init()
     this.destroy();
+
+    if (!FEATURE_FLAGS.portalAuth) {
+      store.dispatch(setLoggedOut());
+      store.dispatch(clearServerModels());
+      return;
+    }
 
     store.dispatch(setAuthLoading(true));
     try {
@@ -57,6 +64,9 @@ class AuthService {
    * Initiate login (opens system browser).
    */
   async login() {
+    if (!FEATURE_FLAGS.portalAuth) {
+      return;
+    }
     const loginUrl = await this.fetchLoginUrl();
     await window.electron.auth.login(loginUrl);
   }
@@ -90,6 +100,9 @@ class AuthService {
    * Handle OAuth callback with auth code.
    */
   async handleCallback(code: string) {
+    if (!FEATURE_FLAGS.portalAuth) {
+      return;
+    }
     try {
       const result = await window.electron.auth.exchange(code);
       if (result.success) {
@@ -105,6 +118,11 @@ class AuthService {
    * Logout.
    */
   async logout() {
+    if (!FEATURE_FLAGS.portalAuth) {
+      store.dispatch(setLoggedOut());
+      store.dispatch(clearServerModels());
+      return;
+    }
     await window.electron.auth.logout();
     store.dispatch(setLoggedOut());
     store.dispatch(clearServerModels());
@@ -114,6 +132,9 @@ class AuthService {
    * Refresh quota information.
    */
   async refreshQuota() {
+    if (!FEATURE_FLAGS.portalAuth) {
+      return;
+    }
     try {
       const result = await window.electron.auth.getQuota();
       if (result.success) {
@@ -128,6 +149,9 @@ class AuthService {
    * Fetch profile summary (credits breakdown).
    */
   async fetchProfileSummary() {
+    if (!FEATURE_FLAGS.portalAuth) {
+      return;
+    }
     try {
       const result = await window.electron.auth.getProfileSummary();
       if (result.success && result.data) {
@@ -142,6 +166,9 @@ class AuthService {
    * Get current access token (for proxy API calls).
    */
   async getAccessToken(): Promise<string | null> {
+    if (!FEATURE_FLAGS.portalAuth) {
+      return null;
+    }
     try {
       return await window.electron.auth.getAccessToken();
     } catch {
@@ -162,6 +189,10 @@ class AuthService {
    * Load available models from server and dispatch to store.
    */
   private async loadServerModels() {
+    if (!FEATURE_FLAGS.portalAuth) {
+      store.dispatch(clearServerModels());
+      return;
+    }
     try {
       const modelsResult = await window.electron.auth.getModels();
       if (modelsResult.success && modelsResult.models) {

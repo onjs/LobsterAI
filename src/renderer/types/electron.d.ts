@@ -102,6 +102,23 @@ interface CoworkApiConfig {
   apiType?: 'anthropic' | 'openai';
 }
 
+interface CoworkSandboxStatus {
+  supported: boolean;
+  runtimeReady: boolean;
+  imageReady: boolean;
+  downloading: boolean;
+  progress?: CoworkSandboxProgress;
+  error?: string | null;
+}
+
+interface CoworkSandboxProgress {
+  stage: 'runtime' | 'image';
+  received: number;
+  total?: number;
+  percent?: number;
+  url?: string;
+}
+
 type OpenClawEnginePhase =
   | 'not_installed'
   | 'installing'
@@ -363,6 +380,9 @@ interface IElectronAPI {
     getMemoryStats: () => Promise<{ success: boolean; stats?: CoworkMemoryStats; error?: string }>;
     readBootstrapFile: (filename: string) => Promise<{ success: boolean; content: string; error?: string }>;
     writeBootstrapFile: (filename: string, content: string) => Promise<{ success: boolean; error?: string }>;
+    getSandboxStatus: () => Promise<CoworkSandboxStatus>;
+    installSandbox: () => Promise<{ success: boolean; status: CoworkSandboxStatus; error?: string }>;
+    onSandboxDownloadProgress: (callback: (data: CoworkSandboxProgress) => void) => () => void;
     onStreamMessage: (callback: (data: { sessionId: string; message: CoworkMessage }) => void) => () => void;
     onStreamMessageUpdate: (callback: (data: { sessionId: string; messageId: string; content: string }) => void) => () => void;
     onStreamPermission: (callback: (data: { sessionId: string; request: CoworkPermissionRequest }) => void) => () => void;

@@ -88,6 +88,23 @@ export interface CoworkApiConfig {
   apiType?: 'anthropic' | 'openai';
 }
 
+export type CoworkSandboxStatus = {
+  supported: boolean;
+  runtimeReady: boolean;
+  imageReady: boolean;
+  downloading: boolean;
+  progress?: CoworkSandboxProgress;
+  error?: string | null;
+};
+
+export type CoworkSandboxProgress = {
+  stage: 'runtime' | 'image';
+  received: number;
+  total?: number;
+  percent?: number;
+  url?: string;
+};
+
 export type OpenClawEnginePhase =
   | 'not_installed'
   | 'installing'

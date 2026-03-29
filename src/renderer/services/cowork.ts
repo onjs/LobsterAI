@@ -22,6 +22,8 @@ import type {
   CoworkSession,
   CoworkConfigUpdate,
   CoworkApiConfig,
+  CoworkSandboxStatus,
+  CoworkSandboxProgress,
   CoworkUserMemoryEntry,
   CoworkMemoryStats,
   CoworkPermissionResult,
@@ -541,6 +543,20 @@ class CoworkService {
     return window.electron.saveApiConfig(config);
   }
 
+  async getSandboxStatus(): Promise<CoworkSandboxStatus | null> {
+    if (!window.electron?.cowork?.getSandboxStatus) {
+      return null;
+    }
+    return window.electron.cowork.getSandboxStatus();
+  }
+
+  async installSandbox(): Promise<{ success: boolean; status: CoworkSandboxStatus; error?: string } | null> {
+    if (!window.electron?.cowork?.installSandbox) {
+      return null;
+    }
+    return window.electron.cowork.installSandbox();
+  }
+
   async listMemoryEntries(input: {
     query?: string;
     limit?: number;
@@ -605,6 +621,13 @@ class CoworkService {
     if (!api) return false;
     const result = await api(filename, content);
     return Boolean(result?.success);
+  }
+
+  onSandboxDownloadProgress(callback: (progress: CoworkSandboxProgress) => void): () => void {
+    if (!window.electron?.cowork?.onSandboxDownloadProgress) {
+      return () => {};
+    }
+    return window.electron.cowork.onSandboxDownloadProgress(callback);
   }
 
   onOpenClawEngineStatus(callback: (status: OpenClawEngineStatus) => void): () => void {

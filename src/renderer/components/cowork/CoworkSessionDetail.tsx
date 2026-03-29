@@ -407,6 +407,64 @@ const isAbsolutePath = (value: string): boolean => (
 );
 
 const isRelativePath = (value: string): boolean => !isAbsolutePath(value) && !hasScheme(value);
+const SANDBOX_WORKSPACE_GUEST_ROOT = '/workspace/project';
+const SANDBOX_WORKSPACE_LEGACY_ROOT = '/workspace';
+const SANDBOX_WORKSPACE_RESERVED_DIRS = new Set(['skills', 'ipc', 'tmp']);
+const SANDBOX_WORKSPACE_PATH_PATTERN = /\/workspace(?:\/project)?(?:\/[^\s'"`)\]}>,;:!?]*)?/g;
+
+const isReservedSandboxSegment = (relativePath: string): boolean => {
+  const [firstSegment] = relativePath.split('/');
+  return Boolean(firstSegment && SANDBOX_WORKSPACE_RESERVED_DIRS.has(firstSegment.toLowerCase()));
+};
+
+const mapSandboxGuestPathToCwd = (filePath: string, cwd?: string): string | null => {
+  if (!cwd) return null;
+
+  const normalizedPath = filePath.replace(/\\/g, '/');
+  const normalizedCwd = cwd.replace(/[\\/]+$/, '');
+
+  if (
+    normalizedPath === SANDBOX_WORKSPACE_GUEST_ROOT
+    || normalizedPath.startsWith(`${SANDBOX_WORKSPACE_GUEST_ROOT}/`)
+  ) {
+    const relativePath = normalizedPath
+      .slice(SANDBOX_WORKSPACE_GUEST_ROOT.length)
+      .replace(/^\/+/, '');
+    if (relativePath && isReservedSandboxSegment(relativePath)) {
+      return null;
+    }
+    return relativePath ? `${normalizedCwd}/${relativePath}` : normalizedCwd;
+  }
+
+  if (
+    normalizedPath !== SANDBOX_WORKSPACE_LEGACY_ROOT
+    && !normalizedPath.startsWith(`${SANDBOX_WORKSPACE_LEGACY_ROOT}/`)
+  ) {
+    return null;
+  }
+
+  const legacyRelativePath = normalizedPath
+    .slice(SANDBOX_WORKSPACE_LEGACY_ROOT.length)
+    .replace(/^\/+/, '');
+  if (!legacyRelativePath) {
+    return normalizedCwd;
+  }
+
+  if (isReservedSandboxSegment(legacyRelativePath)) {
+    return null;
+  }
+
+  return `${normalizedCwd}/${legacyRelativePath}`;
+};
+
+const mapSandboxGuestPathsInText = (value: string, cwd?: string): string => {
+  if (!value || !cwd || !value.includes('/workspace')) {
+    return value;
+  }
+
+  return value.replace(SANDBOX_WORKSPACE_PATH_PATTERN, (candidatePath) =>
+    mapSandboxGuestPathToCwd(candidatePath, cwd) ?? candidatePath);
+};
 
 const parseRootRelativePath = (value: string): string | null => {
   const trimmed = value.trim();
@@ -1776,42 +1834,57 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
     const textValue = typeof text === 'string' ? text.trim() : '';
     if (!hrefValue && !textValue) return null;
 
+    // In sandbox mode, translate VM guest paths to host paths.
+    const mapSandboxPath = (filePath: string): string => {
+      if (
+        currentSession?.executionMode !== 'sandbox' ||
+        !currentSession?.cwd
+      ) {
+        return filePath;
+      }
+      const mapped = mapSandboxGuestPathToCwd(filePath, currentSession.cwd);
+      return mapped ?? filePath;
+    };
+
     const hrefRootRelative = hrefValue ? parseRootRelativePath(hrefValue) : null;
     if (hrefRootRelative) {
-      return hrefRootRelative;
+      return mapSandboxPath(hrefRootRelative);
     }
 
     const hrefPath = hrefValue ? normalizeLocalPath(hrefValue) : null;
     if (hrefPath) {
       if (hrefPath.isRelative && currentSession?.cwd) {
-        return toAbsolutePathFromCwd(hrefPath.path, currentSession.cwd);
+        return mapSandboxPath(toAbsolutePathFromCwd(hrefPath.path, currentSession.cwd));
       }
       if (hrefPath.isAbsolute) {
-        return hrefPath.path;
+        return mapSandboxPath(hrefPath.path);
       }
     }
 
     const textRootRelative = textValue ? parseRootRelativePath(textValue) : null;
     if (textRootRelative) {
-      return textRootRelative;
+      return mapSandboxPath(textRootRelative);
     }
 
     const textPath = textValue ? normalizeLocalPath(textValue) : null;
     if (textPath) {
       if (textPath.isRelative && currentSession?.cwd) {
-        return toAbsolutePathFromCwd(textPath.path, currentSession.cwd);
+        return mapSandboxPath(toAbsolutePathFromCwd(textPath.path, currentSession.cwd));
       }
       if (textPath.isAbsolute) {
-        return textPath.path;
+        return mapSandboxPath(textPath.path);
       }
     }
 
     return null;
-  }, [currentSession?.cwd]);
+  }, [currentSession?.cwd, currentSession?.executionMode]);
 
   const mapDisplayText = useCallback((value: string): string => {
-    return value;
-  }, []);
+    if (currentSession?.executionMode !== 'sandbox') {
+      return value;
+    }
+    return mapSandboxGuestPathsInText(value, currentSession?.cwd);
+  }, [currentSession?.cwd, currentSession?.executionMode]);
 
   const messages = currentSession?.messages;
   const displayItems = useMemo(() => messages ? buildDisplayItems(messages) : [], [messages]);
@@ -1990,6 +2063,16 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
             <h1 className="text-sm leading-none font-medium dark:text-claude-darkText text-claude-text truncate max-w-[360px]">
               {currentSession.title || i18nService.t('coworkNewSession')}
             </h1>
+          )}
+          {currentSession.executionMode === 'sandbox' && (
+            <span className="inline-flex items-center rounded-full bg-emerald-500/10 text-emerald-500 dark:text-emerald-400 border border-emerald-500/30 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide">
+              {i18nService.t('coworkSandboxBadge')}
+            </span>
+          )}
+          {currentSession.executionMode === 'local' && (
+            <span className="inline-flex items-center rounded-full bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/30 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide">
+              {i18nService.t('coworkLocalBadge')}
+            </span>
           )}
         </div>
 

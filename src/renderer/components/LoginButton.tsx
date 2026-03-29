@@ -4,6 +4,7 @@ import { RootState } from '../store';
 import { authService } from '../services/auth';
 import { i18nService } from '../services/i18n';
 import type { CreditItem } from '../store/slices/authSlice';
+import { FEATURE_FLAGS } from '../../common/featureFlags';
 
 const getSubscriptionBadge = (label: string) => {
   // Determine badge style based on label
@@ -222,6 +223,7 @@ const UserMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
 };
 
 const LoginButton: React.FC = () => {
+  const authDisabled = !FEATURE_FLAGS.portalAuth;
   const { isLoggedIn, isLoading, user } = useSelector((state: RootState) => state.auth);
   const [showMenu, setShowMenu] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -239,6 +241,10 @@ const LoginButton: React.FC = () => {
       document.removeEventListener('mousedown', handleClickOutside);
     };
   }, [showMenu]);
+
+  if (authDisabled) {
+    return null;
+  }
 
   if (isLoading) {
     return null;

@@ -9,6 +9,7 @@ import {
   getCoworkOpenAICompatProxyStatus,
 } from './coworkOpenAICompatProxy';
 import { normalizeProviderApiFormat, type AnthropicApiFormat } from './coworkFormatTransform';
+import { FEATURE_FLAGS } from '../../common/featureFlags';
 
 const ZHIPU_CODING_PLAN_BASE_URL = 'https://open.bigmodel.cn/api/coding/paas/v4';
 // Qwen Coding Plan 专属端点 (OpenAI 兼容和 Anthropic 兼容)
@@ -140,6 +141,9 @@ function providerRequiresApiKey(providerName: string): boolean {
 }
 
 function tryLobsteraiServerFallback(modelId?: string): MatchedProvider | null {
+  if (!FEATURE_FLAGS.portalAuth) {
+    return null;
+  }
   const tokens = authTokensGetter?.();
   const serverBaseUrl = serverBaseUrlGetter?.();
   if (!tokens?.accessToken || !serverBaseUrl) return null;
@@ -199,7 +203,7 @@ function resolveMatchedProvider(appConfig: AppConfig): { matched: MatchedProvide
   const preferredProviderName = appConfig.model?.defaultModelProvider?.trim();
 
   // Handle lobsterai-server provider: dynamically construct from auth tokens
-  if (preferredProviderName === 'lobsterai-server') {
+  if (FEATURE_FLAGS.portalAuth && preferredProviderName === 'lobsterai-server') {
     const serverMatch = tryLobsteraiServerFallback(modelId);
     if (serverMatch) {
       return { matched: serverMatch };
@@ -451,7 +455,7 @@ export function resolveAllProviderApiKeys(): Record<string, string> {
   // lobsterai-server: uses auth accessToken
   const tokens = authTokensGetter?.();
   const serverBaseUrl = serverBaseUrlGetter?.();
-  if (tokens?.accessToken && serverBaseUrl) {
+  if (FEATURE_FLAGS.portalAuth && tokens?.accessToken && serverBaseUrl) {
     result.SERVER = tokens.accessToken;
   }
 

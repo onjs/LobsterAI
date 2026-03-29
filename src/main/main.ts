@@ -19,6 +19,7 @@ import { getCurrentApiConfig, resolveCurrentApiConfig, setStoreGetter, setAuthTo
 import { saveCoworkApiConfig } from './libs/coworkConfigStore';
 import { generateSessionTitle, probeCoworkModelReadiness } from './libs/coworkUtil';
 import { startCoworkOpenAICompatProxy, stopCoworkOpenAICompatProxy, setProxyTokenRefresher } from './libs/coworkOpenAICompatProxy';
+import { ensureSandboxReady, getSandboxStatus, onSandboxProgress } from './libs/coworkSandboxRuntime';
 import { OpenClawEngineManager, type OpenClawEngineStatus } from './libs/openclawEngineManager';
 import {
   listPairingRequests,
@@ -73,6 +74,7 @@ import {
   restoreOriginalProxyEnv,
   setSystemProxyEnabled,
 } from './libs/systemProxy';
+import { FEATURE_FLAGS } from '../common/featureFlags';
 
 // 设置应用程序名称
 app.name = APP_NAME;
@@ -1549,6 +1551,12 @@ const getAppIconPath = (): string | undefined => {
 // 保存对主窗口的引用
 let mainWindow: BrowserWindow | null = null;
 
+onSandboxProgress((progress) => {
+  const windows = BrowserWindow.getAllWindows();
+  windows.forEach((win) => {
+    win.webContents.send('cowork:sandbox:downloadProgress', progress);
+  });
+});
 let isQuitting = false;
 
 // 存储活跃的流式请求控制器
@@ -1927,6 +1935,11 @@ if (!gotTheLock) {
     getStore().delete('auth_tokens');
   };
 
+  const buildAuthDisabledResponse = () => ({
+    success: false,
+    error: 'Portal auth is disabled in OSS local mode.',
+  });
+
   /**
    * Helper: Fetch with Bearer token, auto-refresh on 401 and retry once.
    */
@@ -2003,6 +2016,9 @@ if (!gotTheLock) {
   };
 
   ipcMain.handle('auth:login', async (_event, { loginUrl }: { loginUrl?: string } = {}) => {
+    if (!FEATURE_FLAGS.portalAuth) {
+      return buildAuthDisabledResponse();
+    }
     try {
       const baseUrl = loginUrl || `${getServerApiBaseUrl()}/login`;
       const finalUrl = `${baseUrl}?source=electron`;
@@ -2015,6 +2031,9 @@ if (!gotTheLock) {
   });
 
   ipcMain.handle('auth:exchange', async (_event, { code }: { code: string }) => {
+    if (!FEATURE_FLAGS.portalAuth) {
+      return buildAuthDisabledResponse();
+    }
     try {
       const serverBaseUrl = getServerApiBaseUrl();
       const resp = await net.fetch(`${serverBaseUrl}/api/auth/exchange`, {
@@ -2047,6 +2066,9 @@ if (!gotTheLock) {
   });
 
   ipcMain.handle('auth:getUser', async () => {
+    if (!FEATURE_FLAGS.portalAuth) {
+      return buildAuthDisabledResponse();
+    }
     try {
       const tokens = getAuthTokens();
       if (!tokens) return { success: false };
@@ -2072,6 +2094,9 @@ if (!gotTheLock) {
   });
 
   ipcMain.handle('auth:getQuota', async () => {
+    if (!FEATURE_FLAGS.portalAuth) {
+      return buildAuthDisabledResponse();
+    }
     try {
       const tokens = getAuthTokens();
       if (!tokens) return { success: false };
@@ -2087,6 +2112,9 @@ if (!gotTheLock) {
   });
 
   ipcMain.handle('auth:getProfileSummary', async () => {
+    if (!FEATURE_FLAGS.portalAuth) {
+      return buildAuthDisabledResponse();
+    }
     try {
       const tokens = getAuthTokens();
       if (!tokens) return { success: false };
@@ -2122,6 +2150,9 @@ if (!gotTheLock) {
   });
 
   ipcMain.handle('auth:refreshToken', async () => {
+    if (!FEATURE_FLAGS.portalAuth) {
+      return buildAuthDisabledResponse();
+    }
     try {
       const tokens = getAuthTokens();
       if (!tokens?.refreshToken) return { success: false };
@@ -2142,11 +2173,17 @@ if (!gotTheLock) {
   });
 
   ipcMain.handle('auth:getAccessToken', async () => {
+    if (!FEATURE_FLAGS.portalAuth) {
+      return null;
+    }
     const tokens = getAuthTokens();
     return tokens?.accessToken || null;
   });
 
   ipcMain.handle('auth:getModels', async () => {
+    if (!FEATURE_FLAGS.portalAuth) {
+      return buildAuthDisabledResponse();
+    }
     try {
       const tokens = getAuthTokens();
       if (!tokens) {
@@ -2971,6 +3008,9 @@ if (!gotTheLock) {
     }
   });
 
+  ipcMain.handle('cowork:sandbox:status', async () => {
+    return getSandboxStatus();
+  });
   ipcMain.handle('cowork:memory:listEntries', async (_event, input: {
     query?: string;
     status?: 'created' | 'stale' | 'deleted' | 'all';
@@ -3117,6 +3157,14 @@ if (!gotTheLock) {
         error: error instanceof Error ? error.message : 'Failed to write bootstrap file',
       };
     }
+  });
+  ipcMain.handle('cowork:sandbox:install', async () => {
+    const result = await ensureSandboxReady();
+    return {
+      success: result.ok,
+      status: getSandboxStatus(),
+      error: result.ok ? undefined : ('error' in result ? result.error : undefined),
+    };
   });
   ipcMain.handle('cowork:config:set', async (_event, config: {
     workingDirectory?: string;
