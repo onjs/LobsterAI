@@ -2959,7 +2959,6 @@ export class CoworkRunner extends EventEmitter {
       pathToClaudeCodeExecutable: claudeCodePath,
       permissionMode: 'default',
       includePartialMessages: true,
-      disallowedTools: ['WebSearch', 'WebFetch'],
       stderr: handleSdkStderr,
       canUseTool: async (
         toolName: string,

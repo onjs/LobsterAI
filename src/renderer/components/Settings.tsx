@@ -577,7 +577,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
 
   const coworkConfig = useSelector((state: RootState) => state.cowork.config);
 
-  const [coworkAgentEngine, setCoworkAgentEngine] = useState<CoworkAgentEngine>(coworkConfig.agentEngine || 'openclaw');
+  const [coworkAgentEngine, setCoworkAgentEngine] = useState<CoworkAgentEngine>(coworkConfig.agentEngine || 'yd_cowork');
   const [coworkExecutionMode, setCoworkExecutionMode] = useState<CoworkExecutionMode>(coworkConfig.executionMode || 'local');
   const [coworkMemoryEnabled, setCoworkMemoryEnabled] = useState<boolean>(coworkConfig.memoryEnabled ?? true);
   const [coworkMemoryLlmJudgeEnabled, setCoworkMemoryLlmJudgeEnabled] = useState<boolean>(coworkConfig.memoryLlmJudgeEnabled ?? false);
@@ -599,7 +599,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
   const [openClawEngineStatus, setOpenClawEngineStatus] = useState<OpenClawEngineStatus | null>(null);
 
   useEffect(() => {
-    setCoworkAgentEngine(coworkConfig.agentEngine || 'openclaw');
+    setCoworkAgentEngine(coworkConfig.agentEngine || 'yd_cowork');
     setCoworkExecutionMode(coworkConfig.executionMode || 'local');
     setCoworkMemoryEnabled(coworkConfig.memoryEnabled ?? true);
     setCoworkMemoryLlmJudgeEnabled(coworkConfig.memoryLlmJudgeEnabled ?? false);
@@ -2138,8 +2138,6 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
     { key: 'coworkMemory',   label: i18nService.t('coworkMemoryTitle'), icon: <BrainIcon className="h-5 w-5" /> },
     { key: 'coworkAgent',    label: i18nService.t('coworkAgentTab'),    icon: <UserCircleIcon className="h-5 w-5" /> },
     { key: 'coworkSandbox',  label: i18nService.t('coworkSandbox'),  icon: <ShieldCheckIcon className="h-5 w-5" /> },
-    { key: 'coworkAgent',    label: i18nService.t('coworkAgentTab'),    icon: <UserCircleIcon className="h-5 w-5" /> },
-    { key: 'coworkSandbox',  label: i18nService.t('coworkSandbox'),  icon: <ShieldCheckIcon className="h-5 w-5" /> },
     { key: 'shortcuts',      label: i18nService.t('shortcuts'),      icon: <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="h-5 w-5"><rect x="2" y="4" width="20" height="14" rx="2" /><line x1="6" y1="8" x2="8" y2="8" /><line x1="10" y1="8" x2="12" y2="8" /><line x1="14" y1="8" x2="16" y2="8" /><line x1="6" y1="12" x2="8" y2="12" /><line x1="10" y1="12" x2="14" y2="12" /><line x1="16" y1="12" x2="18" y2="12" /><line x1="8" y1="15.5" x2="16" y2="15.5" /></svg> },
     { key: 'about',          label: i18nService.t('about'),          icon: <InformationCircleIcon className="h-5 w-5" /> },
   ], [language]);
@@ -2436,22 +2434,45 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
         return (
           <div className="space-y-6">
             <div className="space-y-3">
-              <div className="flex items-start gap-3 rounded-xl border px-3 py-2 text-sm dark:border-claude-darkBorder border-claude-border">
-                <input
-                  type="radio"
-                  checked={true}
-                  readOnly
-                  className="mt-1"
-                />
-                <span>
-                  <span className="block font-medium dark:text-claude-darkText text-claude-text">
-                    {i18nService.t('coworkAgentEngineOpenClaw')}
+              {([
+                {
+                  value: 'yd_cowork' as CoworkAgentEngine,
+                  label: i18nService.t('coworkAgentEngineClaudeLegacy'),
+                  hint: i18nService.t('coworkAgentEngineClaudeLegacyHint'),
+                },
+                {
+                  value: 'openclaw' as CoworkAgentEngine,
+                  label: i18nService.t('coworkAgentEngineOpenClaw'),
+                  hint: i18nService.t('coworkAgentEngineOpenClawHint'),
+                },
+              ]).map((option) => (
+                <label
+                  key={option.value}
+                  className="flex items-start gap-3 rounded-xl border px-3 py-2 text-sm transition-colors cursor-pointer dark:border-claude-darkBorder border-claude-border hover:border-claude-accent"
+                >
+                  <input
+                    type="radio"
+                    name="cowork-agent-engine"
+                    value={option.value}
+                    checked={coworkAgentEngine === option.value}
+                    onChange={() => {
+                      setCoworkAgentEngine(option.value);
+                      if (option.value === 'yd_cowork') {
+                        setCoworkExecutionMode('local');
+                      }
+                    }}
+                    className="mt-1"
+                  />
+                  <span>
+                    <span className="block font-medium dark:text-claude-darkText text-claude-text">
+                      {option.label}
+                    </span>
+                    <span className="block text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
+                      {option.hint}
+                    </span>
                   </span>
-                  <span className="block text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
-                    {i18nService.t('coworkAgentEngineOpenClawHint')}
-                  </span>
-                </span>
-              </div>
+                </label>
+              ))}
             </div>
             {isOpenClawAgentEngine && (
               <div className="space-y-3 rounded-xl border px-4 py-4 dark:border-claude-darkBorder border-claude-border">
