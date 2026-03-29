@@ -13,6 +13,25 @@ loadEnvIntoProcess();
 const MEM0_BASE_URL = (process.env.MEM0_BASE_URL || 'http://localhost:8888').trim().replace(/\/$/, '');
 const MEM0_API_KEY = (process.env.MEM0_API_KEY || '').trim();
 const DRY_RUN = process.argv.includes('--dry-run');
+const SUPPORTED_LLM_PROVIDERS = new Set([
+  'openai',
+  'ollama',
+  'anthropic',
+  'azure_openai',
+  'openai_structured',
+  'azure_openai_structured',
+  'deepseek',
+  'minimax',
+  'gemini',
+  'aws_bedrock',
+  'groq',
+  'together',
+  'xai',
+  'sarvam',
+  'lmstudio',
+  'vllm',
+  'langchain',
+]);
 const SUPPORTED_EMBEDDER_PROVIDERS = new Set([
   'openai',
   'ollama',
@@ -64,6 +83,10 @@ function validatePayload(payload) {
   if (!llm || !String(llm.provider || '').trim()) {
     throw new Error('llm.provider is required');
   }
+  const llmProvider = String(llm.provider || '').trim();
+  if (!SUPPORTED_LLM_PROVIDERS.has(llmProvider)) {
+    throw new Error(`unsupported llm.provider: ${llmProvider}`);
+  }
 
   const embedder = payload.embedder && typeof payload.embedder === 'object' ? payload.embedder : null;
   if (!embedder || !String(embedder.provider || '').trim()) {
@@ -86,14 +109,13 @@ function buildPayloadFromEnv() {
   const qdrantApiKey = (process.env.QDRANT_API_KEY || '').trim();
   const qdrantCollectionName = (process.env.QDRANT_COLLECTION_NAME || 'mem0').trim();
 
-  const llmProvider = (process.env.MEM0_LLM_PROVIDER || 'minimax').trim();
+  const llmProvider = (process.env.MEM0_LLM_PROVIDER || 'openai').trim();
   const llmModel = (
     process.env.MEM0_LLM_MODEL
-    || (llmProvider === 'minimax' ? 'MiniMax-M2.7' : 'gpt-4.1-nano-2025-04-14')
+    || 'MiniMax-M2.7'
   ).trim();
   const llmApiKey = (
     process.env.MEM0_LLM_API_KEY
-    || (llmProvider === 'minimax' ? process.env.MINIMAX_API_KEY : '')
     || process.env.OPENAI_API_KEY
     || process.env.MINIMAX_API_KEY
     || ''
@@ -140,7 +162,7 @@ function buildPayloadFromEnv() {
   if (llmProvider === 'minimax' && minimaxBaseUrl) {
     llmConfig.minimax_base_url = minimaxBaseUrl;
   }
-  if (llmProvider === 'openai' && llmOpenaiBaseUrl) {
+  if ((llmProvider === 'openai' || llmProvider === 'openai_structured') && llmOpenaiBaseUrl) {
     llmConfig.openai_base_url = llmOpenaiBaseUrl;
   }
 

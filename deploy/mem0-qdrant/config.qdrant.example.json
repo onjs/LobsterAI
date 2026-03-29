@@ -9,20 +9,20 @@
     }
   },
   "llm": {
-    "provider": "minimax",
+    "provider": "openai",
     "config": {
       "model": "MiniMax-M2.7",
       "temperature": 0.2,
-      "api_key": "${MINIMAX_API_KEY}",
-      "minimax_base_url": "${MINIMAX_API_BASE}"
+      "api_key": "${OPENAI_API_KEY}",
+      "openai_base_url": "${OPENAI_BASE_URL}"
     }
   },
   "embedder": {
     "provider": "openai",
     "config": {
       "model": "${MEM0_EMBEDDER_MODEL}",
-      "api_key": "${MINIMAX_API_KEY}",
-      "openai_base_url": "${MINIMAX_API_BASE}"
+      "api_key": "${OPENAI_API_KEY}",
+      "openai_base_url": "${OPENAI_BASE_URL}"
     }
   }
 }

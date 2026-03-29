@@ -247,7 +247,7 @@
 - `deploy/mem0-qdrant/.env.example`
 - `deploy/mem0-qdrant/config.qdrant.example.json`
 - `mem0:stack:init` 可自动生成本地可编辑配置文件。
-- 模板已支持 `MINIMAX_API_KEY`，默认 LLM 走 `minimax` provider。
+- 模板默认走 OpenAI 兼容配置（`OPENAI_API_KEY + OPENAI_BASE_URL`），并保留 `MINIMAX_*` 兜底别名。
 
 4. 结论澄清：
 - mem0 需要“向量数据库后端”，但不强制只能是 qdrant；
