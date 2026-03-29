@@ -782,6 +782,15 @@ const resolveCoworkAgentEngine = (): CoworkAgentEngine => {
   return configured === 'openclaw' ? 'openclaw' : 'yd_cowork';
 };
 
+const isOpenClawGatewayLive = (): boolean => {
+  const phase = getOpenClawEngineManager().getStatus().phase;
+  return phase === 'starting' || phase === 'running';
+};
+
+const shouldSyncOpenClawForBackgroundChanges = (): boolean => {
+  return resolveCoworkAgentEngine() === 'openclaw' || isOpenClawGatewayLive();
+};
+
 const getOpenClawConfigSync = (): OpenClawConfigSync => {
   if (!openClawConfigSync) {
     openClawConfigSync = new OpenClawConfigSync({
@@ -1290,17 +1299,21 @@ const refreshMcpBridge = (): Promise<{ tools: number; error?: string }> => {
       const toolCount = bridgeConfig?.tools.length ?? 0;
       console.log(`[McpBridge] refresh: ${toolCount} tools discovered`);
 
-      // 3. Sync openclaw.json and restart gateway if running
-      const syncResult = await syncOpenClawConfig({
-        reason: 'mcp-server-changed',
-        restartGatewayIfRunning: true,
-      });
-      if (!syncResult.success) {
-        console.error('[McpBridge] refresh: config sync failed:', syncResult.error);
-        return { tools: toolCount, error: syncResult.error };
+      // 3. Sync openclaw.json only when OpenClaw is the active engine or
+      // when a gateway is already running.
+      if (shouldSyncOpenClawForBackgroundChanges()) {
+        const syncResult = await syncOpenClawConfig({
+          reason: 'mcp-server-changed',
+          restartGatewayIfRunning: true,
+        });
+        if (!syncResult.success) {
+          console.error('[McpBridge] refresh: config sync failed:', syncResult.error);
+          return { tools: toolCount, error: syncResult.error };
+        }
+        console.log(`[McpBridge] refresh complete: ${toolCount} tools, gateway restarted=${syncResult.changed}`);
+      } else {
+        console.log('[McpBridge] refresh complete without OpenClaw sync (engine not active)');
       }
-
-      console.log(`[McpBridge] refresh complete: ${toolCount} tools, gateway restarted=${syncResult.changed}`);
       return { tools: toolCount };
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
@@ -1752,12 +1765,14 @@ if (!gotTheLock) {
     getStore().set(key, value);
     if (key === 'app_config') {
       refreshEndpointsTestMode(getStore());
-      const syncResult = await syncOpenClawConfig({
-        reason: 'app-config-change',
-        restartGatewayIfRunning: false,
-      });
-      if (!syncResult.success) {
-        console.error('[OpenClaw] Failed to sync config after app_config update:', syncResult.error);
+      if (shouldSyncOpenClawForBackgroundChanges()) {
+        const syncResult = await syncOpenClawConfig({
+          reason: 'app-config-change',
+          restartGatewayIfRunning: false,
+        });
+        if (!syncResult.success) {
+          console.error('[OpenClaw] Failed to sync config after app_config update:', syncResult.error);
+        }
       }
     }
   });
@@ -2804,7 +2819,9 @@ if (!gotTheLock) {
       const agent = getAgentManager().createAgent(request);
       // Sync config so workspace files (SOUL.md, IDENTITY.md) are written
       // before OpenClaw scaffolds default templates for the new agent.
-      syncOpenClawConfig({ reason: 'agent-created' }).catch(() => {});
+      if (shouldSyncOpenClawForBackgroundChanges()) {
+        syncOpenClawConfig({ reason: 'agent-created' }).catch(() => {});
+      }
       return { success: true, agent };
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : 'Failed to create agent' };
@@ -2814,7 +2831,9 @@ if (!gotTheLock) {
   ipcMain.handle('agents:update', async (_event, id: string, updates: import('./coworkStore').UpdateAgentRequest) => {
     try {
       const agent = getAgentManager().updateAgent(id, updates);
-      syncOpenClawConfig({ reason: 'agent-updated' }).catch(() => {});
+      if (shouldSyncOpenClawForBackgroundChanges()) {
+        syncOpenClawConfig({ reason: 'agent-updated' }).catch(() => {});
+      }
       return { success: true, agent };
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : 'Failed to update agent' };
@@ -2849,7 +2868,9 @@ if (!gotTheLock) {
         // IM store may not be initialised yet; safe to ignore.
       }
 
-      syncOpenClawConfig({ reason: 'agent-deleted' }).catch(() => {});
+      if (shouldSyncOpenClawForBackgroundChanges()) {
+        syncOpenClawConfig({ reason: 'agent-deleted' }).catch(() => {});
+      }
       return { success: true, deleted: result };
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : 'Failed to delete agent' };
@@ -2868,7 +2889,9 @@ if (!gotTheLock) {
   ipcMain.handle('agents:addPreset', async (_event, presetId: string) => {
     try {
       const agent = getAgentManager().addPresetAgent(presetId);
-      syncOpenClawConfig({ reason: 'agent-preset-added' }).catch(() => {});
+      if (shouldSyncOpenClawForBackgroundChanges()) {
+        syncOpenClawConfig({ reason: 'agent-preset-added' }).catch(() => {});
+      }
       return { success: true, agent };
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : 'Failed to add preset agent' };
@@ -3219,19 +3242,23 @@ if (!gotTheLock) {
       };
       const previousConfig = getCoworkStore().getConfig();
       const previousWorkingDir = previousConfig.workingDirectory;
+      const nextAgentEngine = normalizedAgentEngine ?? previousConfig.agentEngine;
+      const shouldManageOpenClawWorkspace = nextAgentEngine === 'openclaw';
       getCoworkStore().setConfig(normalizedConfig);
       if (normalizedConfig.workingDirectory !== undefined && normalizedConfig.workingDirectory !== previousWorkingDir) {
         getSkillManager().handleWorkingDirectoryChange();
-        // Sync MEMORY.md to new workspace directory
-        const syncResult = syncMemoryFileOnWorkspaceChange(previousWorkingDir, normalizedConfig.workingDirectory);
-        if (syncResult.error) {
-          console.warn('[OpenClaw Memory] Workspace sync failed:', syncResult.error);
-        }
-        // Ensure IDENTITY.md has default content in the new workspace
-        try {
-          ensureDefaultIdentity(normalizedConfig.workingDirectory);
-        } catch (err) {
-          console.warn('[OpenClaw] ensureDefaultIdentity failed (non-fatal):', err);
+        if (shouldManageOpenClawWorkspace) {
+          // Sync MEMORY.md to new workspace directory
+          const syncResult = syncMemoryFileOnWorkspaceChange(previousWorkingDir, normalizedConfig.workingDirectory);
+          if (syncResult.error) {
+            console.warn('[OpenClaw Memory] Workspace sync failed:', syncResult.error);
+          }
+          // Ensure IDENTITY.md has default content in the new workspace
+          try {
+            ensureDefaultIdentity(normalizedConfig.workingDirectory);
+          } catch (err) {
+            console.warn('[OpenClaw] ensureDefaultIdentity failed (non-fatal):', err);
+          }
         }
       }
 
@@ -3245,7 +3272,9 @@ if (!gotTheLock) {
       const shouldSyncOpenClawConfig = normalizedExecutionMode !== undefined
         || normalizedAgentEngine !== undefined
         || (normalizedConfig.workingDirectory !== undefined && normalizedConfig.workingDirectory !== previousWorkingDir);
-      if (shouldSyncOpenClawConfig) {
+      const shouldAttemptOpenClawSync = shouldSyncOpenClawConfig
+        && (nextAgentEngine === 'openclaw' || isOpenClawGatewayLive());
+      if (shouldAttemptOpenClawSync) {
         const syncResult = await syncOpenClawConfig({
           reason: 'cowork-config-change',
           restartGatewayIfRunning: true,
@@ -4669,11 +4698,13 @@ if (!gotTheLock) {
               saveAuthTokens(body.data.accessToken, body.data.refreshToken || tokens.refreshToken);
               console.log(`[Auth] token refresh succeeded (reason: ${reason})`);
               resolvedToken = body.data.accessToken;
-              // Sync the fresh token to the OpenClaw gateway so it doesn't
-              // continue using the expired token from its spawn-time env vars.
-              syncOpenClawConfig({ reason: `token-refresh:${reason}`, restartGatewayIfRunning: true }).catch((err) => {
-                console.warn('[Auth] post-refresh OpenClaw config sync failed:', err);
-              });
+              if (shouldSyncOpenClawForBackgroundChanges()) {
+                // Sync the fresh token to the OpenClaw gateway so it doesn't
+                // continue using the expired token from its spawn-time env vars.
+                syncOpenClawConfig({ reason: `token-refresh:${reason}`, restartGatewayIfRunning: true }).catch((err) => {
+                  console.warn('[Auth] post-refresh OpenClaw config sync failed:', err);
+                });
+              }
             }
           }
         } catch (err) {
@@ -4709,14 +4740,14 @@ if (!gotTheLock) {
     bindCoworkRuntimeForwarder();
     bindOpenClawStatusForwarder();
 
-    const startupSync = await syncOpenClawConfig({
-      reason: 'startup',
-      restartGatewayIfRunning: false,
-    });
-    if (!startupSync.success) {
-      console.error('[OpenClaw] Startup config sync failed:', startupSync.error);
-    }
     if (resolveCoworkAgentEngine() === 'openclaw') {
+      const startupSync = await syncOpenClawConfig({
+        reason: 'startup',
+        restartGatewayIfRunning: false,
+      });
+      if (!startupSync.success) {
+        console.error('[OpenClaw] Startup config sync failed:', startupSync.error);
+      }
       void ensureOpenClawRunningForCowork().then(() => {
         // Start cron polling once the gateway is confirmed running.
         try {
@@ -4736,9 +4767,11 @@ if (!gotTheLock) {
     // When skills change (install/enable/disable/delete), re-sync AGENTS.md
     // so OpenClaw's IM channel agents pick up the latest skill list.
     manager.onSkillsChanged(() => {
-      syncOpenClawConfig({ reason: 'skills-changed' }).catch((error) => {
-        console.warn('[Main] Failed to sync OpenClaw config after skills change:', error);
-      });
+      if (shouldSyncOpenClawForBackgroundChanges()) {
+        syncOpenClawConfig({ reason: 'skills-changed' }).catch((error) => {
+          console.warn('[Main] Failed to sync OpenClaw config after skills change:', error);
+        });
+      }
     });
 
     // Non-critical: sync bundled skills to user data.
