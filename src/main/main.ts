@@ -4485,6 +4485,10 @@ if (!gotTheLock) {
 
       // Start cron polling after the window is ready.
       (async () => {
+        if (resolveCoworkAgentEngine() !== 'openclaw') {
+          console.log('[Main] Skip OpenClaw cron bootstrap on startup because agentEngine is yd_cowork');
+          return;
+        }
         try {
           getCronJobService().startPolling();
         } catch (err) {

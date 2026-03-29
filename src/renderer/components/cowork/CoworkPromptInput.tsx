@@ -19,6 +19,7 @@ import { getCompactFolderName } from '../../utils/path';
 // CoworkAttachment is aliased from the Redux-persisted DraftAttachment type
 // so that attachment state survives view switches (cowork ↔ skills, etc.)
 type CoworkAttachment = DraftAttachment;
+const EMPTY_ATTACHMENTS: CoworkAttachment[] = [];
 
 const INPUT_FILE_LABEL = '输入文件';
 
@@ -112,7 +113,7 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     const dispatch = useDispatch();
     const draftKey = sessionId || '__home__';
     const draftPrompt = useSelector((state: RootState) => state.cowork.draftPrompts[draftKey] || '');
-    const attachments = useSelector((state: RootState) => state.cowork.draftAttachments[draftKey] || []) as CoworkAttachment[];
+    const attachments = useSelector((state: RootState) => state.cowork.draftAttachments[draftKey] ?? EMPTY_ATTACHMENTS) as CoworkAttachment[];
     const [value, setValue] = useState(draftPrompt);
     const [showFolderMenu, setShowFolderMenu] = useState(false);
     const [showFolderRequiredWarning, setShowFolderRequiredWarning] = useState(false);

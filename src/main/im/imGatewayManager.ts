@@ -846,6 +846,7 @@ export class IMGatewayManager extends EventEmitter {
    */
   async startAllEnabled(): Promise<void> {
     const config = this.getConfig();
+    const shouldAutoStartOpenClawPlatforms = this.isOpenClawEngine ? this.isOpenClawEngine() : true;
 
     // Ensure chat handler is ready (called once instead of per-platform)
     this.updateChatHandler();
@@ -890,6 +891,13 @@ export class IMGatewayManager extends EventEmitter {
     }
     if (config.nim?.enabled && config.nim.appKey && config.nim.account && config.nim.token) {
       openClawPlatformsToStart.push('nim');
+    }
+
+    if (openClawPlatformsToStart.length > 0 && !shouldAutoStartOpenClawPlatforms) {
+      console.log(
+        `[IMGatewayManager] Skipping OpenClaw platform auto-start because agentEngine is not openclaw: ${openClawPlatformsToStart.join(', ')}`
+      );
+      return;
     }
 
     if (openClawPlatformsToStart.length > 0) {

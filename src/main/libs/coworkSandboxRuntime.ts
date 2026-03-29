@@ -119,8 +119,12 @@ function getRuntimeBinaryName(): string {
   return isWindows ? 'qemu-system-x86_64.exe' : 'qemu-system-x86_64';
 }
 
+export function getCoworkSandboxBaseDir(): string {
+  return path.join(app.getPath('home'), 'lobsterai', 'sandbox');
+}
+
 function getSandboxPaths() {
-  const baseDir = path.join(app.getPath('userData'), 'cowork', 'sandbox');
+  const baseDir = getCoworkSandboxBaseDir();
   const runtimeDir = path.join(baseDir, 'runtime', `${SANDBOX_RUNTIME_VERSION}`);
   const imageDir = path.join(baseDir, 'images', `${SANDBOX_IMAGE_VERSION}`);
   const runtimeBinary = path.join(runtimeDir, getRuntimeBinaryName());

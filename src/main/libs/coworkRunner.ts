@@ -3670,7 +3670,9 @@ export class CoworkRunner extends EventEmitter {
       activeSession.executionMode === 'sandbox'
       && activeSession.sandboxProcess
       && !activeSession.sandboxProcess.killed
-      && activeSession.ipcBridge
+      // macOS/Linux use 9p shared folders and do not require virtio-serial bridge.
+      // Windows requires ipcBridge for request/response transport.
+      && (process.platform !== 'win32' || Boolean(activeSession.ipcBridge))
     );
     if (outsideAttachments.length > 0 && (executionMode !== 'local' || hasActiveSandboxVm)) {
       const detail = outsideAttachments.join(', ');

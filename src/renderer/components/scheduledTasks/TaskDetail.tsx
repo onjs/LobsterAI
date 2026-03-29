@@ -18,6 +18,8 @@ import {
 import PencilIcon from '../icons/PencilIcon';
 import TrashIcon from '../icons/TrashIcon';
 
+const EMPTY_RUNS = [] as const;
+
 interface TaskDetailProps {
   task: ScheduledTask;
   onRequestDelete: (taskId: string, taskName: string) => void;
@@ -25,7 +27,7 @@ interface TaskDetailProps {
 
 const TaskDetail: React.FC<TaskDetailProps> = ({ task, onRequestDelete }) => {
   const dispatch = useDispatch();
-  const runs = useSelector((state: RootState) => state.scheduledTask.runs[task.id] ?? []);
+  const runs = useSelector((state: RootState) => state.scheduledTask.runs[task.id] ?? EMPTY_RUNS);
 
   useEffect(() => {
     void scheduledTaskService.loadRuns(task.id);

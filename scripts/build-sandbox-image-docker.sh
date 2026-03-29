@@ -67,9 +67,11 @@ if [ -n "${CONTAINER_PLATFORM}" ]; then
 fi
 
 echo "Using base image: ${BASE_IMAGE}"
-"${CONTAINER_TOOL}" build "${BUILD_PLATFORM_ARGS[@]}" "${BUILD_ARG_BASE_IMAGE[@]}" -f "${DOCKERFILE}" -t "${IMAGE_NAME}" "${BUILD_CONTEXT}"
+# Bash 3.2 (default on macOS) treats empty-array expansion as unbound with `set -u`.
+# Use the `${arr+"${arr[@]}"}` pattern for compatibility.
+"${CONTAINER_TOOL}" build ${BUILD_PLATFORM_ARGS+"${BUILD_PLATFORM_ARGS[@]}"} "${BUILD_ARG_BASE_IMAGE[@]}" -f "${DOCKERFILE}" -t "${IMAGE_NAME}" "${BUILD_CONTEXT}"
 
-"${CONTAINER_TOOL}" run --rm --privileged "${RUN_PLATFORM_ARGS[@]}" ${CONTAINER_OPTS} ${DEV_MOUNT} \
+"${CONTAINER_TOOL}" run --rm --privileged ${RUN_PLATFORM_ARGS+"${RUN_PLATFORM_ARGS[@]}"} ${CONTAINER_OPTS} ${DEV_MOUNT} \
   -e ARCHS="${ARCHS:-}" \
   -e ALPINE_MIRROR="${ALPINE_MIRROR:-}" \
   -e ALPINE_BRANCH="${ALPINE_BRANCH:-}" \

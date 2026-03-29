@@ -1,4 +1,3 @@
-import { app } from 'electron';
 import { spawn, type ChildProcessByStdio } from 'child_process';
 import fs from 'fs';
 import net from 'net';
@@ -6,7 +5,7 @@ import path from 'path';
 import type { Readable } from 'stream';
 import { StringDecoder } from 'string_decoder';
 import { v4 as uuidv4 } from 'uuid';
-import type { SandboxRuntimeInfo } from './coworkSandboxRuntime';
+import { getCoworkSandboxBaseDir, type SandboxRuntimeInfo } from './coworkSandboxRuntime';
 import { coworkLog } from './coworkLogger';
 
 export type CoworkSandboxPaths = {
@@ -37,7 +36,7 @@ export type SandboxExtraMount = {
 };
 
 export function ensureCoworkSandboxDirs(sessionId: string): CoworkSandboxPaths {
-  const baseDir = path.join(app.getPath('userData'), 'cowork', 'sandbox');
+  const baseDir = getCoworkSandboxBaseDir();
   const ipcDir = path.join(baseDir, 'ipc', sessionId);
   const requestsDir = path.join(ipcDir, 'requests');
   const responsesDir = path.join(ipcDir, 'responses');
