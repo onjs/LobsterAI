@@ -50,7 +50,7 @@ npm run mem0:health
 - `mem0:configure:qdrant` 会优先读取 `deploy/mem0-qdrant/config.qdrant.json`。
 - 配置 JSON 支持 `${OPENAI_API_KEY}` 这类环境变量占位符。
 - 当前模板默认走 OpenAI 兼容配置（`OPENAI_API_KEY + OPENAI_BASE_URL`）。
-- `MINIMAX_API_KEY / MINIMAX_API_BASE` 仅作为可选兜底别名。
+- `MINIMAX_API_KEY / MINIMAX_API_BASE` 可作为兜底别名，脚本会自动映射到 `OPENAI_*`。
 - 若 mem0 API 开启了鉴权，请在 `.env` 里设置 `MEM0_API_KEY`。
 
 ## 3. LobsterAI 配置建议

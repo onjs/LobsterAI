@@ -9,6 +9,19 @@ const MEM0_ENV_EXAMPLE_FILE = path.join(MEM0_DEPLOY_DIR, '.env.example');
 const MEM0_CONFIG_EXAMPLE_FILE = path.join(MEM0_DEPLOY_DIR, 'config.qdrant.example.json');
 const MEM0_CONFIG_FILE = path.join(MEM0_DEPLOY_DIR, 'config.qdrant.json');
 
+function hasValue(value) {
+  return typeof value === 'string' && value.trim() !== '';
+}
+
+function applyOpenAiCompatFallbacks() {
+  if (!hasValue(process.env.OPENAI_API_KEY) && hasValue(process.env.MINIMAX_API_KEY)) {
+    process.env.OPENAI_API_KEY = process.env.MINIMAX_API_KEY.trim();
+  }
+  if (!hasValue(process.env.OPENAI_BASE_URL) && hasValue(process.env.MINIMAX_API_BASE)) {
+    process.env.OPENAI_BASE_URL = process.env.MINIMAX_API_BASE.trim();
+  }
+}
+
 function unquote(value) {
   const trimmed = value.trim();
   if (
@@ -37,6 +50,7 @@ function parseEnvFile(content) {
 
 function loadEnvIntoProcess(filePath = MEM0_ENV_FILE) {
   if (!fs.existsSync(filePath)) {
+    applyOpenAiCompatFallbacks();
     return false;
   }
   const content = fs.readFileSync(filePath, 'utf8');
@@ -46,6 +60,7 @@ function loadEnvIntoProcess(filePath = MEM0_ENV_FILE) {
       process.env[key] = value;
     }
   }
+  applyOpenAiCompatFallbacks();
   return true;
 }
 
