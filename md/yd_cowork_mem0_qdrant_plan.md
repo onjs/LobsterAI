@@ -197,5 +197,5 @@
 - 通过：`npm run test -- MemoryProviderRouter openclawWorkspace openclawConfigSync`
 
 5. 当前边界
-- 本轮是“架构骨架 + 路由接管”，mem0 远端 CRUD/检索还未启用到生产路径。
-- 下一步将按 Phase 1 计划补齐 mem0 HTTP 适配与 sql.js 主写 + mem0 异步同步链路。
+- 本轮已完成 mem0 OSS REST 适配与异步同步队列（`sql.js` 主写、mem0 从写）。
+- 仍待补齐：语义检索主路径（将 mem0 搜索结果真正接入 `conversation_search` 混排）。

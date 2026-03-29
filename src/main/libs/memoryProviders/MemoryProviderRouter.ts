@@ -24,6 +24,7 @@ export class MemoryProviderRouter implements MemoryProvider {
   private readonly mem0Provider: Mem0MemoryProvider;
   private readonly logger: LoggerLike;
   private mem0WarningShown = false;
+  private mem0SyncQueue: Promise<void> = Promise.resolve();
 
   constructor(deps: {
     store: CoworkStore;
@@ -47,6 +48,31 @@ export class MemoryProviderRouter implements MemoryProvider {
     this.logger.warn(`[MemoryProviderRouter] mem0 path skipped: ${reason}. Falling back to sqljs.`);
   }
 
+  private scheduleMem0Sync(context?: MemoryProviderContext): void {
+    if (!this.shouldUseMem0()) return;
+    if (!this.mem0Provider.isConfigured()) {
+      this.emitMem0SkippedWarningOnce('mem0 is not configured');
+      return;
+    }
+
+    this.mem0SyncQueue = this.mem0SyncQueue
+      .then(async () => {
+        const localMemories = await this.sqljsProvider.listUserMemories({
+          status: 'created',
+          includeDeleted: false,
+          limit: 200,
+          offset: 0,
+        }, context);
+        await this.mem0Provider.syncFromLocalMemories(localMemories, context);
+        this.logger.debug(`[MemoryProviderRouter] synced ${localMemories.length} memories to mem0`);
+      })
+      .catch((error) => {
+        this.logger.warn(
+          `[MemoryProviderRouter] mem0 sync failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
+  }
+
   async listUserMemories(options: MemoryListOptions, context?: MemoryProviderContext): Promise<CoworkUserMemory[]> {
     if (this.shouldUseMem0() && !this.mem0Provider.isConfigured()) {
       this.emitMem0SkippedWarningOnce('mem0 is not configured');
@@ -55,33 +81,35 @@ export class MemoryProviderRouter implements MemoryProvider {
   }
 
   async createUserMemory(input: MemoryCreateInput, context?: MemoryProviderContext): Promise<CoworkUserMemory> {
-    if (this.shouldUseMem0() && !this.mem0Provider.isConfigured()) {
-      this.emitMem0SkippedWarningOnce('mem0 create is not available');
-    }
-    return this.sqljsProvider.createUserMemory(input, context);
+    const created = await this.sqljsProvider.createUserMemory(input, context);
+    this.scheduleMem0Sync(context);
+    return created;
   }
 
   async updateUserMemory(input: MemoryUpdateInput, context?: MemoryProviderContext): Promise<CoworkUserMemory | null> {
-    if (this.shouldUseMem0() && !this.mem0Provider.isConfigured()) {
-      this.emitMem0SkippedWarningOnce('mem0 update is not available');
+    const updated = await this.sqljsProvider.updateUserMemory(input, context);
+    if (updated) {
+      this.scheduleMem0Sync(context);
     }
-    return this.sqljsProvider.updateUserMemory(input, context);
+    return updated;
   }
 
   async deleteUserMemory(id: string, context?: MemoryProviderContext): Promise<boolean> {
-    if (this.shouldUseMem0() && !this.mem0Provider.isConfigured()) {
-      this.emitMem0SkippedWarningOnce('mem0 delete is not available');
+    const deleted = await this.sqljsProvider.deleteUserMemory(id, context);
+    if (deleted) {
+      this.scheduleMem0Sync(context);
     }
-    return this.sqljsProvider.deleteUserMemory(id, context);
+    return deleted;
   }
 
   async applyTurnMemoryUpdates(
     options: ApplyTurnMemoryUpdatesOptions,
     context?: MemoryProviderContext,
   ): Promise<ApplyTurnMemoryUpdatesResult> {
-    if (this.shouldUseMem0() && !this.mem0Provider.isConfigured()) {
-      this.emitMem0SkippedWarningOnce('mem0 turn update is not available');
+    const result = await this.sqljsProvider.applyTurnMemoryUpdates(options, context);
+    if (result.created > 0 || result.updated > 0 || result.deleted > 0) {
+      this.scheduleMem0Sync(context);
     }
-    return this.sqljsProvider.applyTurnMemoryUpdates(options, context);
+    return result;
   }
 }
