@@ -1,20 +1,18 @@
 #!/usr/bin/env node
 
+const fs = require('fs');
+const path = require('path');
+const {
+  MEM0_CONFIG_FILE,
+  loadEnvIntoProcess,
+  interpolateEnvPlaceholders,
+} = require('./mem0-env-utils.cjs');
+
+loadEnvIntoProcess();
+
 const MEM0_BASE_URL = (process.env.MEM0_BASE_URL || 'http://localhost:8888').trim().replace(/\/$/, '');
 const MEM0_API_KEY = (process.env.MEM0_API_KEY || '').trim();
-
-const QDRANT_HOST = (process.env.QDRANT_HOST || 'qdrant').trim();
-const QDRANT_PORT = Number(process.env.QDRANT_PORT || 6333);
-const QDRANT_API_KEY = (process.env.QDRANT_API_KEY || '').trim();
-const QDRANT_COLLECTION_NAME = (process.env.QDRANT_COLLECTION_NAME || 'mem0').trim();
-
-const LLM_PROVIDER = (process.env.MEM0_LLM_PROVIDER || 'openai').trim();
-const LLM_MODEL = (process.env.MEM0_LLM_MODEL || 'gpt-4.1-nano-2025-04-14').trim();
-const LLM_API_KEY = (process.env.MEM0_LLM_API_KEY || process.env.OPENAI_API_KEY || '').trim();
-
-const EMBEDDER_PROVIDER = (process.env.MEM0_EMBEDDER_PROVIDER || 'openai').trim();
-const EMBEDDER_MODEL = (process.env.MEM0_EMBEDDER_MODEL || 'text-embedding-3-small').trim();
-const EMBEDDER_API_KEY = (process.env.MEM0_EMBEDDER_API_KEY || process.env.OPENAI_API_KEY || '').trim();
+const DRY_RUN = process.argv.includes('--dry-run');
 
 function buildHeaders() {
   const headers = { 'Content-Type': 'application/json' };
@@ -24,29 +22,83 @@ function buildHeaders() {
   return headers;
 }
 
-function buildConfigPayload() {
+function validatePayload(payload) {
+  if (!payload || typeof payload !== 'object') {
+    throw new Error('mem0 configure payload must be an object');
+  }
+  const vectorStore = payload.vector_store;
+  if (!vectorStore || typeof vectorStore !== 'object') {
+    throw new Error('vector_store is required');
+  }
+  const provider = String(vectorStore.provider || '').trim();
+  if (!provider) {
+    throw new Error('vector_store.provider is required');
+  }
+
+  if (provider === 'qdrant') {
+    const config = vectorStore.config && typeof vectorStore.config === 'object'
+      ? vectorStore.config
+      : {};
+    if (!String(config.host || '').trim()) {
+      throw new Error('qdrant config host is required');
+    }
+    if (!Number.isFinite(Number(config.port))) {
+      throw new Error('qdrant config port must be a finite number');
+    }
+  }
+
+  const llm = payload.llm && typeof payload.llm === 'object' ? payload.llm : null;
+  if (!llm || !String(llm.provider || '').trim()) {
+    throw new Error('llm.provider is required');
+  }
+
+  const embedder = payload.embedder && typeof payload.embedder === 'object' ? payload.embedder : null;
+  if (!embedder || !String(embedder.provider || '').trim()) {
+    throw new Error('embedder.provider is required');
+  }
+}
+
+function readJsonFile(filePath) {
+  const raw = fs.readFileSync(filePath, 'utf8');
+  return JSON.parse(raw);
+}
+
+function buildPayloadFromEnv() {
+  const qdrantHost = (process.env.QDRANT_HOST || 'qdrant').trim();
+  const qdrantPort = Number(process.env.QDRANT_PORT || 6333);
+  const qdrantApiKey = (process.env.QDRANT_API_KEY || '').trim();
+  const qdrantCollectionName = (process.env.QDRANT_COLLECTION_NAME || 'mem0').trim();
+
+  const llmProvider = (process.env.MEM0_LLM_PROVIDER || 'openai').trim();
+  const llmModel = (process.env.MEM0_LLM_MODEL || 'gpt-4.1-nano-2025-04-14').trim();
+  const llmApiKey = (process.env.MEM0_LLM_API_KEY || process.env.OPENAI_API_KEY || '').trim();
+
+  const embedderProvider = (process.env.MEM0_EMBEDDER_PROVIDER || 'openai').trim();
+  const embedderModel = (process.env.MEM0_EMBEDDER_MODEL || 'text-embedding-3-small').trim();
+  const embedderApiKey = (process.env.MEM0_EMBEDDER_API_KEY || process.env.OPENAI_API_KEY || '').trim();
+
   const vectorConfig = {
-    host: QDRANT_HOST,
-    port: QDRANT_PORT,
-    collection_name: QDRANT_COLLECTION_NAME,
+    host: qdrantHost,
+    port: qdrantPort,
+    collection_name: qdrantCollectionName,
   };
-  if (QDRANT_API_KEY) {
-    vectorConfig.api_key = QDRANT_API_KEY;
+  if (qdrantApiKey) {
+    vectorConfig.api_key = qdrantApiKey;
   }
 
   const llmConfig = {
-    model: LLM_MODEL,
+    model: llmModel,
     temperature: 0.2,
   };
-  if (LLM_API_KEY) {
-    llmConfig.api_key = LLM_API_KEY;
+  if (llmApiKey) {
+    llmConfig.api_key = llmApiKey;
   }
 
   const embedderConfig = {
-    model: EMBEDDER_MODEL,
+    model: embedderModel,
   };
-  if (EMBEDDER_API_KEY) {
-    embedderConfig.api_key = EMBEDDER_API_KEY;
+  if (embedderApiKey) {
+    embedderConfig.api_key = embedderApiKey;
   }
 
   return {
@@ -56,20 +108,37 @@ function buildConfigPayload() {
       config: vectorConfig,
     },
     llm: {
-      provider: LLM_PROVIDER,
+      provider: llmProvider,
       config: llmConfig,
     },
     embedder: {
-      provider: EMBEDDER_PROVIDER,
+      provider: embedderProvider,
       config: embedderConfig,
     },
   };
 }
 
-async function main() {
-  const payload = buildConfigPayload();
-  const url = `${MEM0_BASE_URL}/configure`;
+function resolvePayload() {
+  const envFile = (process.env.MEM0_CONFIG_FILE || '').trim();
+  const configPath = envFile ? path.resolve(process.cwd(), envFile) : MEM0_CONFIG_FILE;
+  if (fs.existsSync(configPath)) {
+    const parsed = readJsonFile(configPath);
+    return interpolateEnvPlaceholders(parsed);
+  }
+  return buildPayloadFromEnv();
+}
 
+async function main() {
+  const payload = resolvePayload();
+  validatePayload(payload);
+
+  if (DRY_RUN) {
+    console.log('[mem0-configure] dry-run payload:');
+    console.log(JSON.stringify(payload, null, 2));
+    return;
+  }
+
+  const url = `${MEM0_BASE_URL}/configure`;
   const response = await fetch(url, {
     method: 'POST',
     headers: buildHeaders(),
@@ -81,7 +150,7 @@ async function main() {
     throw new Error(`mem0 configure failed (${response.status}): ${text.slice(0, 500)}`);
   }
 
-  console.log('[mem0-configure] configured mem0 vector_store=qdrant successfully');
+  console.log('[mem0-configure] configured mem0 successfully');
   if (text.trim()) {
     console.log(`[mem0-configure] response: ${text.trim()}`);
   }

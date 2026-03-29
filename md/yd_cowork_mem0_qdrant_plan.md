@@ -235,11 +235,19 @@
 - `mem0 REST API + postgres(pgvector) + neo4j + qdrant`。
 
 2. 已新增运维脚本：
+- `npm run mem0:stack:init`
 - `npm run mem0:stack:up`
 - `npm run mem0:stack:down`
+- `npm run mem0:stack:ps`
 - `npm run mem0:health`
 - `npm run mem0:configure:qdrant`
+- `npm run mem0:configure:qdrant:dry`
 
-3. 结论澄清：
+3. 已完善配置文件模板：
+- `deploy/mem0-qdrant/.env.example`
+- `deploy/mem0-qdrant/config.qdrant.example.json`
+- `mem0:stack:init` 可自动生成本地可编辑配置文件。
+
+4. 结论澄清：
 - mem0 需要“向量数据库后端”，但不强制只能是 qdrant；
 - 当前方案以“可切换 qdrant”作为推荐路径，sql.js 仍是主流程兜底。

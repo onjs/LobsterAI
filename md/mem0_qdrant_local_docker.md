@@ -8,34 +8,47 @@
 
 ## 2. 启动步骤
 
-1. 准备环境变量（建议）：
+1. 初始化本地配置文件：
 
 ```bash
-export OPENAI_API_KEY=你的key
-# 可选：export ADMIN_API_KEY=你的mem0管理key
+npm run mem0:stack:init
 ```
 
-2. 启动服务栈：
+会生成：
+- `deploy/mem0-qdrant/.env`
+- `deploy/mem0-qdrant/config.qdrant.json`
+
+2. 编辑环境变量（建议）：
+
+```bash
+vi deploy/mem0-qdrant/.env
+# 至少填 OPENAI_API_KEY
+```
+
+3. 启动服务栈：
 
 ```bash
 npm run mem0:stack:up
 ```
 
-3. 健康检查：
+4. 查看状态与健康检查：
 
 ```bash
+npm run mem0:stack:ps
 npm run mem0:health
 ```
 
-4. 将 mem0 切换到 qdrant 向量后端：
+5. 预览并应用 qdrant 配置：
 
 ```bash
-QDRANT_HOST=qdrant npm run mem0:configure:qdrant
+npm run mem0:configure:qdrant:dry
+npm run mem0:configure:qdrant
 ```
 
 说明：
-- `QDRANT_HOST=qdrant` 使用容器网络服务名（当 mem0 与 qdrant 在同一 compose 网络）。
-- 若 mem0 API 开启了鉴权，请额外传入 `MEM0_API_KEY=...`。
+- `mem0:configure:qdrant` 会优先读取 `deploy/mem0-qdrant/config.qdrant.json`。
+- 配置 JSON 支持 `${OPENAI_API_KEY}` 这类环境变量占位符。
+- 若 mem0 API 开启了鉴权，请在 `.env` 里设置 `MEM0_API_KEY`。
 
 ## 3. LobsterAI 配置建议
 
