@@ -228,3 +228,18 @@
 - 通过：`npm run compile:electron`
 - 通过：`npm run build`
 - 通过：`npm test`
+
+## 14. 部署补充（2026-03-29）
+
+1. 已新增仓库内本地部署栈（`deploy/mem0-qdrant/docker-compose.yaml`）：
+- `mem0 REST API + postgres(pgvector) + neo4j + qdrant`。
+
+2. 已新增运维脚本：
+- `npm run mem0:stack:up`
+- `npm run mem0:stack:down`
+- `npm run mem0:health`
+- `npm run mem0:configure:qdrant`
+
+3. 结论澄清：
+- mem0 需要“向量数据库后端”，但不强制只能是 qdrant；
+- 当前方案以“可切换 qdrant”作为推荐路径，sql.js 仍是主流程兜底。
