@@ -85,4 +85,42 @@ describe('Mem0MemoryProvider', () => {
     }
     expect(provider.isNotFoundError(caught)).toBe(true);
   });
+
+  test('query list applies score threshold and maps local id from metadata', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({
+        results: [
+          {
+            id: 'remote-low',
+            memory: 'low relevance memory',
+            score: 0.2,
+            metadata: { local_memory_id: 'local-low' },
+          },
+          {
+            id: 'remote-high',
+            memory: 'high relevance memory',
+            score: 0.9,
+            metadata: { local_memory_id: 'local-high' },
+          },
+        ],
+      }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const provider = new Mem0MemoryProvider(() => buildConfig({
+      mem0MinScore: 0.45,
+      mem0TopK: 8,
+    }));
+
+    const result = await provider.listUserMemories({ query: 'relevance' }, { workingDirectory: '/tmp/project-a' });
+    expect(result).toHaveLength(1);
+    expect(result[0]?.id).toBe('local-high');
+    expect(result[0]?.text).toBe('high relevance memory');
+
+    const [_url, options] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(String(options.body));
+    expect(body.limit).toBe(8);
+  });
 });

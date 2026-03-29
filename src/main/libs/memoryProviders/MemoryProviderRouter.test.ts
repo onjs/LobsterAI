@@ -1,4 +1,4 @@
-import { describe, expect, test, vi } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 import type { CoworkConfig, CoworkStore } from '../../coworkStore';
 import { MemoryProviderRouter } from './MemoryProviderRouter';
 
@@ -58,6 +58,10 @@ const buildStoreMock = (): CoworkStore => {
     })),
   } as unknown as CoworkStore;
 };
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe('MemoryProviderRouter', () => {
   test('uses sqljs provider for memory list by default', async () => {
@@ -119,5 +123,97 @@ describe('MemoryProviderRouter', () => {
       provider: 'mem0',
       remoteId: 'remote-memory-1',
     });
+  });
+
+  test('uses mem0 semantic query and maps remote result back to local memory', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({
+        results: [
+          {
+            id: 'remote-memory-1',
+            memory: 'I prefer concise responses.',
+            metadata: { local_memory_id: 'm1' },
+            score: 0.93,
+          },
+        ],
+      }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const store = buildStoreMock();
+    const router = new MemoryProviderRouter({
+      store,
+      getConfig: () => buildConfig({
+        vectorMemoryEnabled: true,
+        vectorMemoryProvider: 'mem0',
+        mem0BaseUrl: 'http://localhost:8888',
+      }),
+    });
+
+    const entries = await router.listUserMemories({
+      query: 'concise',
+      status: 'created',
+      includeDeleted: false,
+      limit: 5,
+    }, { workingDirectory: '/tmp/project' });
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.id).toBe('m1');
+    expect(store.listUserMemories).toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  test('falls back to sqljs on mem0 search failure when fallback is enabled', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 500,
+      text: async () => 'internal error',
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const warn = vi.fn();
+    const store = buildStoreMock();
+    const router = new MemoryProviderRouter({
+      store,
+      getConfig: () => buildConfig({
+        vectorMemoryEnabled: true,
+        vectorMemoryProvider: 'mem0',
+        mem0BaseUrl: 'http://localhost:8888',
+        vectorFallbackToSqljs: true,
+      }),
+      logger: { debug: vi.fn(), warn },
+    });
+
+    const entries = await router.listUserMemories({ query: 'typescript', limit: 5 });
+    expect(entries).toHaveLength(1);
+    expect(store.listUserMemories).toHaveBeenCalled();
+    expect(warn).toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  test('throws on mem0 search failure when fallback is disabled', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 500,
+      text: async () => 'internal error',
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const store = buildStoreMock();
+    const router = new MemoryProviderRouter({
+      store,
+      getConfig: () => buildConfig({
+        vectorMemoryEnabled: true,
+        vectorMemoryProvider: 'mem0',
+        mem0BaseUrl: 'http://localhost:8888',
+        vectorFallbackToSqljs: false,
+      }),
+    });
+
+    await expect(
+      router.listUserMemories({ query: 'typescript', limit: 5 }),
+    ).rejects.toThrow(/mem0 request failed/);
   });
 });

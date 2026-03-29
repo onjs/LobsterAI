@@ -201,6 +201,14 @@
 - 通过：`npm run test -- MemoryProviderRouter openclawWorkspace openclawConfigSync`
 - 通过：`npm run test -- Mem0MemoryProvider MemoryProviderRouter`
 
-5. 当前边界
-- 本轮已完成 mem0 OSS REST 适配与异步同步队列（`sql.js` 主写、mem0 从写）。
-- 仍待补齐：语义检索主路径（将 mem0 搜索结果真正接入 `conversation_search` 混排）。
+5. 已完成：语义查询读路径与回退策略
+- `MemoryProviderRouter.listUserMemories()` 在携带 `query` 时优先尝试 mem0 语义搜索。
+- 查询失败时遵循 `vectorFallbackToSqljs`：
+  - 为 `true`：自动回退 sql.js；
+  - 为 `false`：直接抛错，便于显式感知依赖故障。
+- 增加失败熔断（连续失败阈值 + 冷却窗口），避免在 mem0 故障时持续压测外部服务。
+- 对 mem0 查询结果做本地 ID 映射（`metadata.local_memory_id` + `user_memory_vector_refs`），确保工具链仍使用本地记忆 ID 闭环。
+
+6. 当前边界
+- 本轮已完成 mem0 OSS REST 适配、异步副写、增量同步、语义查询读路径与回退策略（`sql.js` 主写保持真源）。
+- 仍待补齐：`conversation_search` 语义召回与词法混排（Phase 2）。

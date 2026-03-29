@@ -168,7 +168,14 @@ export class Mem0MemoryProvider implements MemoryProvider {
   }
 
   private mapRemoteMemoryToCowork(entry: Record<string, unknown>): CoworkUserMemory | null {
-    const id = String(entry.id ?? entry.memory_id ?? '').trim();
+    const remoteId = String(entry.id ?? entry.memory_id ?? '').trim();
+    const metadata = entry.metadata && typeof entry.metadata === 'object'
+      ? entry.metadata as Record<string, unknown>
+      : null;
+    const localId = metadata
+      ? String(metadata.local_memory_id ?? metadata.localMemoryId ?? '').trim()
+      : '';
+    const id = localId || remoteId;
     if (!id) return null;
     const textRaw = entry.memory ?? entry.text ?? entry.content ?? '';
     const text = typeof textRaw === 'string' ? textRaw.trim() : '';
@@ -183,6 +190,15 @@ export class Mem0MemoryProvider implements MemoryProvider {
       updatedAt: now,
       lastUsedAt: null,
     };
+  }
+
+  private extractEntryScore(entry: Record<string, unknown>): number | null {
+    const scoreCandidates = [entry.score, entry.relevance, entry.relevance_score];
+    for (const candidate of scoreCandidates) {
+      if (!Number.isFinite(candidate)) continue;
+      return Number(candidate);
+    }
+    return null;
   }
 
   private extractMemoryId(payload: unknown): string | null {
@@ -256,15 +272,22 @@ export class Mem0MemoryProvider implements MemoryProvider {
     const query = (options.query || '').trim();
     if (query) {
       const identifier = this.buildIdentifier(context);
+      const config = this.getConfig();
+      const queryLimit = Math.max(1, Math.floor(options.limit ?? config.mem0TopK));
+      const minScore = config.mem0MinScore;
       const payload = await this.request<unknown>('POST', '/search', {
         body: {
           query,
           [identifier.key]: identifier.value,
-          limit: options.limit,
+          limit: queryLimit,
         },
       });
       const items = this.extractMemories(payload);
       return items
+        .filter((item) => {
+          const score = this.extractEntryScore(item);
+          return score === null || score >= minScore;
+        })
         .map((item) => this.mapRemoteMemoryToCowork(item))
         .filter((item): item is CoworkUserMemory => Boolean(item));
     }
