@@ -858,6 +858,7 @@ const IMSettings: React.FC = () => {
     if (testingPlatform) return;
 
     setConnectivityModalPlatform(platform);
+    setTestingPlatform(platform);
 
     // For Telegram, persist telegram config and test
     if (platform === 'telegram') {
@@ -946,10 +947,6 @@ const IMSettings: React.FC = () => {
     // The backend's testNimConnectivity already manages the SDK lifecycle
     // (stop main → probe with temp instance → restart main) under a mutex,
     // so doing stop/start here would cause a race condition and potential crash.
-    if (isEnabled && platform === 'xiaomifeng') {
-      await imService.stopGateway(platform);
-      await imService.startGateway(platform);
-    }
     // When the gateway is OFF we skip stop/start entirely.
     // The main process testGateway → runAuthProbe will spawn an isolated
     // temporary NimGateway (for NIM) or use stateless HTTP calls for other

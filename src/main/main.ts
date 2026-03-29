@@ -999,7 +999,7 @@ const DEFERRED_RESTART_MAX_WAIT_MS = 5 * 60_000; // 5 minutes hard cap
 const hasActiveGatewayWorkloads = (): boolean => {
   if (openClawRuntimeAdapter?.hasActiveSessions()) return true;
   try {
-    if (cronJobService?.hasRunningJobs()) return true;
+    if (getCronJobService()?.hasRunningJobs()) return true;
   } catch {
     // CronJobService may not be initialized yet.
   }
