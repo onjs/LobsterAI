@@ -59,6 +59,8 @@ const MAX_MEMORY_USER_MEMORIES_MAX_ITEMS = 60;
 const MEMORY_NEAR_DUPLICATE_MIN_SCORE = 0.82;
 const MEMORY_PROCEDURAL_TEXT_RE = /(执行以下命令|run\s+(?:the\s+)?following\s+command|\b(?:cd|npm|pnpm|yarn|node|python|bash|sh|git|curl|wget)\b|\$[A-Z_][A-Z0-9_]*|&&|--[a-z0-9-]+|\/tmp\/|\.sh\b|\.bat\b|\.ps1\b)/i;
 const MEMORY_ASSISTANT_STYLE_TEXT_RE = /^(?:使用|use)\s+[A-Za-z0-9._-]+\s*(?:技能|skill)/i;
+const CONVERSATION_SEARCH_SEMANTIC_MIN_SCORE = 0.2;
+const CONVERSATION_SEARCH_MAX_SCAN_ROWS = 800;
 
 function normalizeMemoryGuardLevel(value: string | undefined): CoworkMemoryGuardLevel {
   if (value === 'strict' || value === 'standard' || value === 'relaxed') return value;
@@ -302,6 +304,29 @@ function parseTimeToMs(input?: string | null): number | null {
   const timestamp = Date.parse(input);
   if (!Number.isFinite(timestamp)) return null;
   return timestamp;
+}
+
+function scoreConversationLexicalMatch(content: string, terms: string[], fullQuery: string): number {
+  if (!content || terms.length === 0) return 0;
+  let matchCount = 0;
+  for (const term of terms) {
+    if (!term) continue;
+    if (!content.includes(term)) continue;
+    matchCount += 1;
+  }
+
+  let score = Math.min(1, matchCount / Math.max(1, terms.length));
+  if (fullQuery && content.includes(fullQuery)) {
+    score = Math.max(score, 0.7);
+  }
+  return Math.min(1, score);
+}
+
+function scoreConversationRecency(updatedAt: number, nowMs: number): number {
+  if (!Number.isFinite(updatedAt) || updatedAt <= 0) return 0;
+  const ageMs = Math.max(0, nowMs - updatedAt);
+  const ageHours = ageMs / (1000 * 60 * 60);
+  return 1 / (1 + ageHours / 72);
 }
 
 function shouldAutoDeleteMemoryText(text: string): boolean {
@@ -1807,28 +1832,36 @@ export class CoworkStore {
   }): CoworkConversationSearchRecord[] {
     const terms = extractConversationSearchTerms(options.query);
     if (terms.length === 0) return [];
+    const normalizedQuery = normalizeMemoryMatchKey(options.query);
+    if (!normalizedQuery) return [];
 
     const maxResults = Math.max(1, Math.min(10, Math.floor(options.maxResults ?? 5)));
     const beforeMs = parseTimeToMs(options.before);
     const afterMs = parseTimeToMs(options.after);
 
     const likeClauses = terms.map(() => 'LOWER(m.content) LIKE ?');
-    const clauses: string[] = [
-      "m.type IN ('user', 'assistant')",
-      `(${likeClauses.join(' OR ')})`,
-    ];
-    const params: Array<string | number> = terms.map((term) => `%${term}%`);
-
+    const timeClauses: string[] = [];
+    const timeParams: Array<string | number> = [];
     if (beforeMs !== null) {
-      clauses.push('m.created_at < ?');
-      params.push(beforeMs);
+      timeClauses.push('m.created_at < ?');
+      timeParams.push(beforeMs);
     }
     if (afterMs !== null) {
-      clauses.push('m.created_at > ?');
-      params.push(afterMs);
+      timeClauses.push('m.created_at > ?');
+      timeParams.push(afterMs);
     }
 
-    const rows = this.getAll<{
+    const lexicalClauses: string[] = [
+      "m.type IN ('user', 'assistant')",
+      `(${likeClauses.join(' OR ')})`,
+      ...timeClauses,
+    ];
+    const lexicalParams: Array<string | number> = [
+      ...terms.map((term) => `%${term}%`),
+      ...timeParams,
+    ];
+
+    const lexicalRows = this.getAll<{
       session_id: string;
       title: string;
       updated_at: number;
@@ -1839,46 +1872,119 @@ export class CoworkStore {
       SELECT m.session_id, s.title, s.updated_at, m.type, m.content, m.created_at
       FROM cowork_messages m
       INNER JOIN cowork_sessions s ON s.id = m.session_id
-      WHERE ${clauses.join(' AND ')}
+      WHERE ${lexicalClauses.join(' AND ')}
       ORDER BY m.created_at DESC
       LIMIT ?
-    `, [...params, maxResults * 40]);
+    `, [...lexicalParams, Math.min(CONVERSATION_SEARCH_MAX_SCAN_ROWS, maxResults * 40)]);
 
-    const bySession = new Map<string, CoworkConversationSearchRecord>();
-    for (const row of rows) {
+    const semanticClauses: string[] = [
+      "m.type IN ('user', 'assistant')",
+      ...timeClauses,
+    ];
+    const semanticRows = this.getAll<{
+      session_id: string;
+      title: string;
+      updated_at: number;
+      type: string;
+      content: string;
+      created_at: number;
+    }>(`
+      SELECT m.session_id, s.title, s.updated_at, m.type, m.content, m.created_at
+      FROM cowork_messages m
+      INNER JOIN cowork_sessions s ON s.id = m.session_id
+      WHERE ${semanticClauses.join(' AND ')}
+      ORDER BY m.created_at DESC
+      LIMIT ?
+    `, [...timeParams, Math.min(CONVERSATION_SEARCH_MAX_SCAN_ROWS, Math.max(240, maxResults * 120))]);
+
+    const candidateMap = new Map<string, {
+      session_id: string;
+      title: string;
+      updated_at: number;
+      type: string;
+      content: string;
+      created_at: number;
+    }>();
+    const pushCandidate = (row: {
+      session_id: string;
+      title: string;
+      updated_at: number;
+      type: string;
+      content: string;
+      created_at: number;
+    }): void => {
+      const key = `${row.session_id}:${row.type}:${row.created_at}`;
+      if (candidateMap.has(key)) return;
+      candidateMap.set(key, row);
+    };
+    for (const row of lexicalRows) pushCandidate(row);
+    for (const row of semanticRows) pushCandidate(row);
+
+    type RankedRecord = CoworkConversationSearchRecord & {
+      bestScore: number;
+      humanScore: number;
+      assistantScore: number;
+    };
+    const now = Date.now();
+    const bySession = new Map<string, RankedRecord>();
+    for (const row of candidateMap.values()) {
       if (!row.session_id) continue;
+      const contentKey = normalizeMemoryMatchKey(row.content || '');
+      if (!contentKey) continue;
+
+      const lexicalScore = scoreConversationLexicalMatch(contentKey, terms, normalizedQuery);
+      const semanticScore = scoreMemorySimilarity(normalizedQuery, contentKey);
+      if (lexicalScore <= 0 && semanticScore < CONVERSATION_SEARCH_SEMANTIC_MIN_SCORE) {
+        continue;
+      }
+      const updatedAt = Number(row.updated_at) || Number(row.created_at) || 0;
+      const recencyScore = scoreConversationRecency(updatedAt, now);
+      let hybridScore = lexicalScore * 0.55 + semanticScore * 0.35 + recencyScore * 0.1;
+      if (lexicalScore > 0 && semanticScore >= CONVERSATION_SEARCH_SEMANTIC_MIN_SCORE) {
+        hybridScore += 0.08;
+      }
+
       let current = bySession.get(row.session_id);
       if (!current) {
         current = {
           sessionId: row.session_id,
           title: row.title || 'Untitled',
-          updatedAt: Number(row.updated_at) || 0,
+          updatedAt,
           url: `https://claude.ai/chat/${row.session_id}`,
           human: '',
           assistant: '',
+          bestScore: hybridScore,
+          humanScore: -1,
+          assistantScore: -1,
         };
         bySession.set(row.session_id, current);
+      } else {
+        current.updatedAt = Math.max(current.updatedAt, updatedAt);
+        current.bestScore = Math.max(current.bestScore, hybridScore);
       }
 
       const snippet = truncate((row.content || '').replace(/\s+/g, ' ').trim(), 280);
-      if (row.type === 'user' && !current.human) {
+      if (row.type === 'user' && hybridScore > current.humanScore) {
         current.human = snippet;
+        current.humanScore = hybridScore;
       }
-      if (row.type === 'assistant' && !current.assistant) {
+      if (row.type === 'assistant' && hybridScore > current.assistantScore) {
         current.assistant = snippet;
-      }
-
-      if (bySession.size >= maxResults) {
-        const complete = Array.from(bySession.values()).every((entry) => entry.human && entry.assistant);
-        if (complete) break;
+        current.assistantScore = hybridScore;
       }
     }
 
     const records = Array.from(bySession.values())
-      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .sort((a, b) => {
+        if (b.bestScore !== a.bestScore) return b.bestScore - a.bestScore;
+        return b.updatedAt - a.updatedAt;
+      })
       .slice(0, maxResults)
       .map((entry) => ({
-        ...entry,
+        sessionId: entry.sessionId,
+        title: entry.title,
+        updatedAt: entry.updatedAt,
+        url: entry.url,
         human: entry.human || this.getLatestMessageByType(entry.sessionId, 'user'),
         assistant: entry.assistant || this.getLatestMessageByType(entry.sessionId, 'assistant'),
       }));

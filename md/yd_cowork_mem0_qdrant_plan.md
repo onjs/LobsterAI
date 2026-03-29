@@ -211,4 +211,20 @@
 
 6. 当前边界
 - 本轮已完成 mem0 OSS REST 适配、异步副写、增量同步、语义查询读路径与回退策略（`sql.js` 主写保持真源）。
-- 仍待补齐：`conversation_search` 语义召回与词法混排（Phase 2）。
+- 仍待补齐：Qdrant 上线后的会话向量检索接入与配置化切换。
+
+## 13. Phase 2 进展（2026-03-29）
+
+1. 已完成：`conversation_search` 混排检索
+- 保留现有词法召回（`LIKE`）路径。
+- 新增语义候选召回：对最近会话消息应用 token/bigram 相似度评分。
+- 词法分、语义分、时间新鲜度分做加权混排，按 session 聚合后返回 Top-N。
+
+2. 已完成：检索边界保持兼容
+- 保留 `before/after` 时间窗过滤。
+- 输出结构不变（`sessionId/title/url/human/assistant`），调用方无需改动。
+
+3. 已完成：验证
+- 通过：`npm run compile:electron`
+- 通过：`npm run build`
+- 通过：`npm test`
