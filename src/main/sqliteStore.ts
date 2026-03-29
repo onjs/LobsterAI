@@ -161,6 +161,25 @@ export class SqliteStore {
       ON user_memory_sources(memory_id, is_active);
     `);
 
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS user_memory_vector_refs (
+        memory_id TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        remote_id TEXT NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (memory_id, provider),
+        FOREIGN KEY (memory_id) REFERENCES user_memories(id) ON DELETE CASCADE
+      );
+    `);
+    this.db.run(`
+      CREATE INDEX IF NOT EXISTS idx_user_memory_vector_refs_provider
+      ON user_memory_vector_refs(provider, updated_at DESC);
+    `);
+    this.db.run(`
+      CREATE INDEX IF NOT EXISTS idx_user_memory_vector_refs_remote_id
+      ON user_memory_vector_refs(provider, remote_id);
+    `);
+
     // Create agents table
     this.db.run(`
       CREATE TABLE IF NOT EXISTS agents (

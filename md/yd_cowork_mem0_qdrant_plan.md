@@ -182,6 +182,10 @@
   - `Mem0MemoryProvider.ts`
   - `MemoryProviderRouter.ts`
 - `CoworkRunner` 的记忆读写入口已统一走 `MemoryProviderRouter`，默认仍走 sql.js，保证行为与旧版本一致。
+- 新增增量同步映射表：`user_memory_vector_refs`（`memory_id + provider -> remote_id`）。
+- 同步策略升级为“增量同步”：
+  - `create/update/delete` 触发对应远端操作；
+  - `applyTurnMemoryUpdates` 触发一次 reconcile（按映射纠偏），不做全量清空重建。
 
 3. 已完成：前后端配置通道打通
 - 已更新：
@@ -195,6 +199,7 @@
 - 通过：`npm run compile:electron`
 - 通过：`npm run build`
 - 通过：`npm run test -- MemoryProviderRouter openclawWorkspace openclawConfigSync`
+- 通过：`npm run test -- Mem0MemoryProvider MemoryProviderRouter`
 
 5. 当前边界
 - 本轮已完成 mem0 OSS REST 适配与异步同步队列（`sql.js` 主写、mem0 从写）。

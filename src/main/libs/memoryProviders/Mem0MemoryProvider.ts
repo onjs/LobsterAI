@@ -30,6 +30,16 @@ type Mem0Identifier = {
   value: string;
 };
 
+class Mem0HttpError extends Error {
+  status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = 'Mem0HttpError';
+    this.status = status;
+  }
+}
+
 const resolveMem0Identifier = (
   strategy: Mem0UserIdStrategyType,
   context?: MemoryProviderContext,
@@ -122,12 +132,20 @@ export class Mem0MemoryProvider implements MemoryProvider {
       const raw = await response.text();
       if (!response.ok) {
         const preview = raw.slice(0, 300);
-        throw new Error(`mem0 request failed (${response.status}): ${preview}`);
+        throw new Mem0HttpError(response.status, `mem0 request failed (${response.status}): ${preview}`);
       }
       if (!raw.trim()) {
         return undefined as T;
       }
       return JSON.parse(raw) as T;
+    } catch (error) {
+      if (error instanceof Mem0HttpError) {
+        throw error;
+      }
+      if (error instanceof Error && error.name === 'AbortError') {
+        throw new Error(`mem0 request timed out after ${timeoutMs}ms`);
+      }
+      throw error;
     } finally {
       clearTimeout(timer);
     }
@@ -167,6 +185,28 @@ export class Mem0MemoryProvider implements MemoryProvider {
     };
   }
 
+  private extractMemoryId(payload: unknown): string | null {
+    if (!payload || typeof payload !== 'object') {
+      return null;
+    }
+    const data = payload as Record<string, unknown>;
+    const direct = String(data.id ?? data.memory_id ?? '').trim();
+    if (direct) return direct;
+
+    const arrays = ['results', 'items', 'memories', 'data'];
+    for (const key of arrays) {
+      if (!Array.isArray(data[key])) continue;
+      for (const item of data[key] as unknown[]) {
+        if (!item || typeof item !== 'object') continue;
+        const id = String(
+          (item as Record<string, unknown>).id ?? (item as Record<string, unknown>).memory_id ?? '',
+        ).trim();
+        if (id) return id;
+      }
+    }
+    return null;
+  }
+
   private async listRemoteMemories(context?: MemoryProviderContext): Promise<CoworkUserMemory[]> {
     const identifier = this.buildIdentifier(context);
     const payload = await this.request<unknown>('GET', '/memories', {
@@ -180,9 +220,9 @@ export class Mem0MemoryProvider implements MemoryProvider {
       .filter((item): item is CoworkUserMemory => Boolean(item));
   }
 
-  private async addRemoteMemory(memory: CoworkUserMemory, context?: MemoryProviderContext): Promise<void> {
+  async addRemoteMemory(memory: CoworkUserMemory, context?: MemoryProviderContext): Promise<string | null> {
     const identifier = this.buildIdentifier(context);
-    await this.request('POST', '/memories', {
+    const payload = await this.request<unknown>('POST', '/memories', {
       body: {
         messages: [{ role: 'user', content: memory.text }],
         [identifier.key]: identifier.value,
@@ -192,16 +232,24 @@ export class Mem0MemoryProvider implements MemoryProvider {
         },
       },
     });
+    return this.extractMemoryId(payload);
   }
 
-  async syncFromLocalMemories(memories: CoworkUserMemory[], context?: MemoryProviderContext): Promise<void> {
-    const remote = await this.listRemoteMemories(context);
-    for (const entry of remote) {
-      await this.request('DELETE', `/memories/${encodeURIComponent(entry.id)}`);
-    }
-    for (const memory of memories) {
-      await this.addRemoteMemory(memory, context);
-    }
+  async updateRemoteMemory(remoteId: string, text: string): Promise<void> {
+    await this.request('PUT', `/memories/${encodeURIComponent(remoteId)}`, {
+      body: {
+        memory: text,
+        text,
+      },
+    });
+  }
+
+  async deleteRemoteMemory(remoteId: string): Promise<void> {
+    await this.request('DELETE', `/memories/${encodeURIComponent(remoteId)}`);
+  }
+
+  isNotFoundError(error: unknown): boolean {
+    return error instanceof Mem0HttpError && error.status === 404;
   }
 
   async listUserMemories(options: MemoryListOptions, context?: MemoryProviderContext): Promise<CoworkUserMemory[]> {
@@ -247,12 +295,7 @@ export class Mem0MemoryProvider implements MemoryProvider {
     if (typeof input.text !== 'string' || !input.text.trim()) {
       return null;
     }
-    await this.request('PUT', `/memories/${encodeURIComponent(input.id)}`, {
-      body: {
-        memory: input.text,
-        text: input.text,
-      },
-    });
+    await this.updateRemoteMemory(input.id, input.text);
     return {
       id: input.id,
       text: input.text,
@@ -267,7 +310,7 @@ export class Mem0MemoryProvider implements MemoryProvider {
 
   async deleteUserMemory(id: string, _context?: MemoryProviderContext): Promise<boolean> {
     if (!id.trim()) return false;
-    await this.request('DELETE', `/memories/${encodeURIComponent(id)}`);
+    await this.deleteRemoteMemory(id);
     return true;
   }
 

@@ -43,6 +43,10 @@ const buildStoreMock = (): CoworkStore => {
     createUserMemory: vi.fn(() => memory),
     updateUserMemory: vi.fn(() => memory),
     deleteUserMemory: vi.fn(() => true),
+    getMemoryVectorRef: vi.fn(() => null),
+    listMemoryVectorRefs: vi.fn(() => []),
+    upsertMemoryVectorRef: vi.fn(() => undefined),
+    deleteMemoryVectorRef: vi.fn(() => undefined),
     applyTurnMemoryUpdates: vi.fn(async () => ({
       totalChanges: 1,
       created: 1,
@@ -85,5 +89,35 @@ describe('MemoryProviderRouter', () => {
     expect(created.id).toBe('m1');
     expect(store.createUserMemory).toHaveBeenCalledOnce();
     expect(warn).toHaveBeenCalledOnce();
+  });
+
+  test('enqueues mem0 create sync and persists vector mapping when enabled', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ id: 'remote-memory-1' }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const store = buildStoreMock();
+    const router = new MemoryProviderRouter({
+      store,
+      getConfig: () => buildConfig({
+        vectorMemoryEnabled: true,
+        vectorMemoryProvider: 'mem0',
+        mem0BaseUrl: 'http://localhost:8888',
+      }),
+    });
+
+    const created = await router.createUserMemory({ text: 'I like TypeScript.' }, { workingDirectory: '/tmp/project' });
+    expect(created.id).toBe('m1');
+
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+    expect(store.upsertMemoryVectorRef).toHaveBeenCalledWith({
+      memoryId: 'm1',
+      provider: 'mem0',
+      remoteId: 'remote-memory-1',
+    });
   });
 });

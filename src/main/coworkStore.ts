@@ -567,6 +567,20 @@ interface CoworkUserMemoryRow {
   last_used_at: number | null;
 }
 
+interface CoworkUserMemoryVectorRefRow {
+  memory_id: string;
+  provider: string;
+  remote_id: string;
+  updated_at: number;
+}
+
+export interface CoworkUserMemoryVectorRef {
+  memoryId: string;
+  provider: string;
+  remoteId: string;
+  updatedAt: number;
+}
+
 export class CoworkStore {
   private db: Database;
   private saveDb: () => void;
@@ -1536,6 +1550,57 @@ export class CoworkStore {
     `, [id]);
     this.saveDb();
     return (this.db.getRowsModified?.() || 0) > 0;
+  }
+
+  getMemoryVectorRef(memoryId: string, provider: string): CoworkUserMemoryVectorRef | null {
+    const row = this.getOne<CoworkUserMemoryVectorRefRow>(`
+      SELECT memory_id, provider, remote_id, updated_at
+      FROM user_memory_vector_refs
+      WHERE memory_id = ? AND provider = ?
+      LIMIT 1
+    `, [memoryId, provider]);
+    if (!row) return null;
+    return {
+      memoryId: row.memory_id,
+      provider: row.provider,
+      remoteId: row.remote_id,
+      updatedAt: Number(row.updated_at),
+    };
+  }
+
+  listMemoryVectorRefs(provider: string): CoworkUserMemoryVectorRef[] {
+    const rows = this.getAll<CoworkUserMemoryVectorRefRow>(`
+      SELECT memory_id, provider, remote_id, updated_at
+      FROM user_memory_vector_refs
+      WHERE provider = ?
+      ORDER BY updated_at DESC
+    `, [provider]);
+    return rows.map((row) => ({
+      memoryId: row.memory_id,
+      provider: row.provider,
+      remoteId: row.remote_id,
+      updatedAt: Number(row.updated_at),
+    }));
+  }
+
+  upsertMemoryVectorRef(input: { memoryId: string; provider: string; remoteId: string }): void {
+    const now = Date.now();
+    this.db.run(`
+      INSERT INTO user_memory_vector_refs (memory_id, provider, remote_id, updated_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(memory_id, provider) DO UPDATE SET
+        remote_id = excluded.remote_id,
+        updated_at = excluded.updated_at
+    `, [input.memoryId, input.provider, input.remoteId, now]);
+    this.saveDb();
+  }
+
+  deleteMemoryVectorRef(memoryId: string, provider: string): void {
+    this.db.run(`
+      DELETE FROM user_memory_vector_refs
+      WHERE memory_id = ? AND provider = ?
+    `, [memoryId, provider]);
+    this.saveDb();
   }
 
   getUserMemoryStats(): CoworkUserMemoryStats {
