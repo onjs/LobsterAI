@@ -9,18 +9,20 @@
     }
   },
   "llm": {
-    "provider": "openai",
+    "provider": "minimax",
     "config": {
-      "model": "gpt-4.1-nano-2025-04-14",
+      "model": "MiniMax-M2.7",
       "temperature": 0.2,
-      "api_key": "${OPENAI_API_KEY}"
+      "api_key": "${MINIMAX_API_KEY}",
+      "minimax_base_url": "${MINIMAX_API_BASE}"
     }
   },
   "embedder": {
     "provider": "openai",
     "config": {
-      "model": "text-embedding-3-small",
-      "api_key": "${OPENAI_API_KEY}"
+      "model": "${MEM0_EMBEDDER_MODEL}",
+      "api_key": "${MINIMAX_API_KEY}",
+      "openai_base_url": "${MINIMAX_API_BASE}"
     }
   }
 }

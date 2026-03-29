@@ -13,6 +13,19 @@ loadEnvIntoProcess();
 const MEM0_BASE_URL = (process.env.MEM0_BASE_URL || 'http://localhost:8888').trim().replace(/\/$/, '');
 const MEM0_API_KEY = (process.env.MEM0_API_KEY || '').trim();
 const DRY_RUN = process.argv.includes('--dry-run');
+const SUPPORTED_EMBEDDER_PROVIDERS = new Set([
+  'openai',
+  'ollama',
+  'huggingface',
+  'azure_openai',
+  'gemini',
+  'vertexai',
+  'together',
+  'lmstudio',
+  'langchain',
+  'aws_bedrock',
+  'fastembed',
+]);
 
 function buildHeaders() {
   const headers = { 'Content-Type': 'application/json' };
@@ -56,6 +69,10 @@ function validatePayload(payload) {
   if (!embedder || !String(embedder.provider || '').trim()) {
     throw new Error('embedder.provider is required');
   }
+  const embedderProvider = String(embedder.provider || '').trim();
+  if (!SUPPORTED_EMBEDDER_PROVIDERS.has(embedderProvider)) {
+    throw new Error(`unsupported embedder.provider: ${embedderProvider}`);
+  }
 }
 
 function readJsonFile(filePath) {
@@ -69,13 +86,40 @@ function buildPayloadFromEnv() {
   const qdrantApiKey = (process.env.QDRANT_API_KEY || '').trim();
   const qdrantCollectionName = (process.env.QDRANT_COLLECTION_NAME || 'mem0').trim();
 
-  const llmProvider = (process.env.MEM0_LLM_PROVIDER || 'openai').trim();
-  const llmModel = (process.env.MEM0_LLM_MODEL || 'gpt-4.1-nano-2025-04-14').trim();
-  const llmApiKey = (process.env.MEM0_LLM_API_KEY || process.env.OPENAI_API_KEY || '').trim();
+  const llmProvider = (process.env.MEM0_LLM_PROVIDER || 'minimax').trim();
+  const llmModel = (
+    process.env.MEM0_LLM_MODEL
+    || (llmProvider === 'minimax' ? 'MiniMax-M2.7' : 'gpt-4.1-nano-2025-04-14')
+  ).trim();
+  const llmApiKey = (
+    process.env.MEM0_LLM_API_KEY
+    || (llmProvider === 'minimax' ? process.env.MINIMAX_API_KEY : '')
+    || process.env.OPENAI_API_KEY
+    || process.env.MINIMAX_API_KEY
+    || ''
+  ).trim();
+  const minimaxBaseUrl = (process.env.MEM0_LLM_MINIMAX_BASE_URL || process.env.MINIMAX_API_BASE || '').trim();
+  const llmOpenaiBaseUrl = (
+    process.env.MEM0_LLM_OPENAI_BASE_URL
+    || process.env.OPENAI_BASE_URL
+    || process.env.MINIMAX_API_BASE
+    || ''
+  ).trim();
 
   const embedderProvider = (process.env.MEM0_EMBEDDER_PROVIDER || 'openai').trim();
   const embedderModel = (process.env.MEM0_EMBEDDER_MODEL || 'text-embedding-3-small').trim();
-  const embedderApiKey = (process.env.MEM0_EMBEDDER_API_KEY || process.env.OPENAI_API_KEY || '').trim();
+  const embedderApiKey = (
+    process.env.MEM0_EMBEDDER_API_KEY
+    || process.env.OPENAI_API_KEY
+    || process.env.MINIMAX_API_KEY
+    || ''
+  ).trim();
+  const embedderOpenaiBaseUrl = (
+    process.env.MEM0_EMBEDDER_OPENAI_BASE_URL
+    || process.env.OPENAI_BASE_URL
+    || process.env.MINIMAX_API_BASE
+    || ''
+  ).trim();
 
   const vectorConfig = {
     host: qdrantHost,
@@ -93,12 +137,21 @@ function buildPayloadFromEnv() {
   if (llmApiKey) {
     llmConfig.api_key = llmApiKey;
   }
+  if (llmProvider === 'minimax' && minimaxBaseUrl) {
+    llmConfig.minimax_base_url = minimaxBaseUrl;
+  }
+  if (llmProvider === 'openai' && llmOpenaiBaseUrl) {
+    llmConfig.openai_base_url = llmOpenaiBaseUrl;
+  }
 
   const embedderConfig = {
     model: embedderModel,
   };
   if (embedderApiKey) {
     embedderConfig.api_key = embedderApiKey;
+  }
+  if (embedderProvider === 'openai' && embedderOpenaiBaseUrl) {
+    embedderConfig.openai_base_url = embedderOpenaiBaseUrl;
   }
 
   return {
@@ -128,13 +181,31 @@ function resolvePayload() {
   return buildPayloadFromEnv();
 }
 
+function redactSecrets(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => redactSecrets(item));
+  }
+  if (value && typeof value === 'object') {
+    const result = {};
+    for (const [key, item] of Object.entries(value)) {
+      if (key === 'api_key' || key.toLowerCase().includes('token') || key.toLowerCase().includes('secret')) {
+        result[key] = item ? '***REDACTED***' : item;
+      } else {
+        result[key] = redactSecrets(item);
+      }
+    }
+    return result;
+  }
+  return value;
+}
+
 async function main() {
   const payload = resolvePayload();
   validatePayload(payload);
 
   if (DRY_RUN) {
     console.log('[mem0-configure] dry-run payload:');
-    console.log(JSON.stringify(payload, null, 2));
+    console.log(JSON.stringify(redactSecrets(payload), null, 2));
     return;
   }
 

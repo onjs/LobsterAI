@@ -22,7 +22,7 @@ npm run mem0:stack:init
 
 ```bash
 vi deploy/mem0-qdrant/.env
-# 至少填 OPENAI_API_KEY
+# 至少填 MINIMAX_API_KEY（如果你有 OpenAI key 也可填 OPENAI_API_KEY）
 ```
 
 3. 启动服务栈：
@@ -31,23 +31,24 @@ vi deploy/mem0-qdrant/.env
 npm run mem0:stack:up
 ```
 
-4. 查看状态与健康检查：
-
-```bash
-npm run mem0:stack:ps
-npm run mem0:health
-```
-
-5. 预览并应用 qdrant 配置：
+4. 预览并应用 qdrant 配置：
 
 ```bash
 npm run mem0:configure:qdrant:dry
 npm run mem0:configure:qdrant
 ```
 
+5. 查看状态与健康检查：
+
+```bash
+npm run mem0:stack:ps
+npm run mem0:health
+```
+
 说明：
 - `mem0:configure:qdrant` 会优先读取 `deploy/mem0-qdrant/config.qdrant.json`。
 - 配置 JSON 支持 `${OPENAI_API_KEY}` 这类环境变量占位符。
+- 当前模板默认支持 `MINIMAX_API_KEY` / `MINIMAX_API_BASE`。
 - 若 mem0 API 开启了鉴权，请在 `.env` 里设置 `MEM0_API_KEY`。
 
 ## 3. LobsterAI 配置建议

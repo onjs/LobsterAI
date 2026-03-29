@@ -38,7 +38,7 @@ function main() {
     console.log('[mem0-init] config.qdrant.json already exists, keep current values');
   }
 
-  console.log('[mem0-init] next step: edit deploy/mem0-qdrant/.env, then run npm run mem0:stack:up');
+  console.log('[mem0-init] next step: set MINIMAX_API_KEY (or OPENAI_API_KEY), then run npm run mem0:stack:up');
 }
 
 try {
