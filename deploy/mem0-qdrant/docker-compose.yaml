@@ -8,7 +8,8 @@ services:
     ports:
       - '8888:8000'
     environment:
-      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-${MINIMAX_API_KEY:-}}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-${MINIMAX_API_BASE:-}}
       - ADMIN_API_KEY=${ADMIN_API_KEY:-}
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432

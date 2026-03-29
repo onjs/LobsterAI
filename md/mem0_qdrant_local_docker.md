@@ -22,7 +22,7 @@ npm run mem0:stack:init
 
 ```bash
 vi deploy/mem0-qdrant/.env
-# 至少填 OPENAI_API_KEY
+# 至少填 OPENAI_API_KEY 或 MINIMAX_API_KEY（二选一）
 # 若使用 MiniMax OpenAI 兼容接口：OPENAI_BASE_URL=https://api.minimax.io/v1
 ```
 
