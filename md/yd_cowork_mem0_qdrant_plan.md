@@ -162,3 +162,40 @@
 - 通过：`npm run test -- openclawWorkspace`。
 - 通过：`npm run test -- openclawConfigSync`。
 - 通过：`npm run compile:electron`。
+
+## 12. Phase 1 骨架进展（2026-03-29）
+
+1. 已完成：向量记忆配置模型落地
+- 新增 `src/common/coworkMemory.ts`，统一常量、默认值、归一化与范围钳制。
+- `CoworkConfig` / `CoworkConfigUpdate` 新增字段：
+  - `vectorMemoryEnabled`
+  - `vectorMemoryProvider`
+  - `mem0BaseUrl` / `mem0ApiKey` / `mem0OrgId` / `mem0ProjectId`
+  - `mem0UserIdStrategy`
+  - `mem0TimeoutMs` / `mem0TopK` / `mem0MinScore`
+  - `vectorFallbackToSqljs`
+
+2. 已完成：主流程接入 Provider 路由
+- 新增目录 `src/main/libs/memoryProviders/`：
+  - `MemoryProvider.ts`
+  - `SqljsMemoryProvider.ts`
+  - `Mem0MemoryProvider.ts`
+  - `MemoryProviderRouter.ts`
+- `CoworkRunner` 的记忆读写入口已统一走 `MemoryProviderRouter`，默认仍走 sql.js，保证行为与旧版本一致。
+
+3. 已完成：前后端配置通道打通
+- 已更新：
+  - `src/main/main.ts`（`cowork:config:set` 归一化）
+  - `src/main/preload.ts`（IPC 类型）
+  - `src/renderer/types/cowork.ts`
+  - `src/renderer/types/electron.d.ts`
+  - `src/renderer/store/slices/coworkSlice.ts`（默认值）
+
+4. 已完成：验证
+- 通过：`npm run compile:electron`
+- 通过：`npm run build`
+- 通过：`npm run test -- MemoryProviderRouter openclawWorkspace openclawConfigSync`
+
+5. 当前边界
+- 本轮是“架构骨架 + 路由接管”，mem0 远端 CRUD/检索还未启用到生产路径。
+- 下一步将按 Phase 1 计划补齐 mem0 HTTP 适配与 sql.js 主写 + mem0 异步同步链路。

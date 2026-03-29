@@ -18,6 +18,7 @@ import { cpRecursiveSync } from '../fsCompat';
 import { isQuestionLikeMemoryText, type CoworkMemoryGuardLevel } from './coworkMemoryExtractor';
 import { setCoworkProxySessionId } from './coworkOpenAICompatProxy';
 import { SCHEDULED_TASK_SWITCH_MESSAGE } from '../../scheduled-task/enginePrompt';
+import { MemoryProviderRouter } from './memoryProviders';
 import { z } from 'zod';
 import { ensureSandboxReady, getSandboxRuntimeInfoIfReady, type SandboxRuntimeInfo } from './coworkSandboxRuntime';
 import {
@@ -503,6 +504,7 @@ type SandboxSkillRootMount = {
 
 export class CoworkRunner extends EventEmitter {
   private store: CoworkStore;
+  private memoryProviderRouter: MemoryProviderRouter;
   private activeSessions: Map<string, ActiveSession> = new Map();
   private pendingPermissions: Map<string, PendingPermission> = new Map();
   private sandboxPermissions: Map<string, SandboxPendingPermission> = new Map();
@@ -524,6 +526,10 @@ export class CoworkRunner extends EventEmitter {
   constructor(store: CoworkStore) {
     super();
     this.store = store;
+    this.memoryProviderRouter = new MemoryProviderRouter({
+      store: this.store,
+      getConfig: () => this.store.getConfig(),
+    });
   }
 
   setMcpServerProvider(provider: () => Array<{
@@ -602,7 +608,7 @@ export class CoworkRunner extends EventEmitter {
         const job = this.turnMemoryQueue.shift();
         if (!job) continue;
         try {
-          const result = await this.store.applyTurnMemoryUpdates({
+          const result = await this.memoryProviderRouter.applyTurnMemoryUpdates({
             sessionId: job.sessionId,
             userText: job.userText,
             assistantText: job.assistantText,
@@ -611,6 +617,9 @@ export class CoworkRunner extends EventEmitter {
             guardLevel: job.guardLevel,
             userMessageId: job.userMessageId,
             assistantMessageId: job.assistantMessageId,
+          }, {
+            sessionId: job.sessionId,
+            workingDirectory: this.store.getConfig().workingDirectory,
           });
           coworkLog('INFO', 'memory:turnUpdateAsync', 'Applied turn memory updates asynchronously', {
             sessionId: job.sessionId,
@@ -646,17 +655,19 @@ export class CoworkRunner extends EventEmitter {
       .replace(/'/g, '&apos;');
   }
 
-  private buildUserMemoriesXml(): string {
+  private async buildUserMemoriesXml(): Promise<string> {
     const config = this.store.getConfig();
     if (!config.memoryEnabled) {
       return '<userMemories></userMemories>';
     }
 
-    const memories = this.store.listUserMemories({
+    const memories = await this.memoryProviderRouter.listUserMemories({
       status: 'created',
       includeDeleted: false,
       limit: config.memoryUserMemoriesMaxItems,
       offset: 0,
+    }, {
+      workingDirectory: config.workingDirectory,
     });
 
     if (memories.length === 0) {
@@ -784,7 +795,7 @@ export class CoworkRunner extends EventEmitter {
     return this.formatChatSearchOutput(chats);
   }
 
-  private runMemoryUserEditsTool(args: {
+  private async runMemoryUserEditsTool(args: {
     action: 'list' | 'add' | 'update' | 'delete';
     id?: string;
     text?: string;
@@ -793,15 +804,18 @@ export class CoworkRunner extends EventEmitter {
     is_explicit?: boolean;
     limit?: number;
     query?: string;
-  }): { text: string; isError: boolean } {
+  }): Promise<{ text: string; isError: boolean }> {
+    const context = {
+      workingDirectory: this.store.getConfig().workingDirectory,
+    };
     if (args.action === 'list') {
-      const entries = this.store.listUserMemories({
+      const entries = await this.memoryProviderRouter.listUserMemories({
         query: args.query,
         status: 'all',
         includeDeleted: true,
         limit: args.limit ?? 20,
         offset: 0,
-      });
+      }, context);
       const payload = entries.length === 0
         ? 'memories=(empty)'
         : entries
@@ -846,11 +860,11 @@ export class CoworkRunner extends EventEmitter {
           isError: true,
         };
       }
-      const entry = this.store.createUserMemory({
+      const entry = await this.memoryProviderRouter.createUserMemory({
         text: validation.text,
         confidence: args.confidence,
         isExplicit: args.is_explicit ?? true,
-      });
+      }, context);
       return {
         text: this.formatMemoryUserEditsResult({
           action: 'add',
@@ -891,13 +905,13 @@ export class CoworkRunner extends EventEmitter {
         }
         args.text = validation.text;
       }
-      const updated = this.store.updateUserMemory({
+      const updated = await this.memoryProviderRouter.updateUserMemory({
         id: args.id.trim(),
         text: args.text,
         confidence: args.confidence,
         status: args.status,
         isExplicit: args.is_explicit,
-      });
+      }, context);
       if (!updated) {
         return {
           text: this.formatMemoryUserEditsResult({
@@ -934,7 +948,7 @@ export class CoworkRunner extends EventEmitter {
       };
     }
 
-    const deleted = this.store.deleteUserMemory(args.id.trim());
+    const deleted = await this.memoryProviderRouter.deleteUserMemory(args.id.trim(), context);
     return {
       text: this.formatMemoryUserEditsResult({
         action: 'delete',
@@ -2241,9 +2255,9 @@ export class CoworkRunner extends EventEmitter {
    * These are prepended to the user message (not the system prompt) so that
    * the system prompt stays stable across turns and can benefit from prompt caching.
    */
-  private buildPromptPrefix(): string {
+  private async buildPromptPrefix(): Promise<string> {
     const localTimePrompt = this.buildLocalTimeContextPrompt();
-    const userMemoriesXml = this.buildUserMemoriesXml();
+    const userMemoriesXml = await this.buildUserMemoriesXml();
     return [localTimePrompt, userMemoriesXml]
       .filter((section) => section?.trim())
       .join('\n\n');
@@ -2535,7 +2549,7 @@ export class CoworkRunner extends EventEmitter {
 
     // Run claude-code using the SDK
     try {
-      const promptPrefix = this.buildPromptPrefix();
+      const promptPrefix = await this.buildPromptPrefix();
       let effectivePrompt = promptPrefix ? `${promptPrefix}\n\n---\n\n${prompt}` : prompt;
 
       // If the session already has messages (restarted after stop), inject
@@ -2629,7 +2643,7 @@ export class CoworkRunner extends EventEmitter {
     );
 
     try {
-      const promptPrefix = this.buildPromptPrefix();
+      const promptPrefix = await this.buildPromptPrefix();
       const effectivePrompt = promptPrefix ? `${promptPrefix}\n\n---\n\n${prompt}` : prompt;
       setCoworkProxySessionId(sessionId);
       await this.runClaudeCode(activeSession, effectivePrompt, sessionCwd, effectiveSystemPrompt, options.imageAttachments);
@@ -2721,7 +2735,7 @@ export class CoworkRunner extends EventEmitter {
     }
   }
 
-  private handleHostToolExecution(payload: Record<string, unknown>): { success: boolean; text: string } {
+  private async handleHostToolExecution(payload: Record<string, unknown>): Promise<{ success: boolean; text: string }> {
     const toolName = String(payload.toolName ?? payload.name ?? '');
     const rawInput = payload.toolInput ?? payload.input ?? {};
     const toolInput =
@@ -2767,7 +2781,7 @@ export class CoworkRunner extends EventEmitter {
             }),
           };
         }
-        const result = this.runMemoryUserEditsTool({
+        const result = await this.runMemoryUserEditsTool({
           action,
           id: typeof toolInput.id === 'string' ? toolInput.id : undefined,
           text: typeof toolInput.text === 'string' ? toolInput.text : undefined,
@@ -3248,7 +3262,7 @@ export class CoworkRunner extends EventEmitter {
               query?: string;
             }) => {
               try {
-                const result = this.runMemoryUserEditsTool(args);
+                const result = await this.runMemoryUserEditsTool(args);
                 return {
                   content: [{
                     type: 'text',
@@ -3981,13 +3995,14 @@ export class CoworkRunner extends EventEmitter {
           const requestId = String(payload.requestId ?? '');
           if (!requestId) return;
 
-          const result = this.handleHostToolExecution(payload);
-          this.writeSandboxHostToolResponse(activeSession, paths.responsesDir, requestId, {
-            type: 'host_tool_response',
-            requestId,
-            success: result.success,
-            text: result.text,
-            error: result.success ? undefined : result.text,
+          void this.handleHostToolExecution(payload).then((result) => {
+            this.writeSandboxHostToolResponse(activeSession, paths.responsesDir, requestId, {
+              type: 'host_tool_response',
+              requestId,
+              success: result.success,
+              text: result.text,
+              error: result.success ? undefined : result.text,
+            });
           });
           return;
         }
@@ -4501,13 +4516,14 @@ export class CoworkRunner extends EventEmitter {
       if (messageType === 'host_tool_request') {
         const reqId = String(payload.requestId ?? '');
         if (!reqId) return;
-        const result = this.handleHostToolExecution(payload);
-        this.writeSandboxHostToolResponse(activeSession, paths.responsesDir, reqId, {
-          type: 'host_tool_response',
-          requestId: reqId,
-          success: result.success,
-          text: result.text,
-          error: result.success ? undefined : result.text,
+        void this.handleHostToolExecution(payload).then((result) => {
+          this.writeSandboxHostToolResponse(activeSession, paths.responsesDir, reqId, {
+            type: 'host_tool_response',
+            requestId: reqId,
+            success: result.success,
+            text: result.text,
+            error: result.success ? undefined : result.text,
+          });
         });
         return;
       }

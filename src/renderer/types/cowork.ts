@@ -1,3 +1,5 @@
+import type { Mem0UserIdStrategy, VectorMemoryProvider } from '../../common/coworkMemory';
+
 // Cowork image attachment for vision-capable models
 export interface CoworkImageAttachment {
   name: string;
@@ -67,6 +69,17 @@ export interface CoworkConfig {
   memoryLlmJudgeEnabled: boolean;
   memoryGuardLevel: 'strict' | 'standard' | 'relaxed';
   memoryUserMemoriesMaxItems: number;
+  vectorMemoryEnabled: boolean;
+  vectorMemoryProvider: VectorMemoryProvider;
+  mem0BaseUrl: string;
+  mem0ApiKey: string;
+  mem0OrgId: string;
+  mem0ProjectId: string;
+  mem0UserIdStrategy: Mem0UserIdStrategy;
+  mem0TimeoutMs: number;
+  mem0TopK: number;
+  mem0MinScore: number;
+  vectorFallbackToSqljs: boolean;
 }
 
 export type CoworkConfigUpdate = Partial<Pick<
@@ -79,6 +92,17 @@ export type CoworkConfigUpdate = Partial<Pick<
   | 'memoryLlmJudgeEnabled'
   | 'memoryGuardLevel'
   | 'memoryUserMemoriesMaxItems'
+  | 'vectorMemoryEnabled'
+  | 'vectorMemoryProvider'
+  | 'mem0BaseUrl'
+  | 'mem0ApiKey'
+  | 'mem0OrgId'
+  | 'mem0ProjectId'
+  | 'mem0UserIdStrategy'
+  | 'mem0TimeoutMs'
+  | 'mem0TopK'
+  | 'mem0MinScore'
+  | 'vectorFallbackToSqljs'
 >>;
 
 export interface CoworkApiConfig {

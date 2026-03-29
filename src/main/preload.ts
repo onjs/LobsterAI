@@ -209,6 +209,17 @@ contextBridge.exposeInMainWorld('electron', {
       memoryLlmJudgeEnabled?: boolean;
       memoryGuardLevel?: 'strict' | 'standard' | 'relaxed';
       memoryUserMemoriesMaxItems?: number;
+      vectorMemoryEnabled?: boolean;
+      vectorMemoryProvider?: 'sqljs' | 'mem0';
+      mem0BaseUrl?: string;
+      mem0ApiKey?: string;
+      mem0OrgId?: string;
+      mem0ProjectId?: string;
+      mem0UserIdStrategy?: 'global' | 'agent' | 'workspace';
+      mem0TimeoutMs?: number;
+      mem0TopK?: number;
+      mem0MinScore?: number;
+      vectorFallbackToSqljs?: boolean;
     }) =>
       ipcRenderer.invoke('cowork:config:set', config),
     listMemoryEntries: (input: {

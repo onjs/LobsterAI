@@ -7,6 +7,18 @@ import type {
   CoworkPermissionRequest,
   CoworkSessionStatus,
 } from '../../types/cowork';
+import {
+  DEFAULT_MEM0_BASE_URL,
+  DEFAULT_MEM0_MIN_SCORE,
+  DEFAULT_MEM0_ORG_ID,
+  DEFAULT_MEM0_PROJECT_ID,
+  DEFAULT_MEM0_TIMEOUT_MS,
+  DEFAULT_MEM0_TOP_K,
+  DEFAULT_MEM0_USER_ID_STRATEGY,
+  DEFAULT_VECTOR_FALLBACK_TO_SQLJS,
+  DEFAULT_VECTOR_MEMORY_ENABLED,
+  DEFAULT_VECTOR_MEMORY_PROVIDER,
+} from '../../../common/coworkMemory';
 
 export interface DraftAttachment {
   path: string;
@@ -51,6 +63,17 @@ const initialState: CoworkState = {
     memoryLlmJudgeEnabled: false,
     memoryGuardLevel: 'strict',
     memoryUserMemoriesMaxItems: 12,
+    vectorMemoryEnabled: DEFAULT_VECTOR_MEMORY_ENABLED,
+    vectorMemoryProvider: DEFAULT_VECTOR_MEMORY_PROVIDER,
+    mem0BaseUrl: DEFAULT_MEM0_BASE_URL,
+    mem0ApiKey: '',
+    mem0OrgId: DEFAULT_MEM0_ORG_ID,
+    mem0ProjectId: DEFAULT_MEM0_PROJECT_ID,
+    mem0UserIdStrategy: DEFAULT_MEM0_USER_ID_STRATEGY,
+    mem0TimeoutMs: DEFAULT_MEM0_TIMEOUT_MS,
+    mem0TopK: DEFAULT_MEM0_TOP_K,
+    mem0MinScore: DEFAULT_MEM0_MIN_SCORE,
+    vectorFallbackToSqljs: DEFAULT_VECTOR_FALLBACK_TO_SQLJS,
   },
 };
 
