@@ -61,6 +61,68 @@ const MEMORY_PROCEDURAL_TEXT_RE = /(执行以下命令|run\s+(?:the\s+)?followin
 const MEMORY_ASSISTANT_STYLE_TEXT_RE = /^(?:使用|use)\s+[A-Za-z0-9._-]+\s*(?:技能|skill)/i;
 const CONVERSATION_SEARCH_SEMANTIC_MIN_SCORE = 0.2;
 const CONVERSATION_SEARCH_MAX_SCAN_ROWS = 800;
+const COWORK_AGENT_ENGINE_ENV_KEYS = ['COWORK_AGENT_ENGINE', 'LOBSTERAI_COWORK_AGENT_ENGINE'] as const;
+const COWORK_VECTOR_MEMORY_PROVIDER_ENV_KEYS = ['COWORK_VECTOR_MEMORY_PROVIDER', 'LOBSTERAI_COWORK_VECTOR_MEMORY_PROVIDER'] as const;
+const ENV_LINE_RE = /^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/;
+
+let cachedRootDotEnv: Record<string, string> | null = null;
+
+function unquoteEnvValue(value: string): string {
+  const trimmed = value.trim();
+  if (
+    (trimmed.startsWith('"') && trimmed.endsWith('"'))
+    || (trimmed.startsWith('\'') && trimmed.endsWith('\''))
+  ) {
+    return trimmed.slice(1, -1);
+  }
+  return trimmed;
+}
+
+function readRootDotEnv(): Record<string, string> {
+  if (cachedRootDotEnv) {
+    return cachedRootDotEnv;
+  }
+  const envMap: Record<string, string> = {};
+  const envCandidates = [
+    path.resolve(process.cwd(), 'deploy', 'mem0-qdrant', '.env'),
+    path.resolve(process.cwd(), '.env'),
+  ];
+  for (const envPath of envCandidates) {
+    try {
+      if (!fs.existsSync(envPath)) continue;
+      const content = fs.readFileSync(envPath, 'utf8');
+      const lines = content.split(/\r?\n/g);
+      for (const rawLine of lines) {
+        const line = rawLine.trim();
+        if (!line || line.startsWith('#')) continue;
+        const match = line.match(ENV_LINE_RE);
+        if (!match) continue;
+        envMap[match[1]] = unquoteEnvValue(match[2]);
+      }
+    } catch (error) {
+      console.warn(`[CoworkStore] Failed to parse env file: ${envPath}`, error);
+    }
+  }
+  cachedRootDotEnv = envMap;
+  return envMap;
+}
+
+function readConfigEnvValue(keys: readonly string[]): string | undefined {
+  for (const key of keys) {
+    const processValue = process.env[key];
+    if (typeof processValue === 'string' && processValue.trim()) {
+      return processValue.trim();
+    }
+  }
+  const dotEnv = readRootDotEnv();
+  for (const key of keys) {
+    const envFileValue = dotEnv[key];
+    if (typeof envFileValue === 'string' && envFileValue.trim()) {
+      return envFileValue.trim();
+    }
+  }
+  return undefined;
+}
 
 function normalizeMemoryGuardLevel(value: string | undefined): CoworkMemoryGuardLevel {
   if (value === 'strict' || value === 'standard' || value === 'relaxed') return value;
@@ -388,11 +450,31 @@ export interface UpdateAgentRequest {
 
 const COWORK_AGENT_ENGINE = 'yd_cowork';
 
+function resolveDefaultCoworkAgentEngine(): CoworkAgentEngine {
+  const configured = readConfigEnvValue(COWORK_AGENT_ENGINE_ENV_KEYS);
+  if (configured === 'yd_cowork' || configured === 'openclaw') {
+    return configured;
+  }
+  return COWORK_AGENT_ENGINE;
+}
+
+const DEFAULT_COWORK_AGENT_ENGINE = resolveDefaultCoworkAgentEngine();
+const DEFAULT_COWORK_VECTOR_MEMORY_PROVIDER = normalizeVectorMemoryProvider(
+  readConfigEnvValue(COWORK_VECTOR_MEMORY_PROVIDER_ENV_KEYS),
+);
+
 function normalizeCoworkAgentEngineValue(value?: string | null): CoworkAgentEngine {
   if (value === 'yd_cowork' || value === 'openclaw') {
     return value;
   }
-  return COWORK_AGENT_ENGINE;
+  return DEFAULT_COWORK_AGENT_ENGINE;
+}
+
+function normalizeVectorMemoryProviderValue(value?: string | null): VectorMemoryProvider {
+  if (value === 'mem0' || value === 'sqljs') {
+    return value;
+  }
+  return DEFAULT_COWORK_VECTOR_MEMORY_PROVIDER;
 }
 
 export interface CoworkMessageMetadata {
@@ -613,6 +695,34 @@ export class CoworkStore {
   constructor(db: Database, saveDb: () => void) {
     this.db = db;
     this.saveDb = saveDb;
+    this.ensureDefaultConfigEntries();
+  }
+
+  private ensureDefaultConfigEntries(): void {
+    const now = Date.now();
+    let changed = false;
+    changed = this.insertConfigIfMissing('agentEngine', DEFAULT_COWORK_AGENT_ENGINE, now) || changed;
+    changed = this.insertConfigIfMissing('vectorMemoryProvider', DEFAULT_COWORK_VECTOR_MEMORY_PROVIDER, now) || changed;
+    if (changed) {
+      this.saveDb();
+    }
+  }
+
+  private insertConfigIfMissing(
+    key: 'agentEngine' | 'vectorMemoryProvider',
+    value: string,
+    updatedAt: number,
+  ): boolean {
+    const existing = this.getOne<{ value: string }>('SELECT value FROM cowork_config WHERE key = ?', [key]);
+    if (existing) {
+      return false;
+    }
+    this.db.run(`
+      INSERT INTO cowork_config (key, value, updated_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(key) DO NOTHING
+    `, [key, value, updatedAt]);
+    return true;
   }
 
   private getOne<T>(sql: string, params: (string | number | null)[] = []): T | undefined {
@@ -1119,7 +1229,7 @@ export class CoworkStore {
       memoryGuardLevel: normalizeMemoryGuardLevel(memoryGuardLevelRow?.value),
       memoryUserMemoriesMaxItems: clampMemoryUserMemoriesMaxItems(Number(memoryUserMemoriesMaxItemsRow?.value)),
       vectorMemoryEnabled: parseBooleanConfig(vectorMemoryEnabledRow?.value, DEFAULT_VECTOR_MEMORY_ENABLED),
-      vectorMemoryProvider: normalizeVectorMemoryProvider(vectorMemoryProviderRow?.value),
+      vectorMemoryProvider: normalizeVectorMemoryProviderValue(vectorMemoryProviderRow?.value),
       mem0BaseUrl: mem0BaseUrlRow?.value ?? DEFAULT_MEM0_BASE_URL,
       mem0ApiKey: mem0ApiKeyRow?.value ?? DEFAULT_MEM0_API_KEY,
       mem0OrgId: mem0OrgIdRow?.value ?? DEFAULT_MEM0_ORG_ID,
@@ -1233,7 +1343,7 @@ export class CoworkStore {
         ON CONFLICT(key) DO UPDATE SET
           value = excluded.value,
           updated_at = excluded.updated_at
-      `, [normalizeVectorMemoryProvider(config.vectorMemoryProvider), now]);
+      `, [normalizeVectorMemoryProviderValue(config.vectorMemoryProvider), now]);
     }
 
     if (config.mem0BaseUrl !== undefined) {
