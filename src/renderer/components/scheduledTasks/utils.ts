@@ -226,10 +226,14 @@ export function formatDeliveryLabel(delivery: ScheduledTaskDelivery): string {
   return `${i18nService.t('scheduledTasksFormDeliveryModeAnnounce')} · ${channel}${toLabel}`;
 }
 
-export type PlanType = 'once' | 'daily' | 'weekly' | 'monthly' | 'advanced';
+export type PlanType = 'once' | 'interval' | 'hourly' | 'daily' | 'weekly' | 'monthly' | 'advanced';
+
+export type IntervalUnit = 'minutes' | 'hours' | 'days';
 
 export interface PlanInfo {
   planType: PlanType;
+  intervalValue: number;
+  intervalUnit: IntervalUnit;
   hour: number;
   minute: number;
   second: number;
@@ -242,6 +246,8 @@ export interface PlanInfo {
 
 const DEFAULT_PLAN_INFO: PlanInfo = {
   planType: 'daily',
+  intervalValue: 1,
+  intervalUnit: 'hours',
   hour: 9,
   minute: 0,
   second: 0,
@@ -257,6 +263,7 @@ export function scheduleToPlanInfo(schedule: Schedule): PlanInfo {
     const date = new Date(schedule.at);
     if (!Number.isFinite(date.getTime())) return { ...DEFAULT_PLAN_INFO, planType: 'once' };
     return {
+      ...DEFAULT_PLAN_INFO,
       planType: 'once',
       year: date.getFullYear(),
       month: date.getMonth() + 1,
@@ -264,12 +271,35 @@ export function scheduleToPlanInfo(schedule: Schedule): PlanInfo {
       hour: date.getHours(),
       minute: date.getMinutes(),
       second: date.getSeconds(),
-      weekday: DEFAULT_PLAN_INFO.weekday,
-      monthDay: DEFAULT_PLAN_INFO.monthDay,
     };
   }
 
   if (schedule.kind === 'every') {
+    const everyMs = schedule.everyMs;
+    if (everyMs > 0 && Number.isFinite(everyMs)) {
+      if (everyMs % 86_400_000 === 0) {
+        return {
+          ...DEFAULT_PLAN_INFO,
+          planType: 'interval',
+          intervalUnit: 'days',
+          intervalValue: Math.max(1, Math.floor(everyMs / 86_400_000)),
+        };
+      }
+      if (everyMs % 3_600_000 === 0) {
+        return {
+          ...DEFAULT_PLAN_INFO,
+          planType: 'interval',
+          intervalUnit: 'hours',
+          intervalValue: Math.max(1, Math.floor(everyMs / 3_600_000)),
+        };
+      }
+      return {
+        ...DEFAULT_PLAN_INFO,
+        planType: 'interval',
+        intervalUnit: 'minutes',
+        intervalValue: Math.max(1, Math.floor(everyMs / 60_000)),
+      };
+    }
     return { ...DEFAULT_PLAN_INFO, planType: 'advanced' };
   }
 
@@ -282,7 +312,20 @@ export function scheduleToPlanInfo(schedule: Schedule): PlanInfo {
   const dom = parseField(domRaw);
   const dow = parseField(dowRaw);
 
-  if (!min || !hour || min.type !== 'value' || hour.type !== 'value') {
+  if (!min || !hour || min.type !== 'value') {
+    return { ...DEFAULT_PLAN_INFO, planType: 'advanced' };
+  }
+
+  // Hourly: M * * * *
+  if (hour.type === 'any' && dom && dom.type === 'any' && dow && dow.type === 'any') {
+    return {
+      ...DEFAULT_PLAN_INFO,
+      planType: 'hourly',
+      minute: min.value,
+    };
+  }
+
+  if (hour.type !== 'value') {
     return { ...DEFAULT_PLAN_INFO, planType: 'advanced' };
   }
 
