@@ -6,26 +6,6 @@ import path from 'path';
 import { Database } from 'sql.js';
 import { v4 as uuidv4 } from 'uuid';
 import {
-  clampMem0MinScore,
-  clampMem0TimeoutMs,
-  clampMem0TopK,
-  DEFAULT_MEM0_API_KEY,
-  DEFAULT_MEM0_BASE_URL,
-  DEFAULT_MEM0_MIN_SCORE,
-  DEFAULT_MEM0_ORG_ID,
-  DEFAULT_MEM0_PROJECT_ID,
-  DEFAULT_MEM0_TIMEOUT_MS,
-  DEFAULT_MEM0_TOP_K,
-  DEFAULT_MEM0_USER_ID_STRATEGY,
-  DEFAULT_VECTOR_FALLBACK_TO_SQLJS,
-  DEFAULT_VECTOR_MEMORY_ENABLED,
-  DEFAULT_VECTOR_MEMORY_PROVIDER,
-  normalizeMem0UserIdStrategy,
-  normalizeVectorMemoryProvider,
-  type Mem0UserIdStrategy,
-  type VectorMemoryProvider,
-} from '../common/coworkMemory';
-import {
   extractTurnMemoryChanges,
   isQuestionLikeMemoryText,
   type CoworkMemoryGuardLevel,
@@ -62,7 +42,6 @@ const MEMORY_ASSISTANT_STYLE_TEXT_RE = /^(?:使用|use)\s+[A-Za-z0-9._-]+\s*(?:�
 const CONVERSATION_SEARCH_SEMANTIC_MIN_SCORE = 0.2;
 const CONVERSATION_SEARCH_MAX_SCAN_ROWS = 800;
 const COWORK_AGENT_ENGINE_ENV_KEYS = ['COWORK_AGENT_ENGINE', 'LOBSTERAI_COWORK_AGENT_ENGINE'] as const;
-const COWORK_VECTOR_MEMORY_PROVIDER_ENV_KEYS = ['COWORK_VECTOR_MEMORY_PROVIDER', 'LOBSTERAI_COWORK_VECTOR_MEMORY_PROVIDER'] as const;
 const ENV_LINE_RE = /^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/;
 
 let cachedRootDotEnv: Record<string, string> | null = null;
@@ -83,10 +62,7 @@ function readRootDotEnv(): Record<string, string> {
     return cachedRootDotEnv;
   }
   const envMap: Record<string, string> = {};
-  const envCandidates = [
-    path.resolve(process.cwd(), 'deploy', 'mem0-qdrant', '.env'),
-    path.resolve(process.cwd(), '.env'),
-  ];
+  const envCandidates = [path.resolve(process.cwd(), '.env')];
   for (const envPath of envCandidates) {
     try {
       if (!fs.existsSync(envPath)) continue;
@@ -459,22 +435,12 @@ function resolveDefaultCoworkAgentEngine(): CoworkAgentEngine {
 }
 
 const DEFAULT_COWORK_AGENT_ENGINE = resolveDefaultCoworkAgentEngine();
-const DEFAULT_COWORK_VECTOR_MEMORY_PROVIDER = normalizeVectorMemoryProvider(
-  readConfigEnvValue(COWORK_VECTOR_MEMORY_PROVIDER_ENV_KEYS),
-);
 
 function normalizeCoworkAgentEngineValue(value?: string | null): CoworkAgentEngine {
   if (value === 'yd_cowork' || value === 'openclaw') {
     return value;
   }
   return DEFAULT_COWORK_AGENT_ENGINE;
-}
-
-function normalizeVectorMemoryProviderValue(value?: string | null): VectorMemoryProvider {
-  if (value === 'mem0' || value === 'sqljs') {
-    return value;
-  }
-  return DEFAULT_COWORK_VECTOR_MEMORY_PROVIDER;
 }
 
 export interface CoworkMessageMetadata {
@@ -581,17 +547,6 @@ export interface CoworkConfig {
   memoryLlmJudgeEnabled: boolean;
   memoryGuardLevel: CoworkMemoryGuardLevel;
   memoryUserMemoriesMaxItems: number;
-  vectorMemoryEnabled: boolean;
-  vectorMemoryProvider: VectorMemoryProvider;
-  mem0BaseUrl: string;
-  mem0ApiKey: string;
-  mem0OrgId: string;
-  mem0ProjectId: string;
-  mem0UserIdStrategy: Mem0UserIdStrategy;
-  mem0TimeoutMs: number;
-  mem0TopK: number;
-  mem0MinScore: number;
-  vectorFallbackToSqljs: boolean;
 }
 
 export type CoworkConfigUpdate = Partial<Pick<
@@ -604,17 +559,6 @@ export type CoworkConfigUpdate = Partial<Pick<
   | 'memoryLlmJudgeEnabled'
   | 'memoryGuardLevel'
   | 'memoryUserMemoriesMaxItems'
-  | 'vectorMemoryEnabled'
-  | 'vectorMemoryProvider'
-  | 'mem0BaseUrl'
-  | 'mem0ApiKey'
-  | 'mem0OrgId'
-  | 'mem0ProjectId'
-  | 'mem0UserIdStrategy'
-  | 'mem0TimeoutMs'
-  | 'mem0TopK'
-  | 'mem0MinScore'
-  | 'vectorFallbackToSqljs'
 >>;
 
 export interface ApplyTurnMemoryUpdatesOptions {
@@ -701,15 +645,39 @@ export class CoworkStore {
   private ensureDefaultConfigEntries(): void {
     const now = Date.now();
     let changed = false;
+    changed = this.purgeLegacyVectorMemoryConfigEntries() || changed;
     changed = this.insertConfigIfMissing('agentEngine', DEFAULT_COWORK_AGENT_ENGINE, now) || changed;
-    changed = this.insertConfigIfMissing('vectorMemoryProvider', DEFAULT_COWORK_VECTOR_MEMORY_PROVIDER, now) || changed;
     if (changed) {
       this.saveDb();
     }
   }
 
+  private purgeLegacyVectorMemoryConfigEntries(): boolean {
+    interface CountRow {
+      count: number | string;
+    }
+    const countRow = this.getOne<CountRow>(`
+      SELECT COUNT(*) AS count
+      FROM cowork_config
+      WHERE key LIKE 'mem0%'
+        OR key LIKE 'vectorMemory%'
+        OR key = 'vectorFallbackToSqljs'
+    `);
+    const matched = Number(countRow?.count || 0);
+    if (!Number.isFinite(matched) || matched <= 0) {
+      return false;
+    }
+    this.db.run(`
+      DELETE FROM cowork_config
+      WHERE key LIKE 'mem0%'
+        OR key LIKE 'vectorMemory%'
+        OR key = 'vectorFallbackToSqljs'
+    `);
+    return true;
+  }
+
   private insertConfigIfMissing(
-    key: 'agentEngine' | 'vectorMemoryProvider',
+    key: 'agentEngine',
     value: string,
     updatedAt: number,
   ): boolean {
@@ -1196,21 +1164,12 @@ export class CoworkStore {
     const memoryLlmJudgeEnabledRow = this.getOne<ConfigRow>('SELECT value FROM cowork_config WHERE key = ?', ['memoryLlmJudgeEnabled']);
     const memoryGuardLevelRow = this.getOne<ConfigRow>('SELECT value FROM cowork_config WHERE key = ?', ['memoryGuardLevel']);
     const memoryUserMemoriesMaxItemsRow = this.getOne<ConfigRow>('SELECT value FROM cowork_config WHERE key = ?', ['memoryUserMemoriesMaxItems']);
-    const vectorMemoryEnabledRow = this.getOne<ConfigRow>('SELECT value FROM cowork_config WHERE key = ?', ['vectorMemoryEnabled']);
-    const vectorMemoryProviderRow = this.getOne<ConfigRow>('SELECT value FROM cowork_config WHERE key = ?', ['vectorMemoryProvider']);
-    const mem0BaseUrlRow = this.getOne<ConfigRow>('SELECT value FROM cowork_config WHERE key = ?', ['mem0BaseUrl']);
-    const mem0ApiKeyRow = this.getOne<ConfigRow>('SELECT value FROM cowork_config WHERE key = ?', ['mem0ApiKey']);
-    const mem0OrgIdRow = this.getOne<ConfigRow>('SELECT value FROM cowork_config WHERE key = ?', ['mem0OrgId']);
-    const mem0ProjectIdRow = this.getOne<ConfigRow>('SELECT value FROM cowork_config WHERE key = ?', ['mem0ProjectId']);
-    const mem0UserIdStrategyRow = this.getOne<ConfigRow>('SELECT value FROM cowork_config WHERE key = ?', ['mem0UserIdStrategy']);
-    const mem0TimeoutMsRow = this.getOne<ConfigRow>('SELECT value FROM cowork_config WHERE key = ?', ['mem0TimeoutMs']);
-    const mem0TopKRow = this.getOne<ConfigRow>('SELECT value FROM cowork_config WHERE key = ?', ['mem0TopK']);
-    const mem0MinScoreRow = this.getOne<ConfigRow>('SELECT value FROM cowork_config WHERE key = ?', ['mem0MinScore']);
-    const vectorFallbackToSqljsRow = this.getOne<ConfigRow>('SELECT value FROM cowork_config WHERE key = ?', ['vectorFallbackToSqljs']);
 
     const normalizedExecutionMode =
       executionModeRow?.value === 'container' ? 'sandbox' : (executionModeRow?.value as CoworkExecutionMode);
-    const normalizedAgentEngine = normalizeCoworkAgentEngineValue(agentEngineRow?.value);
+    const envAgentEngine = readConfigEnvValue(COWORK_AGENT_ENGINE_ENV_KEYS);
+
+    const normalizedAgentEngine = normalizeCoworkAgentEngineValue(envAgentEngine ?? agentEngineRow?.value);
 
     return {
       workingDirectory: workingDirRow?.value || getDefaultWorkingDirectory(),
@@ -1228,17 +1187,6 @@ export class CoworkStore {
       ),
       memoryGuardLevel: normalizeMemoryGuardLevel(memoryGuardLevelRow?.value),
       memoryUserMemoriesMaxItems: clampMemoryUserMemoriesMaxItems(Number(memoryUserMemoriesMaxItemsRow?.value)),
-      vectorMemoryEnabled: parseBooleanConfig(vectorMemoryEnabledRow?.value, DEFAULT_VECTOR_MEMORY_ENABLED),
-      vectorMemoryProvider: normalizeVectorMemoryProviderValue(vectorMemoryProviderRow?.value),
-      mem0BaseUrl: mem0BaseUrlRow?.value ?? DEFAULT_MEM0_BASE_URL,
-      mem0ApiKey: mem0ApiKeyRow?.value ?? DEFAULT_MEM0_API_KEY,
-      mem0OrgId: mem0OrgIdRow?.value ?? DEFAULT_MEM0_ORG_ID,
-      mem0ProjectId: mem0ProjectIdRow?.value ?? DEFAULT_MEM0_PROJECT_ID,
-      mem0UserIdStrategy: normalizeMem0UserIdStrategy(mem0UserIdStrategyRow?.value),
-      mem0TimeoutMs: clampMem0TimeoutMs(Number(mem0TimeoutMsRow?.value)),
-      mem0TopK: clampMem0TopK(Number(mem0TopKRow?.value)),
-      mem0MinScore: clampMem0MinScore(Number(mem0MinScoreRow?.value)),
-      vectorFallbackToSqljs: parseBooleanConfig(vectorFallbackToSqljsRow?.value, DEFAULT_VECTOR_FALLBACK_TO_SQLJS),
     };
   }
 
@@ -1324,116 +1272,6 @@ export class CoworkStore {
           value = excluded.value,
           updated_at = excluded.updated_at
       `, [String(clampMemoryUserMemoriesMaxItems(config.memoryUserMemoriesMaxItems)), now]);
-    }
-
-    if (config.vectorMemoryEnabled !== undefined) {
-      this.db.run(`
-        INSERT INTO cowork_config (key, value, updated_at)
-        VALUES ('vectorMemoryEnabled', ?, ?)
-        ON CONFLICT(key) DO UPDATE SET
-          value = excluded.value,
-          updated_at = excluded.updated_at
-      `, [config.vectorMemoryEnabled ? '1' : '0', now]);
-    }
-
-    if (config.vectorMemoryProvider !== undefined) {
-      this.db.run(`
-        INSERT INTO cowork_config (key, value, updated_at)
-        VALUES ('vectorMemoryProvider', ?, ?)
-        ON CONFLICT(key) DO UPDATE SET
-          value = excluded.value,
-          updated_at = excluded.updated_at
-      `, [normalizeVectorMemoryProviderValue(config.vectorMemoryProvider), now]);
-    }
-
-    if (config.mem0BaseUrl !== undefined) {
-      this.db.run(`
-        INSERT INTO cowork_config (key, value, updated_at)
-        VALUES ('mem0BaseUrl', ?, ?)
-        ON CONFLICT(key) DO UPDATE SET
-          value = excluded.value,
-          updated_at = excluded.updated_at
-      `, [config.mem0BaseUrl.trim(), now]);
-    }
-
-    if (config.mem0ApiKey !== undefined) {
-      this.db.run(`
-        INSERT INTO cowork_config (key, value, updated_at)
-        VALUES ('mem0ApiKey', ?, ?)
-        ON CONFLICT(key) DO UPDATE SET
-          value = excluded.value,
-          updated_at = excluded.updated_at
-      `, [config.mem0ApiKey.trim(), now]);
-    }
-
-    if (config.mem0OrgId !== undefined) {
-      this.db.run(`
-        INSERT INTO cowork_config (key, value, updated_at)
-        VALUES ('mem0OrgId', ?, ?)
-        ON CONFLICT(key) DO UPDATE SET
-          value = excluded.value,
-          updated_at = excluded.updated_at
-      `, [config.mem0OrgId.trim(), now]);
-    }
-
-    if (config.mem0ProjectId !== undefined) {
-      this.db.run(`
-        INSERT INTO cowork_config (key, value, updated_at)
-        VALUES ('mem0ProjectId', ?, ?)
-        ON CONFLICT(key) DO UPDATE SET
-          value = excluded.value,
-          updated_at = excluded.updated_at
-      `, [config.mem0ProjectId.trim(), now]);
-    }
-
-    if (config.mem0UserIdStrategy !== undefined) {
-      this.db.run(`
-        INSERT INTO cowork_config (key, value, updated_at)
-        VALUES ('mem0UserIdStrategy', ?, ?)
-        ON CONFLICT(key) DO UPDATE SET
-          value = excluded.value,
-          updated_at = excluded.updated_at
-      `, [normalizeMem0UserIdStrategy(config.mem0UserIdStrategy), now]);
-    }
-
-    if (config.mem0TimeoutMs !== undefined) {
-      this.db.run(`
-        INSERT INTO cowork_config (key, value, updated_at)
-        VALUES ('mem0TimeoutMs', ?, ?)
-        ON CONFLICT(key) DO UPDATE SET
-          value = excluded.value,
-          updated_at = excluded.updated_at
-      `, [String(clampMem0TimeoutMs(config.mem0TimeoutMs)), now]);
-    }
-
-    if (config.mem0TopK !== undefined) {
-      this.db.run(`
-        INSERT INTO cowork_config (key, value, updated_at)
-        VALUES ('mem0TopK', ?, ?)
-        ON CONFLICT(key) DO UPDATE SET
-          value = excluded.value,
-          updated_at = excluded.updated_at
-      `, [String(clampMem0TopK(config.mem0TopK)), now]);
-    }
-
-    if (config.mem0MinScore !== undefined) {
-      this.db.run(`
-        INSERT INTO cowork_config (key, value, updated_at)
-        VALUES ('mem0MinScore', ?, ?)
-        ON CONFLICT(key) DO UPDATE SET
-          value = excluded.value,
-          updated_at = excluded.updated_at
-      `, [String(clampMem0MinScore(config.mem0MinScore)), now]);
-    }
-
-    if (config.vectorFallbackToSqljs !== undefined) {
-      this.db.run(`
-        INSERT INTO cowork_config (key, value, updated_at)
-        VALUES ('vectorFallbackToSqljs', ?, ?)
-        ON CONFLICT(key) DO UPDATE SET
-          value = excluded.value,
-          updated_at = excluded.updated_at
-      `, [config.vectorFallbackToSqljs ? '1' : '0', now]);
     }
 
     this.saveDb();

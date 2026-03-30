@@ -75,13 +75,6 @@ import {
   setSystemProxyEnabled,
 } from './libs/systemProxy';
 import { FEATURE_FLAGS } from '../common/featureFlags';
-import {
-  clampMem0MinScore,
-  clampMem0TimeoutMs,
-  clampMem0TopK,
-  normalizeMem0UserIdStrategy,
-  normalizeVectorMemoryProvider,
-} from '../common/coworkMemory';
 
 // 设置应用程序名称
 app.name = APP_NAME;
@@ -3205,17 +3198,6 @@ if (!gotTheLock) {
     memoryLlmJudgeEnabled?: boolean;
     memoryGuardLevel?: 'strict' | 'standard' | 'relaxed';
     memoryUserMemoriesMaxItems?: number;
-    vectorMemoryEnabled?: boolean;
-    vectorMemoryProvider?: 'sqljs' | 'mem0';
-    mem0BaseUrl?: string;
-    mem0ApiKey?: string;
-    mem0OrgId?: string;
-    mem0ProjectId?: string;
-    mem0UserIdStrategy?: 'global' | 'agent' | 'workspace';
-    mem0TimeoutMs?: number;
-    mem0TopK?: number;
-    mem0MinScore?: number;
-    vectorFallbackToSqljs?: boolean;
   }) => {
     try {
       const normalizedExecutionMode =
@@ -3248,39 +3230,6 @@ if (!gotTheLock) {
             Math.min(MAX_MEMORY_USER_MEMORIES_MAX_ITEMS, Math.floor(config.memoryUserMemoriesMaxItems))
           )
         : undefined;
-      const normalizedVectorMemoryEnabled = typeof config.vectorMemoryEnabled === 'boolean'
-        ? config.vectorMemoryEnabled
-        : undefined;
-      const normalizedVectorMemoryProvider = config.vectorMemoryProvider
-        ? normalizeVectorMemoryProvider(config.vectorMemoryProvider)
-        : undefined;
-      const normalizedMem0BaseUrl = typeof config.mem0BaseUrl === 'string'
-        ? config.mem0BaseUrl.trim()
-        : undefined;
-      const normalizedMem0ApiKey = typeof config.mem0ApiKey === 'string'
-        ? config.mem0ApiKey.trim()
-        : undefined;
-      const normalizedMem0OrgId = typeof config.mem0OrgId === 'string'
-        ? config.mem0OrgId.trim()
-        : undefined;
-      const normalizedMem0ProjectId = typeof config.mem0ProjectId === 'string'
-        ? config.mem0ProjectId.trim()
-        : undefined;
-      const normalizedMem0UserIdStrategy = config.mem0UserIdStrategy
-        ? normalizeMem0UserIdStrategy(config.mem0UserIdStrategy)
-        : undefined;
-      const normalizedMem0TimeoutMs = typeof config.mem0TimeoutMs === 'number'
-        ? clampMem0TimeoutMs(config.mem0TimeoutMs)
-        : undefined;
-      const normalizedMem0TopK = typeof config.mem0TopK === 'number'
-        ? clampMem0TopK(config.mem0TopK)
-        : undefined;
-      const normalizedMem0MinScore = typeof config.mem0MinScore === 'number'
-        ? clampMem0MinScore(config.mem0MinScore)
-        : undefined;
-      const normalizedVectorFallbackToSqljs = typeof config.vectorFallbackToSqljs === 'boolean'
-        ? config.vectorFallbackToSqljs
-        : undefined;
       const normalizedConfig: Parameters<CoworkStore['setConfig']>[0] = {
         ...config,
         executionMode: normalizedExecutionMode,
@@ -3290,17 +3239,6 @@ if (!gotTheLock) {
         memoryLlmJudgeEnabled: normalizedMemoryLlmJudgeEnabled,
         memoryGuardLevel: normalizedMemoryGuardLevel,
         memoryUserMemoriesMaxItems: normalizedMemoryUserMemoriesMaxItems,
-        vectorMemoryEnabled: normalizedVectorMemoryEnabled,
-        vectorMemoryProvider: normalizedVectorMemoryProvider,
-        mem0BaseUrl: normalizedMem0BaseUrl,
-        mem0ApiKey: normalizedMem0ApiKey,
-        mem0OrgId: normalizedMem0OrgId,
-        mem0ProjectId: normalizedMem0ProjectId,
-        mem0UserIdStrategy: normalizedMem0UserIdStrategy,
-        mem0TimeoutMs: normalizedMem0TimeoutMs,
-        mem0TopK: normalizedMem0TopK,
-        mem0MinScore: normalizedMem0MinScore,
-        vectorFallbackToSqljs: normalizedVectorFallbackToSqljs,
       };
       const previousConfig = getCoworkStore().getConfig();
       const previousWorkingDir = previousConfig.workingDirectory;

@@ -526,10 +526,7 @@ export class CoworkRunner extends EventEmitter {
   constructor(store: CoworkStore) {
     super();
     this.store = store;
-    this.memoryProviderRouter = new MemoryProviderRouter({
-      store: this.store,
-      getConfig: () => this.store.getConfig(),
-    });
+    this.memoryProviderRouter = new MemoryProviderRouter(this.store);
   }
 
   setMcpServerProvider(provider: () => Array<{
