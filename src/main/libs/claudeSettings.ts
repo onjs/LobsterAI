@@ -10,6 +10,7 @@ import {
 } from './coworkOpenAICompatProxy';
 import { normalizeProviderApiFormat, type AnthropicApiFormat } from './coworkFormatTransform';
 import { FEATURE_FLAGS } from '../../common/featureFlags';
+import { ProviderName } from '../../shared/providers';
 
 const ZHIPU_CODING_PLAN_BASE_URL = 'https://open.bigmodel.cn/api/coding/paas/v4';
 // Qwen Coding Plan 专属端点 (OpenAI 兼容和 Anthropic 兼容)
@@ -89,6 +90,13 @@ export function clearServerModelMetadata(): void {
   serverModelMetadataCache.clear();
 }
 
+export function getAllServerModelMetadata(): Array<{ modelId: string; supportsImage?: boolean }> {
+  return Array.from(serverModelMetadataCache.entries()).map(([modelId, meta]) => ({
+    modelId,
+    supportsImage: meta.supportsImage,
+  }));
+}
+
 const getStore = (): SqliteStore | null => {
   if (!storeGetter) {
     return null;
@@ -127,17 +135,17 @@ type MatchedProvider = {
 };
 
 function getEffectiveProviderApiFormat(providerName: string, apiFormat: unknown): AnthropicApiFormat {
-  if (providerName === 'openai' || providerName === 'gemini' || providerName === 'stepfun' || providerName === 'youdaozhiyun') {
+  if (providerName === ProviderName.OpenAI || providerName === ProviderName.Gemini || providerName === ProviderName.StepFun || providerName === ProviderName.Youdaozhiyun) {
     return 'openai';
   }
-  if (providerName === 'anthropic') {
+  if (providerName === ProviderName.Anthropic) {
     return 'anthropic';
   }
   return normalizeProviderApiFormat(apiFormat);
 }
 
 function providerRequiresApiKey(providerName: string): boolean {
-  return providerName !== 'ollama';
+  return providerName !== ProviderName.Ollama;
 }
 
 function tryLobsteraiServerFallback(modelId?: string): MatchedProvider | null {
@@ -153,7 +161,7 @@ function tryLobsteraiServerFallback(modelId?: string): MatchedProvider | null {
   const cachedMeta = serverModelMetadataCache.get(effectiveModelId);
   console.log('[ClaudeSettings] lobsterai-server fallback activated:', { baseURL, modelId: effectiveModelId, supportsImage: cachedMeta?.supportsImage });
   return {
-    providerName: 'lobsterai-server',
+    providerName: ProviderName.LobsteraiServer,
     providerConfig: { enabled: true, apiKey: tokens.accessToken, baseUrl: baseURL, apiFormat: 'openai', models: [{ id: effectiveModelId, supportsImage: cachedMeta?.supportsImage }] },
     modelId: effectiveModelId,
     apiFormat: 'openai',
@@ -203,7 +211,7 @@ function resolveMatchedProvider(appConfig: AppConfig): { matched: MatchedProvide
   const preferredProviderName = appConfig.model?.defaultModelProvider?.trim();
 
   // Handle lobsterai-server provider: dynamically construct from auth tokens
-  if (FEATURE_FLAGS.portalAuth && preferredProviderName === 'lobsterai-server') {
+  if (FEATURE_FLAGS.portalAuth && preferredProviderName === ProviderName.LobsteraiServer) {
     const serverMatch = tryLobsteraiServerFallback(modelId);
     if (serverMatch) {
       return { matched: serverMatch };
@@ -246,14 +254,14 @@ function resolveMatchedProvider(appConfig: AppConfig): { matched: MatchedProvide
   let baseURL = providerConfig.baseUrl?.trim();
 
   // Handle Zhipu GLM Coding Plan endpoint switch
-  if (providerName === 'zhipu' && providerConfig.codingPlanEnabled) {
+  if (providerName === ProviderName.Zhipu && providerConfig.codingPlanEnabled) {
     baseURL = ZHIPU_CODING_PLAN_BASE_URL;
     apiFormat = 'openai';
   }
 
   // Handle Qwen Coding Plan endpoint switch
   // Coding Plan supports both OpenAI and Anthropic compatible formats
-  if (providerName === 'qwen' && providerConfig.codingPlanEnabled) {
+  if (providerName === ProviderName.Qwen && providerConfig.codingPlanEnabled) {
     if (apiFormat === 'anthropic') {
       baseURL = QWEN_CODING_PLAN_ANTHROPIC_BASE_URL;
     } else {
@@ -264,7 +272,7 @@ function resolveMatchedProvider(appConfig: AppConfig): { matched: MatchedProvide
 
   // Handle Volcengine Coding Plan endpoint switch
   // Coding Plan supports both OpenAI and Anthropic compatible formats
-  if (providerName === 'volcengine' && providerConfig.codingPlanEnabled) {
+    if (providerName === ProviderName.Volcengine && providerConfig.codingPlanEnabled) {
     if (apiFormat === 'anthropic') {
       baseURL = VOLCENGINE_CODING_PLAN_ANTHROPIC_BASE_URL;
     } else {
@@ -275,7 +283,7 @@ function resolveMatchedProvider(appConfig: AppConfig): { matched: MatchedProvide
 
   // Handle Moonshot/Kimi Coding Plan endpoint switch
   // Coding Plan supports both OpenAI and Anthropic compatible formats
-  if (providerName === 'moonshot' && providerConfig.codingPlanEnabled) {
+    if (providerName === ProviderName.Moonshot && providerConfig.codingPlanEnabled) {
     if (apiFormat === 'anthropic') {
       baseURL = MOONSHOT_CODING_PLAN_ANTHROPIC_BASE_URL;
     } else {
@@ -420,6 +428,7 @@ export function resolveRawApiConfig(): ApiConfigResolution {
     return { config: null, error };
   }
   const apiKey = matched.providerConfig.apiKey?.trim() || '';
+  console.log('[ClaudeSettings] Resolved raw API config:',  JSON.stringify(matched), apiKey);
   // OpenClaw's gateway requires a non-empty apiKey for every provider — even
   // local servers (Ollama, vLLM, etc.) that don't enforce auth.  When the user
   // leaves the key blank we supply a placeholder so the gateway doesn't reject
@@ -471,6 +480,76 @@ export function resolveAllProviderApiKeys(): Record<string, string> {
     if (!apiKey && providerRequiresApiKey(providerName)) continue;
     const envName = providerName.toUpperCase().replace(/[^A-Z0-9]/g, '_');
     result[envName] = apiKey || 'sk-lobsterai-local';
+  }
+
+  return result;
+}
+
+export type ProviderRawConfig = {
+  providerName: string;
+  baseURL: string;
+  apiKey: string;
+  apiType: 'anthropic' | 'openai';
+  codingPlanEnabled: boolean;
+  models: Array<{ id: string; name?: string; supportsImage?: boolean }>;
+};
+
+export function resolveAllEnabledProviderConfigs(): ProviderRawConfig[] {
+  const sqliteStore = getStore();
+  if (!sqliteStore) return [];
+  const appConfig = sqliteStore.get<AppConfig>('app_config');
+  if (!appConfig?.providers) return [];
+
+  const result: ProviderRawConfig[] = [];
+
+  for (const [providerName, providerConfig] of Object.entries(appConfig.providers)) {
+    if (!providerConfig?.enabled) continue;
+    if (providerName === ProviderName.LobsteraiServer) continue;
+
+    const apiKey = providerConfig.apiKey?.trim() || '';
+    if (!apiKey && providerRequiresApiKey(providerName)) continue;
+
+    const baseURL = providerConfig.baseUrl?.trim() || '';
+
+    let effectiveBaseURL = baseURL;
+    let effectiveApiFormat = getEffectiveProviderApiFormat(providerName, providerConfig.apiFormat);
+
+    if (providerName === ProviderName.Zhipu && providerConfig.codingPlanEnabled) {
+      effectiveBaseURL = ZHIPU_CODING_PLAN_BASE_URL;
+      effectiveApiFormat = 'openai';
+    }
+    if (providerName === ProviderName.Qwen && providerConfig.codingPlanEnabled) {
+      effectiveBaseURL = effectiveApiFormat === 'anthropic'
+        ? QWEN_CODING_PLAN_ANTHROPIC_BASE_URL
+        : QWEN_CODING_PLAN_OPENAI_BASE_URL;
+      if (effectiveApiFormat !== 'anthropic') effectiveApiFormat = 'openai';
+    }
+  if (providerName === ProviderName.Volcengine && providerConfig.codingPlanEnabled) {
+      effectiveBaseURL = effectiveApiFormat === 'anthropic'
+        ? VOLCENGINE_CODING_PLAN_ANTHROPIC_BASE_URL
+        : VOLCENGINE_CODING_PLAN_OPENAI_BASE_URL;
+      if (effectiveApiFormat !== 'anthropic') effectiveApiFormat = 'openai';
+    }
+  if (providerName === ProviderName.Moonshot && providerConfig.codingPlanEnabled) {
+      effectiveBaseURL = effectiveApiFormat === 'anthropic'
+        ? MOONSHOT_CODING_PLAN_ANTHROPIC_BASE_URL
+        : MOONSHOT_CODING_PLAN_OPENAI_BASE_URL;
+      if (effectiveApiFormat !== 'anthropic') effectiveApiFormat = 'openai';
+    }
+
+    if (!effectiveBaseURL) continue;
+
+    const models = (providerConfig.models ?? []).filter((m) => m.id?.trim());
+    if (models.length === 0) continue;
+
+    result.push({
+      providerName,
+      baseURL: effectiveBaseURL,
+      apiKey: apiKey || 'sk-lobsterai-local',
+      apiType: effectiveApiFormat === 'anthropic' ? 'anthropic' : 'openai',
+      codingPlanEnabled: !!providerConfig.codingPlanEnabled,
+      models,
+    });
   }
 
   return result;
