@@ -11,6 +11,10 @@ import {
   type CoworkMemoryGuardLevel,
 } from './libs/coworkMemoryExtractor';
 import { judgeMemoryCandidate } from './libs/coworkMemoryJudge';
+import {
+  ScheduledTaskBackend as ScheduledTaskBackendValue,
+  type ScheduledTaskBackend,
+} from '../scheduled-task/constants';
 
 // Default working directory for new users
 const getDefaultWorkingDirectory = (): string => {
@@ -42,6 +46,10 @@ const MEMORY_ASSISTANT_STYLE_TEXT_RE = /^(?:使用|use)\s+[A-Za-z0-9._-]+\s*(?:�
 const CONVERSATION_SEARCH_SEMANTIC_MIN_SCORE = 0.2;
 const CONVERSATION_SEARCH_MAX_SCAN_ROWS = 800;
 const COWORK_AGENT_ENGINE_ENV_KEYS = ['COWORK_AGENT_ENGINE', 'LOBSTERAI_COWORK_AGENT_ENGINE'] as const;
+const COWORK_SCHEDULED_TASK_BACKEND_ENV_KEYS = [
+  'COWORK_SCHEDULED_TASK_BACKEND',
+  'LOBSTERAI_COWORK_SCHEDULED_TASK_BACKEND',
+] as const;
 const ENV_LINE_RE = /^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/;
 
 let cachedRootDotEnv: Record<string, string> | null = null;
@@ -425,6 +433,7 @@ export interface UpdateAgentRequest {
 }
 
 const COWORK_AGENT_ENGINE = 'yd_cowork';
+const COWORK_SCHEDULED_TASK_BACKEND = ScheduledTaskBackendValue.Auto;
 
 function resolveDefaultCoworkAgentEngine(): CoworkAgentEngine {
   const configured = readConfigEnvValue(COWORK_AGENT_ENGINE_ENV_KEYS);
@@ -435,12 +444,24 @@ function resolveDefaultCoworkAgentEngine(): CoworkAgentEngine {
 }
 
 const DEFAULT_COWORK_AGENT_ENGINE = resolveDefaultCoworkAgentEngine();
+const DEFAULT_COWORK_SCHEDULED_TASK_BACKEND = COWORK_SCHEDULED_TASK_BACKEND;
 
 function normalizeCoworkAgentEngineValue(value?: string | null): CoworkAgentEngine {
   if (value === 'yd_cowork' || value === 'openclaw') {
     return value;
   }
   return DEFAULT_COWORK_AGENT_ENGINE;
+}
+
+function normalizeScheduledTaskBackendValue(value?: string | null): ScheduledTaskBackend {
+  if (
+    value === ScheduledTaskBackendValue.OpenClaw
+    || value === ScheduledTaskBackendValue.YdCowork
+    || value === ScheduledTaskBackendValue.Auto
+  ) {
+    return value;
+  }
+  return DEFAULT_COWORK_SCHEDULED_TASK_BACKEND;
 }
 
 export interface CoworkMessageMetadata {
@@ -542,6 +563,7 @@ export interface CoworkConfig {
   systemPrompt: string;
   executionMode: CoworkExecutionMode;
   agentEngine: CoworkAgentEngine;
+  scheduledTaskBackend: ScheduledTaskBackend;
   memoryEnabled: boolean;
   memoryImplicitUpdateEnabled: boolean;
   memoryLlmJudgeEnabled: boolean;
@@ -554,6 +576,7 @@ export type CoworkConfigUpdate = Partial<Pick<
   | 'workingDirectory'
   | 'executionMode'
   | 'agentEngine'
+  | 'scheduledTaskBackend'
   | 'memoryEnabled'
   | 'memoryImplicitUpdateEnabled'
   | 'memoryLlmJudgeEnabled'
@@ -647,6 +670,7 @@ export class CoworkStore {
     let changed = false;
     changed = this.purgeLegacyVectorMemoryConfigEntries() || changed;
     changed = this.insertConfigIfMissing('agentEngine', DEFAULT_COWORK_AGENT_ENGINE, now) || changed;
+    changed = this.insertConfigIfMissing('scheduledTaskBackend', DEFAULT_COWORK_SCHEDULED_TASK_BACKEND, now) || changed;
     if (changed) {
       this.saveDb();
     }
@@ -677,7 +701,7 @@ export class CoworkStore {
   }
 
   private insertConfigIfMissing(
-    key: 'agentEngine',
+    key: 'agentEngine' | 'scheduledTaskBackend',
     value: string,
     updatedAt: number,
   ): boolean {
@@ -1159,6 +1183,7 @@ export class CoworkStore {
     const workingDirRow = this.getOne<ConfigRow>('SELECT value FROM cowork_config WHERE key = ?', ['workingDirectory']);
     const executionModeRow = this.getOne<ConfigRow>('SELECT value FROM cowork_config WHERE key = ?', ['executionMode']);
     const agentEngineRow = this.getOne<ConfigRow>('SELECT value FROM cowork_config WHERE key = ?', ['agentEngine']);
+    const scheduledTaskBackendRow = this.getOne<ConfigRow>('SELECT value FROM cowork_config WHERE key = ?', ['scheduledTaskBackend']);
     const memoryEnabledRow = this.getOne<ConfigRow>('SELECT value FROM cowork_config WHERE key = ?', ['memoryEnabled']);
     const memoryImplicitUpdateEnabledRow = this.getOne<ConfigRow>('SELECT value FROM cowork_config WHERE key = ?', ['memoryImplicitUpdateEnabled']);
     const memoryLlmJudgeEnabledRow = this.getOne<ConfigRow>('SELECT value FROM cowork_config WHERE key = ?', ['memoryLlmJudgeEnabled']);
@@ -1168,14 +1193,19 @@ export class CoworkStore {
     const normalizedExecutionMode =
       executionModeRow?.value === 'container' ? 'sandbox' : (executionModeRow?.value as CoworkExecutionMode);
     const envAgentEngine = readConfigEnvValue(COWORK_AGENT_ENGINE_ENV_KEYS);
+    const envScheduledTaskBackend = readConfigEnvValue(COWORK_SCHEDULED_TASK_BACKEND_ENV_KEYS);
 
     const normalizedAgentEngine = normalizeCoworkAgentEngineValue(envAgentEngine ?? agentEngineRow?.value);
+    const normalizedScheduledTaskBackend = normalizeScheduledTaskBackendValue(
+      envScheduledTaskBackend ?? scheduledTaskBackendRow?.value
+    );
 
     return {
       workingDirectory: workingDirRow?.value || getDefaultWorkingDirectory(),
       systemPrompt: getDefaultSystemPrompt(),
       executionMode: normalizedExecutionMode || ('local' as CoworkExecutionMode),
       agentEngine: normalizedAgentEngine,
+      scheduledTaskBackend: normalizedScheduledTaskBackend,
       memoryEnabled: parseBooleanConfig(memoryEnabledRow?.value, DEFAULT_MEMORY_ENABLED),
       memoryImplicitUpdateEnabled: parseBooleanConfig(
         memoryImplicitUpdateEnabledRow?.value,
@@ -1222,6 +1252,17 @@ export class CoworkStore {
           value = excluded.value,
           updated_at = excluded.updated_at
       `, [normalizedAgentEngine, now]);
+    }
+
+    if (config.scheduledTaskBackend !== undefined) {
+      const normalizedScheduledTaskBackend = normalizeScheduledTaskBackendValue(config.scheduledTaskBackend);
+      this.db.run(`
+        INSERT INTO cowork_config (key, value, updated_at)
+        VALUES ('scheduledTaskBackend', ?, ?)
+        ON CONFLICT(key) DO UPDATE SET
+          value = excluded.value,
+          updated_at = excluded.updated_at
+      `, [normalizedScheduledTaskBackend, now]);
     }
 
     if (config.memoryEnabled !== undefined) {

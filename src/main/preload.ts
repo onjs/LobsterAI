@@ -204,6 +204,7 @@ contextBridge.exposeInMainWorld('electron', {
       workingDirectory?: string;
       executionMode?: 'auto' | 'local' | 'sandbox';
       agentEngine?: 'openclaw' | 'yd_cowork';
+      scheduledTaskBackend?: 'openclaw' | 'yd_cowork' | 'auto';
       memoryEnabled?: boolean;
       memoryImplicitUpdateEnabled?: boolean;
       memoryLlmJudgeEnabled?: boolean;

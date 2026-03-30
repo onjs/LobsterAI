@@ -54,6 +54,7 @@ interface CoworkConfig {
   systemPrompt: string;
   executionMode: 'auto' | 'local' | 'sandbox';
   agentEngine: 'openclaw' | 'yd_cowork';
+  scheduledTaskBackend: 'openclaw' | 'yd_cowork' | 'auto';
   memoryEnabled: boolean;
   memoryImplicitUpdateEnabled: boolean;
   memoryLlmJudgeEnabled: boolean;
@@ -66,6 +67,7 @@ type CoworkConfigUpdate = Partial<Pick<
   | 'workingDirectory'
   | 'executionMode'
   | 'agentEngine'
+  | 'scheduledTaskBackend'
   | 'memoryEnabled'
   | 'memoryImplicitUpdateEnabled'
   | 'memoryLlmJudgeEnabled'

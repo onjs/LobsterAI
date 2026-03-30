@@ -475,6 +475,12 @@ export class CronJobService {
     await client.request('cron.run', { id });
   }
 
+  async stopJob(id: string): Promise<boolean> {
+    void id;
+    // OpenClaw gateway does not expose a stop API for running cron jobs.
+    return false;
+  }
+
   async listRuns(jobId: string, limit = 20, offset = 0): Promise<ScheduledTaskRun[]> {
     const client = await this.client();
     const result = await client.request<{ entries?: GatewayRunLogEntry[] }>('cron.runs', {

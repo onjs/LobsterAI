@@ -80,6 +80,14 @@ export const TaskStatus = {
 } as const;
 export type TaskStatus = typeof TaskStatus[keyof typeof TaskStatus];
 
+// ─── Scheduled Task Backend ────────────────────────────────────────────────
+export const ScheduledTaskBackend = {
+  OpenClaw: 'openclaw',
+  YdCowork: 'yd_cowork',
+  Auto: 'auto',
+} as const;
+export type ScheduledTaskBackend = typeof ScheduledTaskBackend[keyof typeof ScheduledTaskBackend];
+
 // ─── Gateway Status (OpenClaw wire format) ────────────────────────────────���─
 export const GatewayStatus = {
   Ok: 'ok',

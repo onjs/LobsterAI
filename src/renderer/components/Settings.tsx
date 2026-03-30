@@ -22,6 +22,7 @@ import ThemedSelect from './ui/ThemedSelect';
 import type {
   CoworkAgentEngine,
   CoworkExecutionMode,
+  CoworkScheduledTaskBackend,
   OpenClawEngineStatus,
   CoworkUserMemoryEntry,
   CoworkMemoryStats,
@@ -578,6 +579,9 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
   const coworkConfig = useSelector((state: RootState) => state.cowork.config);
 
   const [coworkAgentEngine, setCoworkAgentEngine] = useState<CoworkAgentEngine>(coworkConfig.agentEngine || 'yd_cowork');
+  const [coworkScheduledTaskBackend, setCoworkScheduledTaskBackend] = useState<CoworkScheduledTaskBackend>(
+    coworkConfig.scheduledTaskBackend || 'auto'
+  );
   const [coworkExecutionMode, setCoworkExecutionMode] = useState<CoworkExecutionMode>(coworkConfig.executionMode || 'local');
   const [coworkMemoryEnabled, setCoworkMemoryEnabled] = useState<boolean>(coworkConfig.memoryEnabled ?? true);
   const [coworkMemoryLlmJudgeEnabled, setCoworkMemoryLlmJudgeEnabled] = useState<boolean>(coworkConfig.memoryLlmJudgeEnabled ?? false);
@@ -600,11 +604,13 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
 
   useEffect(() => {
     setCoworkAgentEngine(coworkConfig.agentEngine || 'yd_cowork');
+    setCoworkScheduledTaskBackend(coworkConfig.scheduledTaskBackend || 'auto');
     setCoworkExecutionMode(coworkConfig.executionMode || 'local');
     setCoworkMemoryEnabled(coworkConfig.memoryEnabled ?? true);
     setCoworkMemoryLlmJudgeEnabled(coworkConfig.memoryLlmJudgeEnabled ?? false);
   }, [
     coworkConfig.agentEngine,
+    coworkConfig.scheduledTaskBackend,
     coworkConfig.executionMode,
     coworkConfig.memoryEnabled,
     coworkConfig.memoryLlmJudgeEnabled,
@@ -1205,10 +1211,14 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
   };
 
   const hasCoworkConfigChanges = coworkAgentEngine !== coworkConfig.agentEngine
+    || coworkScheduledTaskBackend !== coworkConfig.scheduledTaskBackend
     || coworkExecutionMode !== coworkConfig.executionMode
     || coworkMemoryEnabled !== coworkConfig.memoryEnabled
     || coworkMemoryLlmJudgeEnabled !== coworkConfig.memoryLlmJudgeEnabled;
   const isOpenClawAgentEngine = coworkAgentEngine === 'openclaw';
+  const resolvedScheduledTaskBackend = coworkScheduledTaskBackend === 'auto'
+    ? (coworkAgentEngine === 'openclaw' ? 'openclaw' : 'yd_cowork')
+    : coworkScheduledTaskBackend;
 
   const coworkSandboxDisabled = !coworkSandboxStatus?.supported
     || !coworkSandboxStatus?.runtimeReady
@@ -1513,6 +1523,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
       if (hasCoworkConfigChanges) {
         const updated = await coworkService.updateConfig({
           agentEngine: coworkAgentEngine,
+          scheduledTaskBackend: coworkScheduledTaskBackend,
           executionMode: coworkExecutionMode,
           memoryEnabled: coworkMemoryEnabled,
           memoryLlmJudgeEnabled: coworkMemoryLlmJudgeEnabled,
@@ -2473,6 +2484,59 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
                   </span>
                 </label>
               ))}
+            </div>
+            <div className="space-y-3 rounded-xl border px-4 py-4 dark:border-claude-darkBorder border-claude-border">
+              <div className="text-sm font-medium dark:text-claude-darkText text-claude-text">
+                {i18nService.t('coworkScheduledTaskBackend')}
+              </div>
+              <div className="space-y-2">
+                {([
+                  {
+                    value: 'auto' as CoworkScheduledTaskBackend,
+                    label: i18nService.t('coworkScheduledTaskBackendAuto'),
+                    hint: i18nService.t('coworkScheduledTaskBackendAutoHint'),
+                  },
+                  {
+                    value: 'yd_cowork' as CoworkScheduledTaskBackend,
+                    label: i18nService.t('coworkScheduledTaskBackendYdCowork'),
+                    hint: i18nService.t('coworkScheduledTaskBackendYdCoworkHint'),
+                  },
+                  {
+                    value: 'openclaw' as CoworkScheduledTaskBackend,
+                    label: i18nService.t('coworkScheduledTaskBackendOpenClaw'),
+                    hint: i18nService.t('coworkScheduledTaskBackendOpenClawHint'),
+                  },
+                ]).map((option) => (
+                  <label
+                    key={option.value}
+                    className="flex items-start gap-3 rounded-xl border px-3 py-2 text-sm transition-colors cursor-pointer dark:border-claude-darkBorder border-claude-border hover:border-claude-accent"
+                  >
+                    <input
+                      type="radio"
+                      name="cowork-scheduled-task-backend"
+                      value={option.value}
+                      checked={coworkScheduledTaskBackend === option.value}
+                      onChange={() => setCoworkScheduledTaskBackend(option.value)}
+                      className="mt-1"
+                    />
+                    <span>
+                      <span className="block font-medium dark:text-claude-darkText text-claude-text">
+                        {option.label}
+                      </span>
+                      <span className="block text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
+                        {option.hint}
+                      </span>
+                    </span>
+                  </label>
+                ))}
+              </div>
+              <div className="text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
+                {i18nService.t('coworkScheduledTaskBackendResolved')}：
+                {' '}
+                {resolvedScheduledTaskBackend === 'openclaw'
+                  ? i18nService.t('coworkScheduledTaskBackendOpenClaw')
+                  : i18nService.t('coworkScheduledTaskBackendYdCowork')}
+              </div>
             </div>
             {isOpenClawAgentEngine && (
               <div className="space-y-3 rounded-xl border px-4 py-4 dark:border-claude-darkBorder border-claude-border">

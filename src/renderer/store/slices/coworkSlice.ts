@@ -46,6 +46,7 @@ const initialState: CoworkState = {
     systemPrompt: '',
     executionMode: 'local',
     agentEngine: 'yd_cowork',
+    scheduledTaskBackend: 'auto',
     memoryEnabled: true,
     memoryImplicitUpdateEnabled: true,
     memoryLlmJudgeEnabled: false,

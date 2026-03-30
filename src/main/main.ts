@@ -56,9 +56,21 @@ import { setLanguage, t } from './i18n';
 import { isAutoLaunched, getAutoLaunchEnabled, setAutoLaunchEnabled } from './autoLaunchManager';
 import { McpStore } from './mcpStore';
 import { CronJobService } from '../scheduled-task/cronJobService';
+import type { ScheduledTaskBackendService } from '../scheduled-task/backendService';
+import type { ScheduledTask } from '../scheduled-task/types';
+import { YdCoworkTaskRepository } from '../scheduled-task/ydCoworkTaskRepository';
+import { YdCoworkCronJobService, type YdCoworkRunResult } from '../scheduled-task/ydCoworkCronJobService';
 import { migrateScheduledTasksToOpenclaw, migrateScheduledTaskRunsToOpenclaw } from '../scheduled-task/migrate';
 import { buildScheduledTaskEnginePrompt } from '../scheduled-task/enginePrompt';
-import { IpcChannel as ScheduledTaskIpc, DeliveryMode as STDeliveryMode, SessionTarget as STSessionTarget, PayloadKind as STPayloadKind } from '../scheduled-task/constants';
+import {
+  IpcChannel as ScheduledTaskIpc,
+  DeliveryMode as STDeliveryMode,
+  SessionTarget as STSessionTarget,
+  PayloadKind as STPayloadKind,
+  TaskStatus,
+  ScheduledTaskBackend as STBackend,
+  type ScheduledTaskBackend as STBackendType,
+} from '../scheduled-task/constants';
 import { McpServerManager } from './libs/mcpServerManager';
 import { getServerApiBaseUrl, refreshEndpointsTestMode } from './libs/endpoints';
 import { McpBridgeServer } from './libs/mcpBridgeServer';
@@ -569,6 +581,8 @@ let mcpBridgeSecret: string | null = null;
 let mcpBridgeStartPromise: Promise<McpBridgeConfig | null> | null = null;
 let imGatewayManager: IMGatewayManager | null = null;
 let cronJobService: CronJobService | null = null;
+let ydCoworkTaskRepository: YdCoworkTaskRepository | null = null;
+let ydCoworkCronJobService: YdCoworkCronJobService | null = null;
 let storeInitPromise: Promise<SqliteStore> | null = null;
 let openClawEngineManager: OpenClawEngineManager | null = null;
 let openClawConfigSync: OpenClawConfigSync | null = null;
@@ -780,6 +794,23 @@ const getAgentManager = () => {
 const resolveCoworkAgentEngine = (): CoworkAgentEngine => {
   const configured = getCoworkStore().getConfig().agentEngine;
   return configured === 'openclaw' ? 'openclaw' : 'yd_cowork';
+};
+
+const resolveScheduledTaskBackendFromConfig = (
+  config: Pick<ReturnType<CoworkStore['getConfig']>, 'scheduledTaskBackend' | 'agentEngine'>,
+): Exclude<STBackendType, 'auto'> => {
+  const configured = config.scheduledTaskBackend;
+  if (configured === STBackend.OpenClaw || configured === STBackend.YdCowork) {
+    return configured;
+  }
+  return config.agentEngine === 'openclaw'
+    ? STBackend.OpenClaw
+    : STBackend.YdCowork;
+};
+
+const resolveScheduledTaskBackend = (): Exclude<STBackendType, 'auto'> => {
+  const config = getCoworkStore().getConfig();
+  return resolveScheduledTaskBackendFromConfig(config);
 };
 
 const isOpenClawGatewayLive = (): boolean => {
@@ -1382,15 +1413,16 @@ const getIMGatewayManager = () => {
           // }
           const channelName = PLATFORM_TO_CHANNEL_MAP[message.platform];
           const hasChannel = !!(channelName && message.conversationId);
+          const backend = resolveScheduledTaskBackend();
           // Strip IM subtype prefix (e.g. "direct:ou_xxx" -> "ou_xxx")
           let deliveryTo = message.conversationId;
-          if (hasChannel && deliveryTo) {
+          if (backend === STBackend.OpenClaw && hasChannel && deliveryTo) {
             const colonIdx = deliveryTo.indexOf(':');
             if (colonIdx > 0) {
               deliveryTo = deliveryTo.slice(colonIdx + 1);
             }
           }
-          const task = await getCronJobService().addJob({
+          const task = await getScheduledTaskBackendService().addJob({
             name: request.taskName,
             description: '',
             enabled: true,
@@ -1398,18 +1430,24 @@ const getIMGatewayManager = () => {
               kind: 'at',
               at: request.scheduleAt,
             },
-            sessionTarget: hasChannel ? 'isolated' : 'main',
+            sessionTarget: hasChannel ? STSessionTarget.Isolated : STSessionTarget.Main,
             wakeMode: 'now',
             payload: hasChannel
-              ? { kind: 'agentTurn', message: request.payloadText }
-              : { kind: 'systemEvent', text: request.payloadText },
+              ? { kind: STPayloadKind.AgentTurn, message: request.payloadText }
+              : { kind: STPayloadKind.SystemEvent, text: request.payloadText },
             delivery: {
-              mode: hasChannel ? 'announce' : 'none',
+              mode: hasChannel ? STDeliveryMode.Announce : STDeliveryMode.None,
               ...(channelName ? { channel: channelName } : {}),
               ...(hasChannel ? { to: deliveryTo } : message.conversationId ? { to: message.conversationId } : {}),
             },
             agentId: DEFAULT_MANAGED_AGENT_ID,
-            ...(hasChannel ? {} : { sessionKey: buildManagedSessionKey(sessionId, DEFAULT_MANAGED_AGENT_ID) }),
+            ...(hasChannel
+              ? {}
+              : {
+                  sessionKey: backend === STBackend.OpenClaw
+                    ? buildManagedSessionKey(sessionId, DEFAULT_MANAGED_AGENT_ID)
+                    : sessionId,
+                }),
           });
           return {
             id: task.id,
@@ -1492,7 +1530,10 @@ const getIMGatewayManager = () => {
 const getCronJobService = (): CronJobService => {
   if (!cronJobService) {
     if (!openClawRuntimeAdapter) {
-      throw new Error('OpenClaw runtime adapter not initialized. CronJobService requires OpenClaw.');
+      getCoworkEngineRouter();
+    }
+    if (!openClawRuntimeAdapter) {
+      throw new Error('OpenClaw runtime adapter is unavailable. CronJobService requires OpenClaw.');
     }
     const adapter = openClawRuntimeAdapter;
     cronJobService = new CronJobService({
@@ -1501,6 +1542,206 @@ const getCronJobService = (): CronJobService => {
     });
   }
   return cronJobService;
+};
+
+const extractScheduledTaskDeliveryText = (sessionId: string | null, fallback: string): string => {
+  if (!sessionId) {
+    return fallback;
+  }
+  const session = getCoworkStore().getSession(sessionId);
+  if (!session || session.messages.length === 0) {
+    return fallback;
+  }
+  for (let index = session.messages.length - 1; index >= 0; index -= 1) {
+    const message = session.messages[index];
+    if (message.type === 'assistant' && message.content.trim()) {
+      return message.content.trim();
+    }
+  }
+  return fallback;
+};
+
+const executeYdCoworkScheduledTask = async (task: ScheduledTask): Promise<YdCoworkRunResult> => {
+  const prompt = task.payload.kind === 'agentTurn'
+    ? task.payload.message.trim()
+    : task.payload.text.trim();
+  if (!prompt) {
+    return {
+      status: TaskStatus.Error,
+      error: 'Scheduled task payload is empty.',
+    };
+  }
+
+  const activeEngine = resolveCoworkAgentEngine();
+  if (activeEngine === 'openclaw') {
+    const status = await ensureOpenClawRunningForCowork();
+    if (status.phase !== 'running') {
+      return {
+        status: TaskStatus.Error,
+        error: status.message || 'OpenClaw engine is not ready.',
+      };
+    }
+  }
+
+  const coworkStoreInstance = getCoworkStore();
+  const coworkConfig = coworkStoreInstance.getConfig();
+  const selectedWorkspaceRoot = (coworkConfig.workingDirectory || '').trim();
+  if (!selectedWorkspaceRoot) {
+    return {
+      status: TaskStatus.Error,
+      error: 'Please set a working directory in LobsterAI settings before running scheduled tasks.',
+    };
+  }
+  const taskWorkingDirectory = resolveTaskWorkingDirectory(selectedWorkspaceRoot);
+  const runtime = getCoworkEngineRouter();
+  const systemPrompt = mergeCoworkSystemPrompt(activeEngine, coworkConfig.systemPrompt);
+
+  let sessionId: string | null = null;
+  const canContinueMainSession = task.sessionTarget === STSessionTarget.Main
+    && !!task.sessionKey
+    && !!coworkStoreInstance.getSession(task.sessionKey);
+
+  const startedAtMs = Date.now();
+  try {
+    if (canContinueMainSession && task.sessionKey) {
+      sessionId = task.sessionKey;
+      await runtime.continueSession(task.sessionKey, prompt, {
+        systemPrompt,
+      });
+    } else {
+      const title = `[Scheduled] ${task.name}`.trim();
+      const session = coworkStoreInstance.createSession(
+        title || 'Scheduled Task',
+        taskWorkingDirectory,
+        systemPrompt || '',
+        coworkConfig.executionMode || 'local',
+        [],
+        task.agentId || 'main',
+      );
+      sessionId = session.id;
+      await runtime.startSession(session.id, prompt, {
+        systemPrompt,
+        workspaceRoot: selectedWorkspaceRoot,
+        confirmationMode: 'text',
+        agentId: task.agentId || undefined,
+      });
+    }
+  } catch (error) {
+    return {
+      status: TaskStatus.Error,
+      sessionId,
+      error: error instanceof Error ? error.message : String(error),
+      durationMs: Math.max(0, Date.now() - startedAtMs),
+    };
+  }
+
+  const sessionAfterRun = sessionId ? coworkStoreInstance.getSession(sessionId) : null;
+  const status = sessionAfterRun?.status === 'error' ? TaskStatus.Error : TaskStatus.Success;
+  const durationMs = Math.max(0, Date.now() - startedAtMs);
+
+  if (
+    status === TaskStatus.Success
+    && task.delivery.mode === STDeliveryMode.Announce
+    && task.delivery.channel
+    && task.delivery.to
+  ) {
+    const platform = CHANNEL_PLATFORM_MAP[task.delivery.channel] as IMPlatform | undefined;
+    if (platform) {
+      const deliveryText = extractScheduledTaskDeliveryText(sessionId, prompt);
+      const delivered = await getIMGatewayManager().sendConversationReply(platform, task.delivery.to, deliveryText);
+      if (!delivered) {
+        return {
+          status: TaskStatus.Error,
+          sessionId,
+          sessionKey: sessionId,
+          error: `Failed to deliver scheduled task result to ${platform}:${task.delivery.to}.`,
+          durationMs,
+        };
+      }
+    }
+  }
+
+  return {
+    status,
+    sessionId,
+    sessionKey: sessionId,
+    error: status === TaskStatus.Error ? 'Scheduled task execution failed.' : null,
+    durationMs,
+  };
+};
+
+const getYdCoworkTaskRepository = (): YdCoworkTaskRepository => {
+  if (!ydCoworkTaskRepository) {
+    const sqliteStore = getStore();
+    ydCoworkTaskRepository = new YdCoworkTaskRepository(
+      sqliteStore.getDatabase(),
+      sqliteStore.getSaveFunction(),
+    );
+  }
+  return ydCoworkTaskRepository;
+};
+
+const getYdCoworkCronJobService = (): YdCoworkCronJobService => {
+  if (!ydCoworkCronJobService) {
+    ydCoworkCronJobService = new YdCoworkCronJobService({
+      repository: getYdCoworkTaskRepository(),
+      executeTask: executeYdCoworkScheduledTask,
+    });
+  }
+  return ydCoworkCronJobService;
+};
+
+const getScheduledTaskBackendService = (): ScheduledTaskBackendService => {
+  return resolveScheduledTaskBackend() === STBackend.OpenClaw
+    ? getCronJobService()
+    : getYdCoworkCronJobService();
+};
+
+let openClawScheduledTaskMigrationPromise: Promise<void> | null = null;
+
+const ensureOpenClawScheduledTaskMigrations = async (): Promise<void> => {
+  if (openClawScheduledTaskMigrationPromise) {
+    return openClawScheduledTaskMigrationPromise;
+  }
+  openClawScheduledTaskMigrationPromise = (async () => {
+    try {
+      await migrateScheduledTasksToOpenclaw({
+        db: getStore().getDatabase(),
+        getKv: (key) => getStore().get(key),
+        setKv: (key, value) => getStore().set(key, value),
+        cronJobService: getCronJobService(),
+      });
+      await migrateScheduledTaskRunsToOpenclaw({
+        db: getStore().getDatabase(),
+        getKv: (key) => getStore().get(key),
+        setKv: (key, value) => getStore().set(key, value),
+        openclawStateDir: getOpenClawEngineManager().getStateDir(),
+      });
+    } catch (error) {
+      openClawScheduledTaskMigrationPromise = null;
+      throw error;
+    }
+  })();
+  return openClawScheduledTaskMigrationPromise;
+};
+
+const startScheduledTaskPollingForBackend = (backend: Exclude<STBackendType, 'auto'>): void => {
+  if (backend === STBackend.OpenClaw) {
+    getCronJobService().startPolling();
+    void ensureOpenClawScheduledTaskMigrations().catch((error) => {
+      console.warn('[Main] OpenClaw scheduled task migration failed:', error);
+    });
+    return;
+  }
+  getYdCoworkCronJobService().startPolling();
+};
+
+const stopScheduledTaskPollingForBackend = (backend: Exclude<STBackendType, 'auto'>): void => {
+  if (backend === STBackend.OpenClaw) {
+    cronJobService?.stopPolling();
+    return;
+  }
+  ydCoworkCronJobService?.stopPolling();
 };
 
 function listScheduledTaskChannels(): Array<{ value: string; label: string }> {
@@ -3193,6 +3434,7 @@ if (!gotTheLock) {
     workingDirectory?: string;
     executionMode?: 'auto' | 'local' | 'sandbox';
     agentEngine?: CoworkAgentEngine;
+    scheduledTaskBackend?: STBackendType;
     memoryEnabled?: boolean;
     memoryImplicitUpdateEnabled?: boolean;
     memoryLlmJudgeEnabled?: boolean;
@@ -3209,6 +3451,13 @@ if (!gotTheLock) {
         : config.agentEngine === 'openclaw'
           ? 'openclaw'
           : undefined;
+      const normalizedScheduledTaskBackend = config.scheduledTaskBackend === STBackend.OpenClaw
+        ? STBackend.OpenClaw
+        : config.scheduledTaskBackend === STBackend.YdCowork
+          ? STBackend.YdCowork
+          : config.scheduledTaskBackend === STBackend.Auto
+            ? STBackend.Auto
+            : undefined;
       const normalizedMemoryEnabled = typeof config.memoryEnabled === 'boolean'
         ? config.memoryEnabled
         : undefined;
@@ -3234,6 +3483,7 @@ if (!gotTheLock) {
         ...config,
         executionMode: normalizedExecutionMode,
         agentEngine: normalizedAgentEngine,
+        scheduledTaskBackend: normalizedScheduledTaskBackend,
         memoryEnabled: normalizedMemoryEnabled,
         memoryImplicitUpdateEnabled: normalizedMemoryImplicitUpdateEnabled,
         memoryLlmJudgeEnabled: normalizedMemoryLlmJudgeEnabled,
@@ -3241,6 +3491,7 @@ if (!gotTheLock) {
         memoryUserMemoriesMaxItems: normalizedMemoryUserMemoriesMaxItems,
       };
       const previousConfig = getCoworkStore().getConfig();
+      const previousScheduledTaskBackend = resolveScheduledTaskBackendFromConfig(previousConfig);
       const previousWorkingDir = previousConfig.workingDirectory;
       const nextAgentEngine = normalizedAgentEngine ?? previousConfig.agentEngine;
       const shouldManageOpenClawWorkspace = nextAgentEngine === 'openclaw';
@@ -3263,6 +3514,15 @@ if (!gotTheLock) {
       }
 
       const nextConfig = getCoworkStore().getConfig();
+      const nextScheduledTaskBackend = resolveScheduledTaskBackendFromConfig(nextConfig);
+      if (nextScheduledTaskBackend !== previousScheduledTaskBackend) {
+        stopScheduledTaskPollingForBackend(previousScheduledTaskBackend);
+        try {
+          startScheduledTaskPollingForBackend(nextScheduledTaskBackend);
+        } catch (error) {
+          console.warn('[Main] Failed to start scheduled task polling after backend switch:', error);
+        }
+      }
       if (normalizedAgentEngine !== undefined && normalizedAgentEngine !== previousConfig.agentEngine) {
         getCoworkEngineRouter().handleEngineConfigChanged(normalizedAgentEngine);
       }
@@ -3303,17 +3563,17 @@ if (!gotTheLock) {
     }
   });
 
-  // ==================== Scheduled Task IPC Handlers (OpenClaw) ====================
+  // ==================== Scheduled Task IPC Handlers ====================
 
   ipcMain.handle(ScheduledTaskIpc.List, async () => {
     try {
-      // If OpenClaw gateway is not connected yet, return empty list immediately
-      // to avoid blocking the renderer init. Tasks will be loaded later via the
-      // onRefresh listener when the gateway becomes available.
-      if (!openClawRuntimeAdapter?.getGatewayClient()) {
+      const backend = resolveScheduledTaskBackend();
+      if (backend === STBackend.OpenClaw && !openClawRuntimeAdapter?.getGatewayClient()) {
+        // If OpenClaw gateway is not connected yet, return empty list immediately
+        // to avoid blocking renderer init. Tasks will be loaded later via refresh events.
         return { success: true, tasks: [] };
       }
-      const tasks = await getCronJobService().listJobs();
+      const tasks = await getScheduledTaskBackendService().listJobs();
       return { success: true, tasks };
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : 'Failed to list tasks' };
@@ -3322,7 +3582,7 @@ if (!gotTheLock) {
 
   ipcMain.handle(ScheduledTaskIpc.Get, async (_event, id: string) => {
     try {
-      const task = await getCronJobService().getJob(id);
+      const task = await getScheduledTaskBackendService().getJob(id);
       return { success: true, task };
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : 'Failed to get task' };
@@ -3331,6 +3591,7 @@ if (!gotTheLock) {
 
   ipcMain.handle(ScheduledTaskIpc.Create, async (_event, input: any) => {
     try {
+      const backend = resolveScheduledTaskBackend();
       const normalizedInput = input && typeof input === 'object' ? { ...input } : {};
       console.log('[IPC][scheduledTask:create] normalizedInput:', JSON.stringify(normalizedInput, null, 2));
       console.log('[IPC][scheduledTask:create] delivery:', JSON.stringify(normalizedInput.delivery, null, 2));
@@ -3344,7 +3605,13 @@ if (!gotTheLock) {
       // DingTalk still needs the reply route primed so the outbound adapter
       // can locate the correct conversation.
       const delivery = normalizedInput.delivery;
-      if (delivery && delivery.mode === STDeliveryMode.Announce && delivery.channel && delivery.to) {
+      if (
+        backend === STBackend.OpenClaw
+        && delivery
+        && delivery.mode === STDeliveryMode.Announce
+        && delivery.channel
+        && delivery.to
+      ) {
         const platform = CHANNEL_PLATFORM_MAP[delivery.channel] as IMPlatform | undefined;
         if (platform) {
           console.log('[IPC][scheduledTask:create] IM notification target detected, using OpenClaw native announce delivery.',
@@ -3379,7 +3646,7 @@ if (!gotTheLock) {
         }
       }
 
-      const task = await getCronJobService().addJob(normalizedInput);
+      const task = await getScheduledTaskBackendService().addJob(normalizedInput);
       console.log('[IPC][scheduledTask:create] result task id:', task?.id, 'name:', task?.name);
       return { success: true, task };
     } catch (error) {
@@ -3389,13 +3656,20 @@ if (!gotTheLock) {
 
   ipcMain.handle(ScheduledTaskIpc.Update, async (_event, id: string, input: any) => {
     try {
+      const backend = resolveScheduledTaskBackend();
       const normalizedInput = input && typeof input === 'object' ? { ...input } : {};
       console.log('[IPC][scheduledTask:update] id:', id, 'normalizedInput:', JSON.stringify(normalizedInput, null, 2));
       console.log('[IPC][scheduledTask:update] delivery:', JSON.stringify(normalizedInput.delivery, null, 2));
 
       // Same OpenClaw native announce delivery logic as create handler.
       const delivery = normalizedInput.delivery;
-      if (delivery && delivery.mode === STDeliveryMode.Announce && delivery.channel && delivery.to) {
+      if (
+        backend === STBackend.OpenClaw
+        && delivery
+        && delivery.mode === STDeliveryMode.Announce
+        && delivery.channel
+        && delivery.to
+      ) {
         const platform = CHANNEL_PLATFORM_MAP[delivery.channel] as IMPlatform | undefined;
         if (platform) {
           console.log('[IPC][scheduledTask:update] IM notification target detected, using OpenClaw native announce delivery.',
@@ -3427,7 +3701,7 @@ if (!gotTheLock) {
         }
       }
 
-      const task = await getCronJobService().updateJob(id, normalizedInput);
+      const task = await getScheduledTaskBackendService().updateJob(id, normalizedInput);
       console.log('[IPC][scheduledTask:update] result task id:', task?.id, 'name:', task?.name);
       return { success: true, task };
     } catch (error) {
@@ -3437,7 +3711,7 @@ if (!gotTheLock) {
 
   ipcMain.handle(ScheduledTaskIpc.Delete, async (_event, id: string) => {
     try {
-      await getCronJobService().removeJob(id);
+      await getScheduledTaskBackendService().removeJob(id);
       return { success: true, result: true };
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : 'Failed to delete task' };
@@ -3446,7 +3720,7 @@ if (!gotTheLock) {
 
   ipcMain.handle(ScheduledTaskIpc.Toggle, async (_event, id: string, enabled: boolean) => {
     try {
-      const task = await getCronJobService().toggleJob(id, enabled);
+      const task = await getScheduledTaskBackendService().toggleJob(id, enabled);
       return { success: true, task };
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : 'Failed to toggle task' };
@@ -3455,7 +3729,7 @@ if (!gotTheLock) {
 
   ipcMain.handle(ScheduledTaskIpc.RunManually, async (_event, id: string) => {
     try {
-      await getCronJobService().runJob(id);
+      await getScheduledTaskBackendService().runJob(id);
       return { success: true };
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
@@ -3466,9 +3740,8 @@ if (!gotTheLock) {
 
   ipcMain.handle(ScheduledTaskIpc.Stop, async (_event, id: string) => {
     try {
-      // OpenClaw doesn't expose a direct stop API for running cron jobs
-      // The job will complete or timeout on its own
-      return { success: true, result: false };
+      const result = await getScheduledTaskBackendService().stopJob(id);
+      return { success: true, result };
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : 'Failed to stop task' };
     }
@@ -3476,7 +3749,7 @@ if (!gotTheLock) {
 
   ipcMain.handle(ScheduledTaskIpc.ListRuns, async (_event, taskId: string, limit?: number, offset?: number) => {
     try {
-      const runs = await getCronJobService().listRuns(taskId, limit, offset);
+      const runs = await getScheduledTaskBackendService().listRuns(taskId, limit, offset);
       return { success: true, runs };
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : 'Failed to list runs' };
@@ -3485,7 +3758,7 @@ if (!gotTheLock) {
 
   ipcMain.handle(ScheduledTaskIpc.CountRuns, async (_event, taskId: string) => {
     try {
-      const count = await getCronJobService().countRuns(taskId);
+      const count = await getScheduledTaskBackendService().countRuns(taskId);
       return { success: true, count };
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : 'Failed to count runs' };
@@ -3494,7 +3767,7 @@ if (!gotTheLock) {
 
   ipcMain.handle(ScheduledTaskIpc.ListAllRuns, async (_event, limit?: number, offset?: number) => {
     try {
-      const runs = await getCronJobService().listAllRuns(limit, offset);
+      const runs = await getScheduledTaskBackendService().listAllRuns(limit, offset);
       return { success: true, runs };
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : 'Failed to list all runs' };
@@ -3504,8 +3777,13 @@ if (!gotTheLock) {
   ipcMain.handle(ScheduledTaskIpc.ResolveSession, async (_event, sessionKey: string) => {
     try {
       if (!sessionKey) return { success: true, session: null };
-      // Fetch session history from OpenClaw (returns transient session, not persisted)
-      const session = await openClawRuntimeAdapter?.fetchSessionByKey(sessionKey);
+      let session = null;
+      if (resolveScheduledTaskBackend() === STBackend.OpenClaw) {
+        // Fetch session history from OpenClaw (returns transient session, not persisted)
+        session = await openClawRuntimeAdapter?.fetchSessionByKey(sessionKey) ?? null;
+      } else {
+        session = getCoworkStore().getSession(sessionKey);
+      }
       return { success: true, session: session ?? null };
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : 'Failed to resolve session' };
@@ -4514,35 +4792,12 @@ if (!gotTheLock) {
 
       // Start cron polling after the window is ready.
       (async () => {
-        if (resolveCoworkAgentEngine() !== 'openclaw') {
-          console.log('[Main] Skip OpenClaw cron bootstrap on startup because agentEngine is yd_cowork');
-          return;
-        }
+        const backend = resolveScheduledTaskBackend();
         try {
-          getCronJobService().startPolling();
-        } catch (err) {
-          console.warn('[Main] CronJobService not available yet, will start polling when OpenClaw is ready:', err);
+          startScheduledTaskPollingForBackend(backend);
+        } catch (error) {
+          console.warn('[Main] Scheduled task polling bootstrap failed:', error);
         }
-
-        // One-time migration: move tasks from legacy SQLite tables to OpenClaw gateway.
-        migrateScheduledTasksToOpenclaw({
-          db: getStore().getDatabase(),
-          getKv: (key) => getStore().get(key),
-          setKv: (key, value) => getStore().set(key, value),
-          cronJobService: getCronJobService(),
-        }).catch((err) => {
-          console.warn('[Main] Scheduled tasks migration failed:', err);
-        });
-
-        // One-time migration: copy legacy run history to OpenClaw cron/runs/ JSONL files.
-        migrateScheduledTaskRunsToOpenclaw({
-          db: getStore().getDatabase(),
-          getKv: (key) => getStore().get(key),
-          setKv: (key, value) => getStore().set(key, value),
-          openclawStateDir: getOpenClawEngineManager().getStateDir(),
-        }).catch((err) => {
-          console.warn('[Main] Scheduled task run history migration failed:', err);
-        });
       })();
     });
   };
@@ -4582,10 +4837,8 @@ if (!gotTheLock) {
       });
     }
 
-    // Stop the cron job polling
-    if (cronJobService) {
-      cronJobService.stopPolling();
-    }
+    stopScheduledTaskPollingForBackend(STBackend.OpenClaw);
+    stopScheduledTaskPollingForBackend(STBackend.YdCowork);
   };
 
   app.on('before-quit', (e) => {
@@ -4749,11 +5002,12 @@ if (!gotTheLock) {
         console.error('[OpenClaw] Startup config sync failed:', startupSync.error);
       }
       void ensureOpenClawRunningForCowork().then(() => {
-        // Start cron polling once the gateway is confirmed running.
-        try {
-          getCronJobService().startPolling();
-        } catch (err) {
-          console.warn('[Main] CronJobService not available after OpenClaw startup:', err);
+        if (resolveScheduledTaskBackend() === STBackend.OpenClaw) {
+          try {
+            startScheduledTaskPollingForBackend(STBackend.OpenClaw);
+          } catch (error) {
+            console.warn('[Main] Failed to start scheduled task polling after OpenClaw startup:', error);
+          }
         }
       }).catch((error) => {
         console.error('[OpenClaw] Failed to auto-start gateway on app startup:', error);
