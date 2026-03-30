@@ -1078,7 +1078,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       agentId?: string;
     },
   ): Promise<void> {
-    if (!prompt.trim()) {
+    if (!prompt.trim() && (!options.imageAttachments || options.imageAttachments.length === 0)) {
       throw new Error('Prompt is required.');
     }
     if (this.activeTurns.has(sessionId)) {
@@ -1225,7 +1225,9 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     sections.push(buildOpenClawLocalTimeContextPrompt());
 
     if (this.bridgedSessions.has(sessionId)) {
-      sections.push(`[Current user request]\n${prompt}`);
+      if (prompt.trim()) {
+        sections.push(`[Current user request]\n${prompt}`);
+      }
       return sections.join('\n\n');
     }
 
@@ -1254,7 +1256,9 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       }
     }
 
-    sections.push(`[Current user request]\n${prompt}`);
+    if (prompt.trim()) {
+      sections.push(`[Current user request]\n${prompt}`);
+    }
     return sections.join('\n\n');
   }
 
