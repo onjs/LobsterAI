@@ -82,6 +82,7 @@ const FINAL_RESULT_MAX_CHARS = 120_000;
 const STDERR_TAIL_MAX_CHARS = 24_000;
 const SDK_STARTUP_TIMEOUT_MS = 30_000;
 const SDK_STARTUP_TIMEOUT_WITH_USER_MCP_MS = 120_000;
+const STOP_REQUEST_TTL_MS = 60_000;
 const STDERR_FATAL_PATTERNS = [
   /authentication[_ ]error/i,
   /invalid[_ ]api[_ ]key/i,
@@ -422,6 +423,7 @@ export interface PermissionRequest {
 
 interface ActiveSession {
   sessionId: string;
+  runId: string;
   claudeSessionId: string | null;
   workspaceRoot: string;
   confirmationMode: 'modal' | 'text';
@@ -509,6 +511,7 @@ export class CoworkRunner extends EventEmitter {
   private pendingPermissions: Map<string, PendingPermission> = new Map();
   private sandboxPermissions: Map<string, SandboxPendingPermission> = new Map();
   private stoppedSessions: Set<string> = new Set();
+  private stoppedRunRequests: Map<string, number> = new Map();
   private turnMemoryQueue: QueuedTurnMemoryUpdate[] = [];
   private turnMemoryQueueKeys: Set<string> = new Set();
   private lastTurnMemoryKeyBySession: Map<string, string> = new Map();
@@ -541,8 +544,41 @@ export class CoworkRunner extends EventEmitter {
     this.mcpServerProvider = provider;
   }
 
+  private getRunStopKey(sessionId: string, runId: string): string {
+    return `${sessionId}:${runId}`;
+  }
+
+  private pruneStoppedRunRequests(now = Date.now()): void {
+    for (const [key, timestamp] of this.stoppedRunRequests.entries()) {
+      if (now - timestamp > STOP_REQUEST_TTL_MS) {
+        this.stoppedRunRequests.delete(key);
+      }
+    }
+  }
+
+  private markRunStopRequested(activeSession: ActiveSession): void {
+    this.pruneStoppedRunRequests();
+    this.stoppedRunRequests.set(
+      this.getRunStopKey(activeSession.sessionId, activeSession.runId),
+      Date.now()
+    );
+  }
+
+  private isRunStopRequested(activeSession: ActiveSession): boolean {
+    this.pruneStoppedRunRequests();
+    return this.stoppedRunRequests.has(
+      this.getRunStopKey(activeSession.sessionId, activeSession.runId)
+    );
+  }
+
   private isSessionStopRequested(sessionId: string, activeSession?: ActiveSession): boolean {
-    return this.stoppedSessions.has(sessionId) || Boolean(activeSession?.abortController.signal.aborted);
+    if (this.stoppedSessions.has(sessionId)) {
+      return true;
+    }
+    if (!activeSession) {
+      return false;
+    }
+    return this.isRunStopRequested(activeSession);
   }
 
   private applyTurnMemoryUpdatesForSession(sessionId: string): void {
@@ -2509,6 +2545,7 @@ export class CoworkRunner extends EventEmitter {
     // Store active session
     const activeSession: ActiveSession = {
       sessionId,
+      runId: uuidv4(),
       claudeSessionId: session.claudeSessionId,
       workspaceRoot: options.workspaceRoot?.trim()
         ? path.resolve(options.workspaceRoot)
@@ -2653,6 +2690,7 @@ export class CoworkRunner extends EventEmitter {
     this.stoppedSessions.add(sessionId);
     const activeSession = this.activeSessions.get(sessionId);
     if (activeSession) {
+      this.markRunStopRequested(activeSession);
       activeSession.abortController.abort();
       if (activeSession.ipcBridge) {
         try {
@@ -3592,7 +3630,7 @@ export class CoworkRunner extends EventEmitter {
       }
       coworkLog('INFO', 'runClaudeCodeLocal', `Event iteration completed, total events: ${eventCount}`);
 
-      if (this.stoppedSessions.has(sessionId)) {
+      if (this.isSessionStopRequested(sessionId, activeSession)) {
         this.store.updateSession(sessionId, { status: 'idle' });
         return;
       }
@@ -3613,7 +3651,7 @@ export class CoworkRunner extends EventEmitter {
         startupTimer = null;
       }
 
-      if (this.stoppedSessions.has(sessionId)) {
+      if (this.isSessionStopRequested(sessionId, activeSession)) {
         this.store.updateSession(sessionId, { status: 'idle' });
         return;
       }

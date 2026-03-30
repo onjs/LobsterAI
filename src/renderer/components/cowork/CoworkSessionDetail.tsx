@@ -1082,11 +1082,22 @@ const AssistantMessageItem: React.FC<{
 
 // Streaming activity bar shown between messages and input
 const StreamingActivityBar: React.FC<{ messages: CoworkMessage[] }> = ({ messages }) => {
-  // Walk messages backwards to find the latest tool_use without a paired tool_result
+  // Walk current turn messages to find the latest tool_use without a paired tool_result.
+  // A previous turn may be interrupted and leave an unresolved tool_use in history.
+  // Restricting to the latest user turn avoids showing stale "执行中 Bash..." labels.
   const getStatusText = (): string => {
+    let turnStartIndex = 0;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].type === 'user') {
+        turnStartIndex = i;
+        break;
+      }
+    }
+    const turnMessages = messages.slice(turnStartIndex);
+
     const toolUseIds = new Set<string>();
     const toolResultIds = new Set<string>();
-    for (const msg of messages) {
+    for (const msg of turnMessages) {
       const id = msg.metadata?.toolUseId;
       if (typeof id === 'string') {
         if (msg.type === 'tool_result') toolResultIds.add(id);
@@ -1094,8 +1105,8 @@ const StreamingActivityBar: React.FC<{ messages: CoworkMessage[] }> = ({ message
       }
     }
     // Walk backwards to find latest unresolved tool_use
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const msg = messages[i];
+    for (let i = turnMessages.length - 1; i >= 0; i--) {
+      const msg = turnMessages[i];
       if (msg.type === 'tool_use') {
         const id = msg.metadata?.toolUseId;
         if (typeof id === 'string' && !toolResultIds.has(id)) {
