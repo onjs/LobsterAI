@@ -658,7 +658,7 @@ export class CronJobService {
     if (!this.polling) return;
 
     try {
-      await this.ensureGatewayReady();
+      // await this.ensureGatewayReady();
       const client = this.getGatewayClient();
       if (!client) return;
 

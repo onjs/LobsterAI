@@ -240,6 +240,12 @@ const getFixedApiFormatForProvider = (provider: string): 'anthropic' | 'openai' 
   if (provider === 'youdaozhiyun') {
     return 'openai';
   }
+  // Moonshot /anthropic endpoint does not fully implement the Anthropic Messages
+  // spec (tool use, streaming, etc.), so the Claude Agent SDK cannot use it.
+  // Force OpenAI format — requests go through the built-in compat proxy instead.
+  if (provider === 'moonshot') {
+    return 'openai';
+  }
   if (provider === 'anthropic') {
     return 'anthropic';
   }
@@ -262,7 +268,13 @@ const resolveBaseUrl = (
   baseUrl: string,
   apiFormat: 'anthropic' | 'openai'
 ): string => {
-  if (baseUrl.trim()) return baseUrl;
+  if (baseUrl.trim()) {
+    if (shouldAutoSwitchProviderBaseUrl(provider, baseUrl) && (apiFormat === 'anthropic' || apiFormat === 'openai')) {
+      const switchedUrl = ProviderRegistry.getSwitchableBaseUrl(provider, apiFormat);
+      if (switchedUrl) return switchedUrl;
+    }
+    return baseUrl;
+  }
   return getProviderDefaultBaseUrl(provider, apiFormat)
     || defaultConfig.providers?.[provider]?.baseUrl
     || '';
@@ -949,52 +961,23 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
         };
       }
 
-      // Handle codingPlanEnabled toggle for zhipu
-      if (field === 'codingPlanEnabled' && provider === 'zhipu') {
-        const codingPlanEnabled = value === 'true';
-        return {
-          ...prev,
-          zhipu: {
-            ...prev.zhipu,
-            codingPlanEnabled,
-          },
-        };
-      }
-
-      // Handle codingPlanEnabled toggle for qwen
-      if (field === 'codingPlanEnabled' && provider === 'qwen') {
-        const codingPlanEnabled = value === 'true';
-        return {
-          ...prev,
-          qwen: {
-            ...prev.qwen,
-            codingPlanEnabled,
-          },
-        };
-      }
-
-      // Handle codingPlanEnabled toggle for volcengine
-      if (field === 'codingPlanEnabled' && provider === 'volcengine') {
-        const codingPlanEnabled = value === 'true';
-        return {
-          ...prev,
-          volcengine: {
-            ...prev.volcengine,
-            codingPlanEnabled,
-          },
-        };
-      }
-
-      // Handle codingPlanEnabled toggle for moonshot
-      if (field === 'codingPlanEnabled' && provider === 'moonshot') {
-        const codingPlanEnabled = value === 'true';
-        return {
-          ...prev,
-          moonshot: {
-            ...prev.moonshot,
-            codingPlanEnabled,
-          },
-        };
+      // Handle codingPlanEnabled toggle for all supported providers
+      if (field === 'codingPlanEnabled') {
+        const def = ProviderRegistry.get(provider);
+        if (def?.codingPlanSupported) {
+          const enabled = value === 'true';
+          const nextModels = enabled && def.codingPlanModels
+            ? def.codingPlanModels.map(m => ({ ...m }))
+            : def.defaultModels.map(m => ({ ...m }));
+          return {
+            ...prev,
+            [provider]: {
+              ...prev[provider],
+              codingPlanEnabled: enabled,
+              models: nextModels,
+            },
+          };
+        }
       }
 
       return {
