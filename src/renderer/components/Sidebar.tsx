@@ -244,9 +244,6 @@ const Sidebar: React.FC<SidebarProps> = ({
         <SidebarAgentList
           onShowCowork={onShowCowork}
         />
-        <div className="px-3 pb-2 text-sm font-medium dark:text-claude-darkTextSecondary text-claude-textSecondary">
-          {i18nService.t('coworkHistory')}
-        </div>
         <CoworkSessionList
           sessions={filteredSessions}
           currentSessionId={currentSessionId}
