@@ -572,17 +572,6 @@ export const buildProviderSelection = (options: {
       ? options.modelId.includes('thinking')
       : undefined;
 
-  if (providerName === ProviderName.LobsteraiServer) {
-    console.log('[OpenClawConfigSync] buildProviderSelection lobsterai-server:', {
-      inputBaseURL: options.baseURL,
-      proxyBaseUrl: baseUrl,
-      proxyPort: getOpenClawTokenProxyPort(),
-      modelId: options.modelId,
-      primaryModel: `${descriptor.providerId}/${sessionModelId}`,
-      api,
-    });
-  }
-
   return {
     providerId: descriptor.providerId,
     legacyModelId: options.modelId,

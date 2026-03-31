@@ -97,4 +97,53 @@ describe('ProviderRegistry', () => {
       expect(validFormats.has(def.defaultApiFormat)).toBe(true);
     }
   });
+
+  describe('getCodingPlanUrl', () => {
+    test('returns anthropic endpoint for coding-plan-supported providers', () => {
+      expect(ProviderRegistry.getCodingPlanUrl(ProviderName.Moonshot, 'anthropic')).toBe('https://api.kimi.com/coding');
+      expect(ProviderRegistry.getCodingPlanUrl(ProviderName.Qwen, 'anthropic')).toBe('https://coding.dashscope.aliyuncs.com/apps/anthropic');
+      expect(ProviderRegistry.getCodingPlanUrl(ProviderName.Zhipu, 'anthropic')).toBe('https://open.bigmodel.cn/api/anthropic');
+      expect(ProviderRegistry.getCodingPlanUrl(ProviderName.Volcengine, 'anthropic')).toBe('https://ark.cn-beijing.volces.com/api/coding');
+    });
+
+    test('returns openai endpoint for coding-plan-supported providers', () => {
+      expect(ProviderRegistry.getCodingPlanUrl(ProviderName.Moonshot, 'openai')).toBe('https://api.kimi.com/coding/v1');
+      expect(ProviderRegistry.getCodingPlanUrl(ProviderName.Qwen, 'openai')).toBe('https://coding.dashscope.aliyuncs.com/v1');
+      expect(ProviderRegistry.getCodingPlanUrl(ProviderName.Zhipu, 'openai')).toBe('https://open.bigmodel.cn/api/coding/paas/v4');
+      expect(ProviderRegistry.getCodingPlanUrl(ProviderName.Volcengine, 'openai')).toBe('https://ark.cn-beijing.volces.com/api/coding/v3');
+    });
+
+    test('returns undefined for providers that do not support codingPlan', () => {
+      expect(ProviderRegistry.getCodingPlanUrl(ProviderName.OpenAI, 'openai')).toBeUndefined();
+      expect(ProviderRegistry.getCodingPlanUrl(ProviderName.DeepSeek, 'anthropic')).toBeUndefined();
+      expect(ProviderRegistry.getCodingPlanUrl('unknown', 'anthropic')).toBeUndefined();
+    });
+  });
+
+  describe('getSwitchableBaseUrl', () => {
+    test('returns anthropic url for providers with switchableBaseUrls', () => {
+      expect(ProviderRegistry.getSwitchableBaseUrl(ProviderName.DeepSeek, 'anthropic')).toBe('https://api.deepseek.com/anthropic');
+      expect(ProviderRegistry.getSwitchableBaseUrl(ProviderName.Moonshot, 'anthropic')).toBe('https://api.moonshot.cn/anthropic');
+      expect(ProviderRegistry.getSwitchableBaseUrl(ProviderName.Zhipu, 'anthropic')).toBe('https://open.bigmodel.cn/api/anthropic');
+      expect(ProviderRegistry.getSwitchableBaseUrl(ProviderName.Minimax, 'anthropic')).toBe('https://api.minimaxi.com/anthropic');
+      expect(ProviderRegistry.getSwitchableBaseUrl(ProviderName.Qwen, 'anthropic')).toBe('https://dashscope.aliyuncs.com/apps/anthropic');
+      expect(ProviderRegistry.getSwitchableBaseUrl(ProviderName.Ollama, 'anthropic')).toBe('http://localhost:11434');
+    });
+
+    test('returns openai url for providers with switchableBaseUrls', () => {
+      expect(ProviderRegistry.getSwitchableBaseUrl(ProviderName.DeepSeek, 'openai')).toBe('https://api.deepseek.com');
+      expect(ProviderRegistry.getSwitchableBaseUrl(ProviderName.Moonshot, 'openai')).toBe('https://api.moonshot.cn/v1');
+      expect(ProviderRegistry.getSwitchableBaseUrl(ProviderName.Zhipu, 'openai')).toBe('https://open.bigmodel.cn/api/paas/v4');
+      expect(ProviderRegistry.getSwitchableBaseUrl(ProviderName.Minimax, 'openai')).toBe('https://api.minimaxi.com/v1');
+      expect(ProviderRegistry.getSwitchableBaseUrl(ProviderName.Qwen, 'openai')).toBe('https://dashscope.aliyuncs.com/compatible-mode/v1');
+      expect(ProviderRegistry.getSwitchableBaseUrl(ProviderName.Ollama, 'openai')).toBe('http://localhost:11434/v1');
+    });
+
+    test('returns undefined for providers without switchableBaseUrls', () => {
+      expect(ProviderRegistry.getSwitchableBaseUrl(ProviderName.OpenAI, 'openai')).toBeUndefined();
+      expect(ProviderRegistry.getSwitchableBaseUrl(ProviderName.Anthropic, 'anthropic')).toBeUndefined();
+      expect(ProviderRegistry.getSwitchableBaseUrl(ProviderName.Gemini, 'openai')).toBeUndefined();
+      expect(ProviderRegistry.getSwitchableBaseUrl('unknown', 'anthropic')).toBeUndefined();
+    });
+  });
 });

@@ -10,18 +10,7 @@ import {
 } from './coworkOpenAICompatProxy';
 import { normalizeProviderApiFormat, type AnthropicApiFormat } from './coworkFormatTransform';
 import { FEATURE_FLAGS } from '../../common/featureFlags';
-import { ProviderName } from '../../shared/providers';
-
-const ZHIPU_CODING_PLAN_BASE_URL = 'https://open.bigmodel.cn/api/coding/paas/v4';
-// Qwen Coding Plan 专属端点 (OpenAI 兼容和 Anthropic 兼容)
-const QWEN_CODING_PLAN_OPENAI_BASE_URL = 'https://coding.dashscope.aliyuncs.com/v1';
-const QWEN_CODING_PLAN_ANTHROPIC_BASE_URL = 'https://coding.dashscope.aliyuncs.com/apps/anthropic';
-// Volcengine Coding Plan 专属端点 (OpenAI 兼容和 Anthropic 兼容)
-const VOLCENGINE_CODING_PLAN_OPENAI_BASE_URL = 'https://ark.cn-beijing.volces.com/api/coding/v3';
-const VOLCENGINE_CODING_PLAN_ANTHROPIC_BASE_URL = 'https://ark.cn-beijing.volces.com/api/coding';
-// Moonshot/Kimi Coding Plan 专属端点 (OpenAI 兼容和 Anthropic 兼容)
-const MOONSHOT_CODING_PLAN_OPENAI_BASE_URL = 'https://api.kimi.com/coding/v1';
-const MOONSHOT_CODING_PLAN_ANTHROPIC_BASE_URL = 'https://api.kimi.com/coding';
+import { ProviderName, resolveCodingPlanBaseUrl } from '../../shared/providers';
 
 type ProviderModel = {
   id: string;
@@ -253,43 +242,10 @@ function resolveMatchedProvider(appConfig: AppConfig): { matched: MatchedProvide
   let apiFormat = getEffectiveProviderApiFormat(providerName, providerConfig.apiFormat);
   let baseURL = providerConfig.baseUrl?.trim();
 
-  // Handle Zhipu GLM Coding Plan endpoint switch
-  if (providerName === ProviderName.Zhipu && providerConfig.codingPlanEnabled) {
-    baseURL = ZHIPU_CODING_PLAN_BASE_URL;
-    apiFormat = 'openai';
-  }
-
-  // Handle Qwen Coding Plan endpoint switch
-  // Coding Plan supports both OpenAI and Anthropic compatible formats
-  if (providerName === ProviderName.Qwen && providerConfig.codingPlanEnabled) {
-    if (apiFormat === 'anthropic') {
-      baseURL = QWEN_CODING_PLAN_ANTHROPIC_BASE_URL;
-    } else {
-      baseURL = QWEN_CODING_PLAN_OPENAI_BASE_URL;
-      apiFormat = 'openai';
-    }
-  }
-
-  // Handle Volcengine Coding Plan endpoint switch
-  // Coding Plan supports both OpenAI and Anthropic compatible formats
-    if (providerName === ProviderName.Volcengine && providerConfig.codingPlanEnabled) {
-    if (apiFormat === 'anthropic') {
-      baseURL = VOLCENGINE_CODING_PLAN_ANTHROPIC_BASE_URL;
-    } else {
-      baseURL = VOLCENGINE_CODING_PLAN_OPENAI_BASE_URL;
-      apiFormat = 'openai';
-    }
-  }
-
-  // Handle Moonshot/Kimi Coding Plan endpoint switch
-  // Coding Plan supports both OpenAI and Anthropic compatible formats
-    if (providerName === ProviderName.Moonshot && providerConfig.codingPlanEnabled) {
-    if (apiFormat === 'anthropic') {
-      baseURL = MOONSHOT_CODING_PLAN_ANTHROPIC_BASE_URL;
-    } else {
-      baseURL = MOONSHOT_CODING_PLAN_OPENAI_BASE_URL;
-      apiFormat = 'openai';
-    }
+  if (providerConfig.codingPlanEnabled) {
+    const resolved = resolveCodingPlanBaseUrl(providerName, true, apiFormat, baseURL ?? '');
+    baseURL = resolved.baseUrl;
+    apiFormat = resolved.effectiveFormat;
   }
 
   if (!baseURL) {
@@ -428,7 +384,10 @@ export function resolveRawApiConfig(): ApiConfigResolution {
     return { config: null, error };
   }
   const apiKey = matched.providerConfig.apiKey?.trim() || '';
-  console.log('[ClaudeSettings] Resolved raw API config:',  JSON.stringify(matched), apiKey);
+  console.log('[ClaudeSettings] resolved raw API config:', JSON.stringify({
+    ...matched,
+    providerConfig: { ...matched.providerConfig, apiKey: apiKey ? '***' : '' },
+  }));
   // OpenClaw's gateway requires a non-empty apiKey for every provider — even
   // local servers (Ollama, vLLM, etc.) that don't enforce auth.  When the user
   // leaves the key blank we supply a placeholder so the gateway doesn't reject
@@ -514,27 +473,10 @@ export function resolveAllEnabledProviderConfigs(): ProviderRawConfig[] {
     let effectiveBaseURL = baseURL;
     let effectiveApiFormat = getEffectiveProviderApiFormat(providerName, providerConfig.apiFormat);
 
-    if (providerName === ProviderName.Zhipu && providerConfig.codingPlanEnabled) {
-      effectiveBaseURL = ZHIPU_CODING_PLAN_BASE_URL;
-      effectiveApiFormat = 'openai';
-    }
-    if (providerName === ProviderName.Qwen && providerConfig.codingPlanEnabled) {
-      effectiveBaseURL = effectiveApiFormat === 'anthropic'
-        ? QWEN_CODING_PLAN_ANTHROPIC_BASE_URL
-        : QWEN_CODING_PLAN_OPENAI_BASE_URL;
-      if (effectiveApiFormat !== 'anthropic') effectiveApiFormat = 'openai';
-    }
-  if (providerName === ProviderName.Volcengine && providerConfig.codingPlanEnabled) {
-      effectiveBaseURL = effectiveApiFormat === 'anthropic'
-        ? VOLCENGINE_CODING_PLAN_ANTHROPIC_BASE_URL
-        : VOLCENGINE_CODING_PLAN_OPENAI_BASE_URL;
-      if (effectiveApiFormat !== 'anthropic') effectiveApiFormat = 'openai';
-    }
-  if (providerName === ProviderName.Moonshot && providerConfig.codingPlanEnabled) {
-      effectiveBaseURL = effectiveApiFormat === 'anthropic'
-        ? MOONSHOT_CODING_PLAN_ANTHROPIC_BASE_URL
-        : MOONSHOT_CODING_PLAN_OPENAI_BASE_URL;
-      if (effectiveApiFormat !== 'anthropic') effectiveApiFormat = 'openai';
+    if (providerConfig.codingPlanEnabled) {
+      const resolved = resolveCodingPlanBaseUrl(providerName, true, effectiveApiFormat, effectiveBaseURL);
+      effectiveBaseURL = resolved.baseUrl;
+      effectiveApiFormat = resolved.effectiveFormat;
     }
 
     if (!effectiveBaseURL) continue;

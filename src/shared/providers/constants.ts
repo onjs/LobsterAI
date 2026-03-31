@@ -102,6 +102,30 @@ interface ProviderDefInput {
   readonly defaultApiFormat: ApiFormat;
   /** Whether this provider supports codingPlan mode */
   readonly codingPlanSupported: boolean;
+  /**
+   * Coding Plan dedicated endpoints (only for codingPlanSupported=true providers).
+   * openai: OpenAI-compatible format endpoint
+   * anthropic: Anthropic-compatible format endpoint
+   */
+  readonly codingPlanUrls?: {
+    readonly openai: string;
+    readonly anthropic: string;
+  };
+  /**
+   * When set, resolveCodingPlanBaseUrl will use this format (and its URL) regardless
+   * of the caller's current apiFormat. Use for providers whose coding plan endpoint
+   * only supports a single protocol (e.g. Zhipu coding plan is openai-only).
+   */
+  readonly preferredCodingPlanFormat?: 'openai' | 'anthropic';
+  /**
+   * Default baseUrl when switching apiFormat.
+   * Used by Settings UI to auto-switch baseUrl when toggling anthropic/openai format.
+   * If omitted, both formats use defaultBaseUrl.
+   */
+  readonly switchableBaseUrls?: {
+    readonly anthropic: string;
+    readonly openai: string;
+  };
   /** Region grouping for UI visibility */
   readonly region: 'china' | 'global';
   /** Priority ordering for English locale display (lower = higher priority, 0 = no special priority) */
@@ -127,6 +151,10 @@ const PROVIDER_DEFINITIONS = [
     defaultBaseUrl: 'https://api.deepseek.com/anthropic',
     defaultApiFormat: ApiFormat.Anthropic,
     codingPlanSupported: false,
+    switchableBaseUrls: {
+      anthropic: 'https://api.deepseek.com/anthropic',
+      openai: 'https://api.deepseek.com',
+    },
     region: 'china',
     enPriority: 0,
     defaultModels: [
@@ -138,6 +166,14 @@ const PROVIDER_DEFINITIONS = [
     defaultBaseUrl: 'https://api.moonshot.cn/anthropic',
     defaultApiFormat: ApiFormat.Anthropic,
     codingPlanSupported: true,
+    codingPlanUrls: {
+      openai: 'https://api.kimi.com/coding/v1',
+      anthropic: 'https://api.kimi.com/coding',
+    },
+    switchableBaseUrls: {
+      anthropic: 'https://api.moonshot.cn/anthropic',
+      openai: 'https://api.moonshot.cn/v1',
+    },
     region: 'china',
     enPriority: 0,
     defaultModels: [
@@ -149,6 +185,14 @@ const PROVIDER_DEFINITIONS = [
     defaultBaseUrl: 'https://dashscope.aliyuncs.com/apps/anthropic',
     defaultApiFormat: ApiFormat.Anthropic,
     codingPlanSupported: true,
+    codingPlanUrls: {
+      openai: 'https://coding.dashscope.aliyuncs.com/v1',
+      anthropic: 'https://coding.dashscope.aliyuncs.com/apps/anthropic',
+    },
+    switchableBaseUrls: {
+      anthropic: 'https://dashscope.aliyuncs.com/apps/anthropic',
+      openai: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    },
     region: 'china',
     enPriority: 0,
     defaultModels: [
@@ -161,6 +205,15 @@ const PROVIDER_DEFINITIONS = [
     defaultBaseUrl: 'https://open.bigmodel.cn/api/anthropic',
     defaultApiFormat: ApiFormat.Anthropic,
     codingPlanSupported: true,
+    codingPlanUrls: {
+      openai: 'https://open.bigmodel.cn/api/coding/paas/v4',
+      anthropic: 'https://open.bigmodel.cn/api/anthropic',
+    },
+    preferredCodingPlanFormat: 'openai',
+    switchableBaseUrls: {
+      anthropic: 'https://open.bigmodel.cn/api/anthropic',
+      openai: 'https://open.bigmodel.cn/api/paas/v4',
+    },
     region: 'china',
     enPriority: 0,
     defaultModels: [
@@ -173,6 +226,10 @@ const PROVIDER_DEFINITIONS = [
     defaultBaseUrl: 'https://api.minimaxi.com/anthropic',
     defaultApiFormat: ApiFormat.Anthropic,
     codingPlanSupported: false,
+    switchableBaseUrls: {
+      anthropic: 'https://api.minimaxi.com/anthropic',
+      openai: 'https://api.minimaxi.com/v1',
+    },
     region: 'china',
     enPriority: 0,
     defaultModels: [
@@ -185,6 +242,14 @@ const PROVIDER_DEFINITIONS = [
     defaultBaseUrl: 'https://ark.cn-beijing.volces.com/api/compatible',
     defaultApiFormat: ApiFormat.Anthropic,
     codingPlanSupported: true,
+    codingPlanUrls: {
+      openai: 'https://ark.cn-beijing.volces.com/api/coding/v3',
+      anthropic: 'https://ark.cn-beijing.volces.com/api/coding',
+    },
+    switchableBaseUrls: {
+      anthropic: 'https://ark.cn-beijing.volces.com/api/compatible',
+      openai: 'https://ark.cn-beijing.volces.com/api/v3',
+    },
     region: 'china',
     enPriority: 0,
     defaultModels: [
@@ -224,6 +289,10 @@ const PROVIDER_DEFINITIONS = [
     defaultBaseUrl: 'https://api.xiaomimimo.com/anthropic',
     defaultApiFormat: ApiFormat.Anthropic,
     codingPlanSupported: false,
+    switchableBaseUrls: {
+      anthropic: 'https://api.xiaomimimo.com/anthropic',
+      openai: 'https://api.xiaomimimo.com/v1/chat/completions',
+    },
     region: 'china',
     enPriority: 0,
     defaultModels: [
@@ -235,6 +304,10 @@ const PROVIDER_DEFINITIONS = [
     defaultBaseUrl: 'http://localhost:11434/v1',
     defaultApiFormat: ApiFormat.OpenAI,
     codingPlanSupported: false,
+    switchableBaseUrls: {
+      anthropic: 'http://localhost:11434',
+      openai: 'http://localhost:11434/v1',
+    },
     region: 'china',
     enPriority: 0,
     defaultModels: [
@@ -288,6 +361,10 @@ const PROVIDER_DEFINITIONS = [
     defaultBaseUrl: 'https://openrouter.ai/api',
     defaultApiFormat: ApiFormat.Anthropic,
     codingPlanSupported: false,
+    switchableBaseUrls: {
+      anthropic: 'https://openrouter.ai/api',
+      openai: 'https://openrouter.ai/api/v1',
+    },
     region: 'global',
     enPriority: 0,
     defaultModels: [
@@ -312,6 +389,18 @@ export interface ProviderDef {
   readonly defaultApiFormat: ApiFormat;
   /** Whether this provider supports codingPlan mode */
   readonly codingPlanSupported: boolean;
+  /** Coding Plan dedicated endpoints */
+  readonly codingPlanUrls?: {
+    readonly openai: string;
+    readonly anthropic: string;
+  };
+  /** When set, overrides caller's apiFormat for coding plan URL resolution. */
+  readonly preferredCodingPlanFormat?: 'openai' | 'anthropic';
+  /** Default baseUrl per apiFormat for UI switching */
+  readonly switchableBaseUrls?: {
+    readonly anthropic: string;
+    readonly openai: string;
+  };
   /** Region grouping for UI visibility */
   readonly region: 'china' | 'global';
   /** Priority ordering for English locale display (lower = higher priority, 0 = no special priority) */
@@ -359,6 +448,16 @@ class ProviderRegistryImpl {
   /** Providers filtered by region, preserving definition order. */
   byRegion(region: 'china' | 'global'): readonly ProviderDef[] {
     return this.defs.filter(d => d.region === region);
+  }
+
+  getCodingPlanUrl(id: string, format: 'openai' | 'anthropic'): string | undefined {
+    const def = this.idIndex.get(id);
+    if (!def?.codingPlanSupported || !def.codingPlanUrls) return undefined;
+    return def.codingPlanUrls[format];
+  }
+
+  getSwitchableBaseUrl(id: string, format: 'openai' | 'anthropic'): string | undefined {
+    return this.idIndex.get(id)?.switchableBaseUrls?.[format];
   }
 
   /** Provider IDs filtered by region. */
