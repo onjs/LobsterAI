@@ -9,7 +9,7 @@ import TaskForm from './TaskForm';
 import TaskDetail from './TaskDetail';
 import AllRunsHistory from './AllRunsHistory';
 import DeleteConfirmModal from './DeleteConfirmModal';
-import { ArrowLeftIcon } from '@heroicons/react/24/outline';
+import { ArrowLeftIcon, XMarkIcon } from '@heroicons/react/24/outline';
 import SidebarToggleIcon from '../icons/SidebarToggleIcon';
 import ComposeIcon from '../icons/ComposeIcon';
 import WindowTitleBar from '../window/WindowTitleBar';
@@ -67,6 +67,21 @@ const ScheduledTasksView: React.FC<ScheduledTasksViewProps> = ({
     dispatch(setViewMode('list'));
   };
 
+  const handleCloseTaskFormModal = useCallback(() => {
+    if (viewMode === 'create') {
+      dispatch(selectTask(null));
+      dispatch(setViewMode('list'));
+      return;
+    }
+    if (viewMode === 'edit') {
+      if (selectedTaskId) {
+        dispatch(setViewMode('detail'));
+      } else {
+        dispatch(setViewMode('list'));
+      }
+    }
+  }, [dispatch, selectedTaskId, viewMode]);
+
   const handleTabChange = (tab: TabType) => {
     setActiveTab(tab);
     if (tab === 'tasks') {
@@ -102,7 +117,7 @@ const ScheduledTasksView: React.FC<ScheduledTasksViewProps> = ({
               {updateBadge}
             </div>
           )}
-          {viewMode !== 'list' && (
+          {viewMode === 'detail' && (
             <button
               onClick={handleBackToList}
               className="non-draggable p-2 rounded-lg dark:hover:bg-claude-darkSurfaceHover hover:bg-claude-surfaceHover dark:text-claude-darkTextSecondary text-claude-textSecondary transition-colors"
@@ -118,79 +133,99 @@ const ScheduledTasksView: React.FC<ScheduledTasksViewProps> = ({
         <WindowTitleBar inline />
       </div>
 
-      {/* Tabs + New Task button */}
-      {showTabs && (
-        <div className="flex items-center justify-between border-b dark:border-claude-darkBorder border-claude-border px-4 shrink-0">
-          <div className="flex">
-            <button
-              type="button"
-              onClick={() => handleTabChange('tasks')}
-              className={`px-4 py-2.5 text-sm font-medium transition-colors relative ${
-                activeTab === 'tasks'
-                  ? 'dark:text-claude-darkText text-claude-text'
-                  : 'dark:text-claude-darkTextSecondary text-claude-textSecondary hover:dark:text-claude-darkText hover:text-claude-text'
-              }`}
-            >
-              {i18nService.t('scheduledTasksTabTasks')}
-              {activeTab === 'tasks' && (
-                <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-claude-accent rounded-t" />
+      {/* Content */}
+      <div className="flex-1 overflow-y-auto min-h-0 [scrollbar-gutter:stable]">
+        <div className="max-w-3xl mx-auto px-4 py-6">
+          {showTabs && (
+            <div className="flex items-center border-b dark:border-claude-darkBorder border-claude-border mb-4">
+              <button
+                type="button"
+                onClick={() => handleTabChange('tasks')}
+                className={`px-4 py-2.5 text-sm font-medium transition-colors relative ${
+                  activeTab === 'tasks'
+                    ? 'dark:text-claude-darkText text-claude-text'
+                    : 'dark:text-claude-darkTextSecondary text-claude-textSecondary hover:dark:text-claude-darkText hover:text-claude-text'
+                }`}
+              >
+                {i18nService.t('scheduledTasksTabTasks')}
+                {tasks.length > 0 && (
+                  <span className="ml-1.5 text-[10px] px-1.5 py-0.5 rounded-full dark:bg-claude-darkSurfaceHover bg-claude-surfaceHover">
+                    {tasks.length}
+                  </span>
+                )}
+                <div className={`absolute bottom-0 left-0 right-0 h-0.5 rounded-full transition-colors ${
+                  activeTab === 'tasks' ? 'bg-claude-accent' : 'bg-transparent'
+                }`} />
+              </button>
+              <button
+                type="button"
+                onClick={() => handleTabChange('history')}
+                className={`px-4 py-2.5 text-sm font-medium transition-colors relative ${
+                  activeTab === 'history'
+                    ? 'dark:text-claude-darkText text-claude-text'
+                    : 'dark:text-claude-darkTextSecondary text-claude-textSecondary hover:dark:text-claude-darkText hover:text-claude-text'
+                }`}
+              >
+                {i18nService.t('scheduledTasksTabHistory')}
+                <div className={`absolute bottom-0 left-0 right-0 h-0.5 rounded-full transition-colors ${
+                  activeTab === 'history' ? 'bg-claude-accent' : 'bg-transparent'
+                }`} />
+              </button>
+            </div>
+          )}
+
+          {showTabs && activeTab === 'history' ? (
+            <AllRunsHistory />
+          ) : (
+            <>
+              {viewMode === 'list' && (
+                <TaskList
+                  onRequestDelete={handleRequestDelete}
+                  onCreate={() => dispatch(setViewMode('create'))}
+                />
               )}
-            </button>
-            <button
-              type="button"
-              onClick={() => handleTabChange('history')}
-              className={`px-4 py-2.5 text-sm font-medium transition-colors relative ${
-                activeTab === 'history'
-                  ? 'dark:text-claude-darkText text-claude-text'
-                  : 'dark:text-claude-darkTextSecondary text-claude-textSecondary hover:dark:text-claude-darkText hover:text-claude-text'
-              }`}
-            >
-              {i18nService.t('scheduledTasksTabHistory')}
-              {activeTab === 'history' && (
-                <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-claude-accent rounded-t" />
+              {viewMode === 'detail' && selectedTask && (
+                <TaskDetail task={selectedTask} onRequestDelete={handleRequestDelete} />
               )}
-            </button>
-          </div>
-          {activeTab === 'tasks' && (
-            <button
-              type="button"
-              onClick={() => dispatch(setViewMode('create'))}
-              className="px-3 py-1 text-sm font-medium bg-claude-accent text-white rounded-lg hover:bg-claude-accentHover transition-colors"
-            >
-              {i18nService.t('scheduledTasksNewTask')}
-            </button>
+            </>
           )}
         </div>
-      )}
+      </div>
 
-      {/* Content */}
-      <div className="flex-1 overflow-y-auto">
-        {showTabs && activeTab === 'history' ? (
-          <AllRunsHistory />
-        ) : (
-          <>
-            {viewMode === 'list' && <TaskList onRequestDelete={handleRequestDelete} />}
-            {viewMode === 'create' && (
+      {(viewMode === 'create' || (viewMode === 'edit' && !!selectedTask)) && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
+          onClick={handleCloseTaskFormModal}
+        >
+          <div
+            className="relative w-full max-w-lg mx-4 max-h-[80vh] overflow-y-auto rounded-2xl dark:bg-claude-darkSurface bg-claude-surface border dark:border-claude-darkBorder border-claude-border shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <button
+              type="button"
+              onClick={handleCloseTaskFormModal}
+              className="absolute right-4 top-4 z-10 p-1 rounded-lg dark:text-claude-darkTextSecondary text-claude-textSecondary hover:bg-claude-surfaceHover dark:hover:bg-claude-darkSurfaceHover transition-colors"
+              aria-label={i18nService.t('cancel')}
+            >
+              <XMarkIcon className="h-5 w-5" />
+            </button>
+            {viewMode === 'create' ? (
               <TaskForm
                 mode="create"
-                onCancel={handleBackToList}
-                onSaved={handleBackToList}
+                onCancel={handleCloseTaskFormModal}
+                onSaved={handleCloseTaskFormModal}
               />
-            )}
-            {viewMode === 'edit' && selectedTask && (
+            ) : selectedTask ? (
               <TaskForm
                 mode="edit"
                 task={selectedTask}
-                onCancel={() => dispatch(setViewMode('detail'))}
-                onSaved={() => dispatch(setViewMode('detail'))}
+                onCancel={handleCloseTaskFormModal}
+                onSaved={handleCloseTaskFormModal}
               />
-            )}
-            {viewMode === 'detail' && selectedTask && (
-              <TaskDetail task={selectedTask} onRequestDelete={handleRequestDelete} />
-            )}
-          </>
-        )}
-      </div>
+            ) : null}
+          </div>
+        </div>
+      )}
 
       {/* Delete confirmation modal */}
       {deleteTaskInfo && (

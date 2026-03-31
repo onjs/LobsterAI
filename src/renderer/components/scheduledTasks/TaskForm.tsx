@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { scheduledTaskService } from '../../services/scheduledTask';
 import { i18nService } from '../../services/i18n';
 import type {
@@ -151,6 +151,8 @@ const WEEKDAY_KEYS = [
 
 const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved }) => {
   const [form, setForm] = useState<FormState>(() => createFormState(task));
+  const [monthDayPickerOpen, setMonthDayPickerOpen] = useState(false);
+  const monthDayPickerRef = useRef<HTMLDivElement | null>(null);
   const [notifyEnabled, setNotifyEnabled] = useState<boolean>(() => {
     if (!task) return false;
     return task.delivery.mode === 'announce' && !!task.delivery.channel;
@@ -167,6 +169,7 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved }) =>
   const [conversationsLoading, setConversationsLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const pickerLastOpenedAtRef = useRef(new WeakMap<HTMLInputElement, number>());
 
   const isAdvanced = form.planType === 'advanced';
   const showConversationSelector = notifyEnabled && isIMChannel(form.notifyChannel);
@@ -174,7 +177,14 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved }) =>
   useEffect(() => {
     setForm(createFormState(task));
     setNotifyEnabled(!!task && task.delivery.mode === 'announce' && !!task.delivery.channel);
+    setMonthDayPickerOpen(false);
   }, [task]);
+
+  useEffect(() => {
+    if (form.planType !== 'monthly') {
+      setMonthDayPickerOpen(false);
+    }
+  }, [form.planType]);
 
   useEffect(() => {
     let cancelled = false;
@@ -297,9 +307,9 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved }) =>
     }
   };
 
-  const inputClass = 'w-full rounded-xl border border-claude-border dark:border-claude-darkBorder dark:bg-claude-darkSurface bg-white px-4 py-3 text-base dark:text-claude-darkText text-claude-text placeholder:dark:text-claude-darkTextSecondary placeholder:text-claude-textSecondary focus:outline-none focus:ring-2 focus:ring-claude-accent/40';
-  const compactInputClass = 'w-full rounded-xl border border-claude-border dark:border-claude-darkBorder dark:bg-claude-darkSurface bg-white px-3 py-2.5 text-sm dark:text-claude-darkText text-claude-text focus:outline-none focus:ring-2 focus:ring-claude-accent/40';
-  const labelClass = 'block text-sm font-semibold dark:text-claude-darkText text-claude-text mb-2';
+  const inputClass = 'w-full px-3 py-2 text-sm rounded-xl dark:bg-claude-darkBg bg-claude-bg dark:text-claude-darkText text-claude-text dark:placeholder-claude-darkTextSecondary placeholder-claude-textSecondary border dark:border-claude-darkBorder border-claude-border focus:outline-none focus:ring-2 focus:ring-claude-accent';
+  const compactInputClass = inputClass;
+  const labelClass = 'block text-xs font-semibold tracking-wide dark:text-claude-darkTextSecondary text-claude-textSecondary mb-1.5';
   const errorClass = 'text-xs text-red-500 mt-1';
 
   const timeValue = `${String(form.hour).padStart(2, '0')}:${String(form.minute).padStart(2, '0')}`;
@@ -311,12 +321,55 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved }) =>
     }
   };
 
+  const openNativePicker = (event: React.MouseEvent<HTMLInputElement>) => {
+    const input = event.currentTarget;
+    const now = Date.now();
+    const lastOpenedAt = pickerLastOpenedAtRef.current.get(input) ?? 0;
+    if (now - lastOpenedAt < 1200) {
+      event.preventDefault();
+      return;
+    }
+    pickerLastOpenedAtRef.current.set(input, now);
+    if (typeof input.showPicker === 'function') {
+      try {
+        event.preventDefault();
+        input.focus();
+        input.showPicker();
+      } catch {
+        // Ignore browsers/environments that block programmatic picker open.
+      }
+    }
+  };
+
+  const suppressNativePickerClick = (event: React.MouseEvent<HTMLInputElement>) => {
+    // Prevent browser default picker opening to avoid duplicated triggers with showPicker().
+    event.preventDefault();
+  };
+
   const handleNotifyToggle = (enabled: boolean) => {
     setNotifyEnabled(enabled);
     if (!enabled) {
       updateForm({ notifyChannel: 'none', notifyTo: '' });
     }
   };
+
+  const monthDayLabel = i18nService
+    .t('scheduledTasksFormMonthlyDayLabel')
+    .replace('{day}', String(form.monthDay));
+
+  useEffect(() => {
+    if (!monthDayPickerOpen) return;
+    const onPointerDown = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (monthDayPickerRef.current && !monthDayPickerRef.current.contains(target)) {
+        setMonthDayPickerOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', onPointerDown);
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown);
+    };
+  }, [monthDayPickerOpen]);
 
   const renderScheduleRow = () => {
     if (isAdvanced) {
@@ -361,6 +414,8 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved }) =>
             <input
               type="date"
               value={dateValue}
+              onMouseDown={openNativePicker}
+              onClick={suppressNativePickerClick}
               onChange={(e) => {
                 const [y, mo, d] = e.target.value.split('-').map(Number);
                 if (!Number.isNaN(y)) updateForm({ year: y, month: mo, day: d });
@@ -371,6 +426,8 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved }) =>
               type="time"
               step="1"
               value={fullTimeValue}
+              onMouseDown={openNativePicker}
+              onClick={suppressNativePickerClick}
               onChange={(e) => {
                 const parts = e.target.value.split(':').map(Number);
                 const patch: Partial<FormState> = {};
@@ -447,6 +504,8 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved }) =>
             <input
               type="time"
               value={timeValue}
+              onMouseDown={openNativePicker}
+              onClick={suppressNativePickerClick}
               onChange={(e) => handleTimeChange(e.target.value)}
               className={`${compactInputClass} min-w-[140px]`}
             />
@@ -473,6 +532,8 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved }) =>
             <input
               type="time"
               value={timeValue}
+              onMouseDown={openNativePicker}
+              onClick={suppressNativePickerClick}
               onChange={(e) => handleTimeChange(e.target.value)}
               className={`${compactInputClass} min-w-[140px]`}
             />
@@ -484,22 +545,46 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved }) =>
     return (
       <div>
         <label className={labelClass}>{i18nService.t('scheduledTasksFormPlanTime')}</label>
-        <div className="flex flex-wrap items-center gap-3">
+        <div className="relative flex flex-wrap items-start gap-3" ref={monthDayPickerRef}>
           {planSelect}
-          <select
-            value={form.monthDay}
-            onChange={(e) => updateForm({ monthDay: Number(e.target.value) })}
-            className={`${compactInputClass} min-w-[140px]`}
+          <button
+            type="button"
+            onClick={() => setMonthDayPickerOpen((prev) => !prev)}
+            className={`${compactInputClass} min-w-[150px] text-left`}
           >
-            {Array.from({ length: 31 }, (_, i) => i + 1).map((d) => (
-              <option key={d} value={d}>
-                {d}{i18nService.t('scheduledTasksFormMonthDaySuffix')}
-              </option>
-            ))}
-          </select>
+            {monthDayLabel}
+          </button>
+          {monthDayPickerOpen && (
+            <div className="absolute left-0 top-[46px] z-30 w-[320px] rounded-xl border border-claude-border dark:border-claude-darkBorder bg-white dark:bg-claude-darkSurface shadow-xl p-3">
+              <div className="grid grid-cols-7 gap-1">
+                {Array.from({ length: 31 }, (_, i) => i + 1).map((d) => {
+                  const selected = form.monthDay === d;
+                  return (
+                    <button
+                      key={d}
+                      type="button"
+                      onClick={() => {
+                        updateForm({ monthDay: d });
+                        setMonthDayPickerOpen(false);
+                      }}
+                      className={`h-9 rounded-lg text-sm transition-colors ${
+                        selected
+                          ? 'bg-claude-accent text-white'
+                          : 'dark:text-claude-darkText text-claude-text hover:bg-claude-surfaceHover dark:hover:bg-claude-darkSurfaceHover'
+                      }`}
+                    >
+                      {d}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
           <input
             type="time"
             value={timeValue}
+            onMouseDown={openNativePicker}
+            onClick={suppressNativePickerClick}
             onChange={(e) => handleTimeChange(e.target.value)}
             className={`${compactInputClass} min-w-[140px]`}
           />
@@ -585,19 +670,13 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved }) =>
   const formTitle = mode === 'create'
     ? i18nService.t('scheduledTasksFormCreateTitle')
     : i18nService.t('scheduledTasksFormUpdateTitle');
-  const formSubtitle = mode === 'create'
-    ? i18nService.t('scheduledTasksFormCreateSubtitle')
-    : i18nService.t('scheduledTasksFormUpdateSubtitle');
 
   return (
-    <div className="mx-auto max-w-4xl p-6 space-y-6">
-      <div className="space-y-2">
-        <h2 className="text-3xl font-semibold dark:text-claude-darkText text-claude-text tracking-tight">
+    <div className="p-6 space-y-4">
+      <div>
+        <h2 className="text-lg font-semibold dark:text-claude-darkText text-claude-text">
           {formTitle}
         </h2>
-        <p className="text-base dark:text-claude-darkTextSecondary text-claude-textSecondary max-w-3xl">
-          {formSubtitle}
-        </p>
       </div>
 
       <div>
@@ -620,7 +699,7 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved }) =>
         <textarea
           value={form.payloadText}
           onChange={(event) => updateForm({ payloadText: event.target.value })}
-          className={`${inputClass} h-36 resize-y`}
+          className={`${inputClass} h-32 resize-y`}
           placeholder={i18nService.t('scheduledTasksFormActionPromptPlaceholder')}
         />
         {errors.payloadText && <p className={errorClass}>{errors.payloadText}</p>}
@@ -632,7 +711,7 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved }) =>
         <button
           type="button"
           onClick={onCancel}
-          className="px-5 py-2.5 text-sm rounded-xl dark:text-claude-darkTextSecondary text-claude-textSecondary hover:bg-claude-surfaceHover dark:hover:bg-claude-darkSurfaceHover transition-colors"
+          className="px-3 py-1.5 text-xs rounded-lg border dark:border-claude-darkBorder border-claude-border dark:text-claude-darkTextSecondary text-claude-textSecondary dark:hover:bg-claude-darkSurfaceHover hover:bg-claude-surfaceHover transition-colors"
         >
           {i18nService.t('cancel')}
         </button>
@@ -640,7 +719,7 @@ const TaskForm: React.FC<TaskFormProps> = ({ mode, task, onCancel, onSaved }) =>
           type="button"
           onClick={() => void handleSubmit()}
           disabled={submitting}
-          className="px-5 py-2.5 text-sm font-semibold bg-claude-accent text-white rounded-xl hover:bg-claude-accentHover transition-colors disabled:opacity-50"
+          className="px-3 py-1.5 text-xs rounded-lg bg-claude-accent text-white hover:bg-claude-accent/90 transition-colors disabled:opacity-50"
         >
           {submitting
             ? i18nService.t('saving')

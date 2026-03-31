@@ -86,7 +86,7 @@ const TaskDetail: React.FC<TaskDetailProps> = ({ task, onRequestDelete }) => {
 
       <div className={sectionClass}>
         <h3 className={sectionTitleClass}>{i18nService.t('scheduledTasksPrompt')}</h3>
-        <div className="text-sm dark:text-claude-darkText text-claude-text whitespace-pre-wrap bg-claude-surfaceHover/30 dark:bg-claude-darkSurfaceHover/30 rounded-md p-3">
+        <div className={`${valueClass} whitespace-pre-wrap`}>
           {promptText}
         </div>
       </div>
