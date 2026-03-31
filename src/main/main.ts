@@ -49,6 +49,11 @@ import {
   PLATFORM_TO_CHANNEL_MAP,
 } from './libs/openclawChannelSessionSync';
 import { IMGatewayManager, IMPlatform, IMGatewayConfig } from './im';
+import {
+  IMGatewayBuildProfile,
+  IMGatewayProviderEnvKey,
+  resolveIMGatewayBuildProfile,
+} from './im/imGatewayProviderRouter';
 import { APP_NAME } from './appConstants';
 import { getSkillServiceManager } from './skillServices';
 import { createTray, destroyTray, updateTrayMenu } from './trayManager';
@@ -722,7 +727,32 @@ const bootstrapOpenClawEngine = async (options: { forceReinstall?: boolean; reas
 // proactive token refresh before syncing config to the gateway.
 let pendingTokenRefresh: Promise<string | null> | null = null;
 
+const resolveIMGatewayBuildProfileFromEnv = (): IMGatewayBuildProfile => {
+  const envBuildProfile = process.env[IMGatewayProviderEnvKey.BuildProfile]
+    ?? process.env[IMGatewayProviderEnvKey.BuildProfilePrefixed]
+    ?? null;
+  return resolveIMGatewayBuildProfile({ envBuildProfile });
+};
+
+const isOpenClawRuntimeAllowedByBuildProfile = (): boolean => (
+  resolveIMGatewayBuildProfileFromEnv() !== IMGatewayBuildProfile.YdOnly
+);
+
+const normalizeCoworkAgentEngine = (
+  configured: CoworkAgentEngine | null | undefined,
+): CoworkAgentEngine => {
+  const normalized = configured === 'openclaw' ? 'openclaw' : 'yd_cowork';
+  if (normalized === 'openclaw' && !isOpenClawRuntimeAllowedByBuildProfile()) {
+    return 'yd_cowork';
+  }
+  return normalized;
+};
+
 const ensureOpenClawRunningForCowork = async () => {
+  if (!isOpenClawRuntimeAllowedByBuildProfile()) {
+    console.warn('[OpenClaw] ensureRunning skipped because build profile is yd-only');
+    return getOpenClawEngineManager().getStatus();
+  }
   const manager = getOpenClawEngineManager();
   const status = manager.getStatus();
   if (status.phase === 'running') {
@@ -793,7 +823,7 @@ const getAgentManager = () => {
 
 const resolveCoworkAgentEngine = (): CoworkAgentEngine => {
   const configured = getCoworkStore().getConfig().agentEngine;
-  return configured === 'openclaw' ? 'openclaw' : 'yd_cowork';
+  return normalizeCoworkAgentEngine(configured);
 };
 
 const resolveScheduledTaskBackendFromConfig = (
@@ -801,9 +831,12 @@ const resolveScheduledTaskBackendFromConfig = (
 ): Exclude<STBackendType, 'auto'> => {
   const configured = config.scheduledTaskBackend;
   if (configured === STBackend.OpenClaw || configured === STBackend.YdCowork) {
+    if (configured === STBackend.OpenClaw && !isOpenClawRuntimeAllowedByBuildProfile()) {
+      return STBackend.YdCowork;
+    }
     return configured;
   }
-  return config.agentEngine === 'openclaw'
+  return normalizeCoworkAgentEngine(config.agentEngine) === 'openclaw'
     ? STBackend.OpenClaw
     : STBackend.YdCowork;
 };
@@ -819,6 +852,9 @@ const isOpenClawGatewayLive = (): boolean => {
 };
 
 const shouldSyncOpenClawForBackgroundChanges = (): boolean => {
+  if (!isOpenClawRuntimeAllowedByBuildProfile()) {
+    return false;
+  }
   return resolveCoworkAgentEngine() === 'openclaw' || isOpenClawGatewayLive();
 };
 
@@ -959,6 +995,15 @@ const scheduleDeferredGatewayRestart = (reason: string) => {
 const syncOpenClawConfig = async (
   options: { reason: string; restartGatewayIfRunning?: boolean } = { reason: 'unknown' },
 ): Promise<{ success: boolean; changed: boolean; status?: OpenClawEngineStatus; error?: string }> => {
+  if (!isOpenClawRuntimeAllowedByBuildProfile()) {
+    console.log(`[OpenClaw] config sync skipped because build profile is yd-only (reason: ${options.reason})`);
+    return {
+      success: true,
+      changed: false,
+      status: getOpenClawEngineManager().getStatus(),
+    };
+  }
+
   // When a restart would be needed and there are active sessions, defer the
   // entire sync (including the config file write) to avoid triggering
   // OpenClaw's built-in file-watcher reload (SIGUSR1) which would kill

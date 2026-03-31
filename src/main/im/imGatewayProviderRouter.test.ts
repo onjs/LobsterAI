@@ -3,10 +3,21 @@ import {
   IMGatewayBuildProfile,
   IMGatewayProviderId,
   IMGatewayProviderSource,
+  resolveIMGatewayBuildProfile,
   resolveIMGatewayProvider,
 } from './imGatewayProviderRouter';
 
 describe('imGatewayProviderRouter', () => {
+  test('resolves build profile with full as default', () => {
+    expect(resolveIMGatewayBuildProfile()).toBe(IMGatewayBuildProfile.Full);
+    expect(resolveIMGatewayBuildProfile({ envBuildProfile: IMGatewayBuildProfile.YdOnly })).toBe(
+      IMGatewayBuildProfile.YdOnly,
+    );
+    expect(resolveIMGatewayBuildProfile({ envBuildProfile: 'invalid' })).toBe(
+      IMGatewayBuildProfile.Full,
+    );
+  });
+
   test('prefers explicit IM gateway provider env over env engine and configured engine', () => {
     const resolved = resolveIMGatewayProvider({
       envProvider: IMGatewayProviderId.YdCowork,

@@ -76,6 +76,15 @@ const normalizeBuildProfile = (raw?: string | null): IMGatewayBuildProfile | und
   return undefined;
 };
 
+export const resolveIMGatewayBuildProfile = (options?: {
+  envBuildProfile?: string | null;
+  defaultBuildProfile?: IMGatewayBuildProfile;
+}): IMGatewayBuildProfile => (
+  normalizeBuildProfile(options?.envBuildProfile)
+  ?? options?.defaultBuildProfile
+  ?? IMGatewayBuildProfile.Full
+);
+
 const forceProviderByBuildProfile = (
   providerId: IMGatewayProviderId,
   buildProfile: IMGatewayBuildProfile,
@@ -98,9 +107,10 @@ export const resolveIMGatewayProvider = (options?: {
   defaultProvider?: IMGatewayProviderId;
 }): { providerId: IMGatewayProviderId; source: IMGatewayProviderSource } => {
   const defaultProvider = options?.defaultProvider ?? IMGatewayProviderId.YdCowork;
-  const buildProfile = normalizeBuildProfile(options?.envBuildProfile)
-    ?? options?.defaultBuildProfile
-    ?? IMGatewayBuildProfile.Full;
+  const buildProfile = resolveIMGatewayBuildProfile({
+    envBuildProfile: options?.envBuildProfile,
+    defaultBuildProfile: options?.defaultBuildProfile,
+  });
 
   const withBuildProfile = (
     providerId: IMGatewayProviderId,
