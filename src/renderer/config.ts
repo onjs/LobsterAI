@@ -266,15 +266,6 @@ const buildDefaultProviders = (): AppConfig['providers'] => {
     };
   }
 
-  // custom provider is not in the registry — hardcode defaults
-  providers[ProviderName.Custom] = {
-    enabled: false,
-    apiKey: '',
-    baseUrl: '',
-    apiFormat: ApiFormat.OpenAI,
-    models: [],
-  };
-
   return providers as AppConfig['providers'];
 };
 
@@ -317,7 +308,7 @@ export const CONFIG_KEYS = {
 };
 
 // Provider lists derived from ProviderRegistry — single source of truth
-export const CHINA_PROVIDERS = [...ProviderRegistry.idsByRegion('china'), ProviderName.Custom] as const;
+export const CHINA_PROVIDERS = [...ProviderRegistry.idsByRegion('china')] as const;
 export const GLOBAL_PROVIDERS = ProviderRegistry.idsByRegion('global');
 
 export const getVisibleProviders = (language: 'zh' | 'en'): readonly string[] => {

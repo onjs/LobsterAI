@@ -48,7 +48,6 @@ import {
   VolcengineIcon,
   OpenRouterIcon,
   OllamaIcon,
-  CustomProviderIcon,
 } from './icons/providers';
 
 type TabType = 'general'| 'coworkAgentEngine' | 'model' | 'coworkSandbox' | 'coworkMemory' | 'coworkAgent' | 'shortcuts' | 'im' | 'email' | 'about';
@@ -78,7 +77,6 @@ const providerKeys = [
   'xiaomi',
   'openrouter',
   'ollama',
-  'custom',
 ] as const;
 
 type ProviderType = (typeof providerKeys)[number];
@@ -149,7 +147,6 @@ const providerMeta: Record<ProviderType, { label: string; icon: React.ReactNode 
   volcengine: { label: 'Volcengine', icon: <VolcengineIcon /> },
   openrouter: { label: 'OpenRouter', icon: <OpenRouterIcon /> },
   ollama: { label: 'Ollama', icon: <OllamaIcon /> },
-  custom: { label: 'Custom', icon: <CustomProviderIcon /> },
 };
 const providerRequiresApiKey = (provider: ProviderType) => provider !== 'ollama';
 const normalizeBaseUrl = (baseUrl: string): string => baseUrl.trim().replace(/\/+$/, '').toLowerCase();
@@ -3080,20 +3077,6 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
                     </div>
                   )}
                 </div>
-                {activeProvider === 'custom' && (
-                <div className="mt-1.5 space-y-0.5 text-[11px] text-claude-secondaryText dark:text-claude-darkSecondaryText">
-                  <p>
-                    <span className="text-sm text-claude-accent/50 mr-1">•</span>
-                    {i18nService.t('baseUrlHint1')}
-                    <code className="ml-1 text-claude-accent/80 dark:text-claude-accent/70 break-all">{i18nService.t('baseUrlHintExample1')}</code>
-                  </p>
-                  <p>
-                    <span className="text-sm text-claude-accent/50 mr-1">•</span>
-                    {i18nService.t('baseUrlHint2')}
-                    <code className="ml-1 text-claude-accent/80 dark:text-claude-accent/70 break-all">{i18nService.t('baseUrlHintExample2')}</code>
-                  </p>
-                </div>
-                )}
                 {/* GLM Coding Plan 提示 */}
                 {activeProvider === 'zhipu' && providers.zhipu.codingPlanEnabled && (
                   <div className="mt-1.5 p-2 rounded-lg bg-claude-accent/10 border border-claude-accent/20">

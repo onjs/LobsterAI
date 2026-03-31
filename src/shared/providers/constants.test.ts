@@ -72,10 +72,10 @@ describe('ProviderRegistry', () => {
     expect(en[2]).toBe(ProviderName.Gemini);
   });
 
-  test('idsForEnLocale puts ollama and custom at end', () => {
+  test('idsForEnLocale puts ollama at end', () => {
     const en = ProviderRegistry.idsForEnLocale();
-    const lastTwo = en.slice(-2);
-    expect(lastTwo).toEqual([ProviderName.Ollama, ProviderName.Custom]);
+    expect(en[en.length - 1]).toBe(ProviderName.Ollama);
+    expect(en).not.toContain(ProviderName.Custom);
   });
 
   test('idsForEnLocale has no duplicates', () => {
