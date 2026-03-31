@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import {
+  IMGatewayBuildProfile,
   IMGatewayProviderId,
   IMGatewayProviderSource,
   resolveIMGatewayProvider,
@@ -96,6 +97,42 @@ describe('imGatewayProviderRouter', () => {
     expect(resolved).toEqual({
       providerId: IMGatewayProviderId.YdCowork,
       source: IMGatewayProviderSource.Default,
+    });
+  });
+
+  test('build profile openclaw-only forces provider to openclaw', () => {
+    const resolved = resolveIMGatewayProvider({
+      envProvider: IMGatewayProviderId.YdCowork,
+      envBuildProfile: IMGatewayBuildProfile.OpenClawOnly,
+    });
+
+    expect(resolved).toEqual({
+      providerId: IMGatewayProviderId.OpenClaw,
+      source: IMGatewayProviderSource.BuildProfile,
+    });
+  });
+
+  test('build profile yd-only forces provider to yd_cowork', () => {
+    const resolved = resolveIMGatewayProvider({
+      envEngine: IMGatewayProviderId.OpenClaw,
+      envBuildProfile: IMGatewayBuildProfile.YdOnly,
+    });
+
+    expect(resolved).toEqual({
+      providerId: IMGatewayProviderId.YdCowork,
+      source: IMGatewayProviderSource.BuildProfile,
+    });
+  });
+
+  test('invalid build profile does not affect provider decision', () => {
+    const resolved = resolveIMGatewayProvider({
+      envEngine: IMGatewayProviderId.OpenClaw,
+      envBuildProfile: 'unknown-profile',
+    });
+
+    expect(resolved).toEqual({
+      providerId: IMGatewayProviderId.OpenClaw,
+      source: IMGatewayProviderSource.Env,
     });
   });
 });

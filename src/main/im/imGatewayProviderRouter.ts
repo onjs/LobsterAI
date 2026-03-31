@@ -15,6 +15,7 @@ export const IMGatewayProviderAlias = {
 export const IMGatewayProviderSource = {
   Env: 'env',
   Config: 'cowork_config',
+  BuildProfile: 'build_profile',
   Default: 'default',
 } as const;
 
@@ -25,7 +26,17 @@ export const IMGatewayProviderEnvKey = {
   GatewayProviderPrefixed: 'LOBSTERAI_IM_GATEWAY_PROVIDER',
   CoworkAgentEngine: 'COWORK_AGENT_ENGINE',
   CoworkAgentEnginePrefixed: 'LOBSTERAI_COWORK_AGENT_ENGINE',
+  BuildProfile: 'IM_GATEWAY_BUILD_PROFILE',
+  BuildProfilePrefixed: 'LOBSTERAI_IM_GATEWAY_BUILD_PROFILE',
 } as const;
+
+export const IMGatewayBuildProfile = {
+  Full: 'full',
+  YdOnly: 'yd-only',
+  OpenClawOnly: 'openclaw-only',
+} as const;
+
+export type IMGatewayBuildProfile = typeof IMGatewayBuildProfile[keyof typeof IMGatewayBuildProfile];
 
 const normalizeProviderId = (raw?: string | null): IMGatewayProviderId | undefined => {
   if (!raw) return undefined;
@@ -50,40 +61,87 @@ const normalizeProviderInstruction = (raw?: string | null): ProviderInstruction 
   return normalizeProviderId(normalized);
 };
 
+const normalizeBuildProfile = (raw?: string | null): IMGatewayBuildProfile | undefined => {
+  if (!raw) return undefined;
+  const normalized = raw.trim().toLowerCase();
+  if (normalized === IMGatewayBuildProfile.Full) {
+    return IMGatewayBuildProfile.Full;
+  }
+  if (normalized === IMGatewayBuildProfile.YdOnly) {
+    return IMGatewayBuildProfile.YdOnly;
+  }
+  if (normalized === IMGatewayBuildProfile.OpenClawOnly) {
+    return IMGatewayBuildProfile.OpenClawOnly;
+  }
+  return undefined;
+};
+
+const forceProviderByBuildProfile = (
+  providerId: IMGatewayProviderId,
+  buildProfile: IMGatewayBuildProfile,
+): IMGatewayProviderId => {
+  if (buildProfile === IMGatewayBuildProfile.OpenClawOnly) {
+    return IMGatewayProviderId.OpenClaw;
+  }
+  if (buildProfile === IMGatewayBuildProfile.YdOnly) {
+    return IMGatewayProviderId.YdCowork;
+  }
+  return providerId;
+};
+
 export const resolveIMGatewayProvider = (options?: {
   envProvider?: string | null;
   envEngine?: string | null;
   configuredEngine?: CoworkAgentEngine | null;
+  envBuildProfile?: string | null;
+  defaultBuildProfile?: IMGatewayBuildProfile;
   defaultProvider?: IMGatewayProviderId;
 }): { providerId: IMGatewayProviderId; source: IMGatewayProviderSource } => {
   const defaultProvider = options?.defaultProvider ?? IMGatewayProviderId.YdCowork;
+  const buildProfile = normalizeBuildProfile(options?.envBuildProfile)
+    ?? options?.defaultBuildProfile
+    ?? IMGatewayBuildProfile.Full;
+
+  const withBuildProfile = (
+    providerId: IMGatewayProviderId,
+    source: IMGatewayProviderSource,
+  ): { providerId: IMGatewayProviderId; source: IMGatewayProviderSource } => {
+    const forcedProviderId = forceProviderByBuildProfile(providerId, buildProfile);
+    if (forcedProviderId !== providerId) {
+      return {
+        providerId: forcedProviderId,
+        source: IMGatewayProviderSource.BuildProfile,
+      };
+    }
+    return { providerId, source };
+  };
 
   const envProvider = normalizeProviderInstruction(options?.envProvider);
   if (envProvider && envProvider !== IMGatewayProviderAlias.Auto) {
-    return {
-      providerId: envProvider,
-      source: IMGatewayProviderSource.Env,
-    };
+    return withBuildProfile(
+      envProvider,
+      IMGatewayProviderSource.Env,
+    );
   }
 
   const envEngineProvider = normalizeProviderInstruction(options?.envEngine);
   if (envEngineProvider && envEngineProvider !== IMGatewayProviderAlias.Auto) {
-    return {
-      providerId: envEngineProvider,
-      source: IMGatewayProviderSource.Env,
-    };
+    return withBuildProfile(
+      envEngineProvider,
+      IMGatewayProviderSource.Env,
+    );
   }
 
   const configProvider = normalizeProviderId(options?.configuredEngine);
   if (configProvider) {
-    return {
-      providerId: configProvider,
-      source: IMGatewayProviderSource.Config,
-    };
+    return withBuildProfile(
+      configProvider,
+      IMGatewayProviderSource.Config,
+    );
   }
 
-  return {
-    providerId: defaultProvider,
-    source: IMGatewayProviderSource.Default,
-  };
+  return withBuildProfile(
+    defaultProvider,
+    IMGatewayProviderSource.Default,
+  );
 };

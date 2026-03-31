@@ -11,6 +11,7 @@
   - cowork config `agentEngine`
   - 默认 `yd_cowork`
 - `yd_local -> yd_cowork` 与 `auto`（延迟决策）均已支持并有单测覆盖。
+- `yd-only/openclaw-only/full` 构建开关占位已落地（`IM_GATEWAY_BUILD_PROFILE`）。
 - Phase 2 启动恢复顺序已接入：
   - 应用启动先回收未完成 run（`queued/running -> failed`）
   - 再恢复 outbound 重试队列

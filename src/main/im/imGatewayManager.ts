@@ -214,9 +214,13 @@ export class IMGatewayManager extends EventEmitter {
     const envEngine = process.env[IMGatewayProviderEnvKey.CoworkAgentEngine]
       ?? process.env[IMGatewayProviderEnvKey.CoworkAgentEnginePrefixed]
       ?? null;
+    const envBuildProfile = process.env[IMGatewayProviderEnvKey.BuildProfile]
+      ?? process.env[IMGatewayProviderEnvKey.BuildProfilePrefixed]
+      ?? null;
     const selection = resolveIMGatewayProvider({
       envProvider,
       envEngine,
+      envBuildProfile,
       configuredEngine: this.resolveConfiguredAgentEngine(),
     });
     return {
