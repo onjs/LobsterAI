@@ -95,6 +95,15 @@ interface DiscordUserResponse {
   discriminator?: string;
 }
 
+interface GatewayTraceContext {
+  provider?: string;
+  platform?: IMPlatform;
+  routeKey?: string | null;
+  runId?: string | null;
+  eventId?: string | null;
+  sessionId?: string | null;
+}
+
 export interface IMGatewayManagerOptions {
   coworkRuntime?: CoworkRuntime;
   coworkStore?: CoworkStore;
@@ -265,6 +274,17 @@ export class IMGatewayManager extends EventEmitter {
     return `${envelope.runId}:0`;
   }
 
+  private formatGatewayTraceContext(context: GatewayTraceContext): string {
+    const provider = context.provider ?? this.gatewayProvider.id;
+    const parts = [`provider=${provider}`];
+    if (context.platform) parts.push(`platform=${context.platform}`);
+    if (context.routeKey) parts.push(`routeKey=${context.routeKey}`);
+    if (context.runId) parts.push(`runId=${context.runId}`);
+    if (context.eventId) parts.push(`eventId=${context.eventId}`);
+    if (context.sessionId) parts.push(`sessionId=${context.sessionId}`);
+    return parts.join(' ');
+  }
+
   private async sleep(ms: number): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, ms));
   }
@@ -398,6 +418,14 @@ export class IMGatewayManager extends EventEmitter {
       conversationId,
       updatedAt: finishedAt,
     });
+    console.debug(
+      `[IMGatewayManager] run completed (${this.formatGatewayTraceContext({
+        platform,
+        routeKey: context.routeKey,
+        runId,
+        sessionId: context.coworkSessionId,
+      })})`,
+    );
   }
 
   private markRunFailed(
@@ -424,6 +452,14 @@ export class IMGatewayManager extends EventEmitter {
       errorMessage,
       updatedAt: finishedAt,
     });
+    console.warn(
+      `[IMGatewayManager] run failed (${this.formatGatewayTraceContext({
+        platform,
+        routeKey: context.routeKey,
+        runId,
+        sessionId: context.coworkSessionId,
+      })})`,
+    );
   }
 
   private markRunCancelled(runId: string, platform: IMPlatform, conversationId: string): void {
@@ -444,6 +480,14 @@ export class IMGatewayManager extends EventEmitter {
       conversationId,
       updatedAt: finishedAt,
     });
+    console.warn(
+      `[IMGatewayManager] run cancelled (${this.formatGatewayTraceContext({
+        platform,
+        routeKey: context.routeKey,
+        runId,
+        sessionId: context.coworkSessionId,
+      })})`,
+    );
   }
 
   private async deliverOutboundWithRetry(params: {
@@ -469,7 +513,12 @@ export class IMGatewayManager extends EventEmitter {
         maxRetries: params.maxRetries,
       });
       if (!inserted.inserted) {
-        console.log(`[IMGatewayManager] duplicate outbound delivery skipped: ${params.deliveryId}`);
+        console.debug(
+          `[IMGatewayManager] duplicate outbound delivery skipped (${this.formatGatewayTraceContext({
+            platform: params.platform,
+            runId: params.runId,
+          })} deliveryId=${params.deliveryId})`,
+        );
         return;
       }
     }
@@ -538,7 +587,10 @@ export class IMGatewayManager extends EventEmitter {
   private async recoverOutboundDelivery(record: IMOutboundDeliveryRecord): Promise<void> {
     if (!this.isConnected(record.platform)) {
       console.debug(
-        `[IMGatewayManager] Skip outbound recovery for ${record.platform}:${record.conversationId} because gateway is not connected`,
+        `[IMGatewayManager] skip outbound recovery because gateway is not connected (${this.formatGatewayTraceContext({
+          platform: record.platform,
+          runId: record.runId,
+        })})`,
       );
       return;
     }
@@ -637,7 +689,12 @@ export class IMGatewayManager extends EventEmitter {
         });
       }
       console.warn(
-        `[IMGatewayManager] recovered interrupted run as failed (provider=${this.gatewayProvider.id} platform=${run.platform} routeKey=${run.routeKey} runId=${run.runId} sessionId=${run.coworkSessionId})`,
+        `[IMGatewayManager] recovered interrupted run as failed (${this.formatGatewayTraceContext({
+          platform: run.platform,
+          routeKey: run.routeKey,
+          runId: run.runId,
+          sessionId: run.coworkSessionId,
+        })})`,
       );
     }
     return runs.length;
@@ -787,7 +844,10 @@ export class IMGatewayManager extends EventEmitter {
       });
       if (!inserted.accepted) {
         console.log(
-          `[IMGatewayManager] duplicate inbound event ignored for ${message.platform}:${message.messageId}`,
+          `[IMGatewayManager] duplicate inbound event ignored (${this.formatGatewayTraceContext({
+            platform: message.platform,
+            eventId: message.messageId,
+          })})`,
         );
         return;
       }
