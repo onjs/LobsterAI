@@ -2704,7 +2704,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
                           {displayLabel}
                         </span>
                         {isCustom && (
-                          <span className="text-[9px] leading-tight mt-0.5 text-primary/70">
+                          <span className="text-[9px] leading-tight mt-0.5 text-primary">
                             {i18nService.t('customBadge')}
                           </span>
                         )}
@@ -3089,14 +3089,14 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
                 {isCustomProvider(activeProvider) && (
                 <div className="mt-1.5 space-y-0.5 text-[11px] text-secondary">
                   <p>
-                    <span className="text-sm text-primary/50 mr-1">•</span>
+                    <span className="text-sm text-muted mr-1">•</span>
                     {i18nService.t('baseUrlHint1')}
-                    <code className="ml-1 text-primary/80 dark:text-primary/70 break-all">{i18nService.t('baseUrlHintExample1')}</code>
+                    <code className="ml-1 text-primary break-all">{i18nService.t('baseUrlHintExample1')}</code>
                   </p>
                   <p>
-                    <span className="text-sm text-primary/50 mr-1">•</span>
+                    <span className="text-sm text-muted mr-1">•</span>
                     {i18nService.t('baseUrlHint2')}
-                    <code className="ml-1 text-primary/80 dark:text-primary/70 break-all">{i18nService.t('baseUrlHintExample2')}</code>
+                    <code className="ml-1 text-primary break-all">{i18nService.t('baseUrlHintExample2')}</code>
                   </p>
                 </div>
                 )}
@@ -3850,7 +3850,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
                           className="block w-full rounded-xl bg-surface-inset border-border border focus:border-primary focus:ring-1 focus:ring-primary/30 text-foreground px-3 py-2 text-xs"
                           placeholder={i18nService.t('ollamaModelNamePlaceholder')}
                         />
-                        <p className="mt-1 text-[11px] text-secondary/70">
+                        <p className="mt-1 text-[11px] text-muted">
                           {i18nService.t('ollamaModelNameHint')}
                         </p>
                       </div>
@@ -3870,7 +3870,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
                           className="block w-full rounded-xl bg-surface-inset border-border border focus:border-primary focus:ring-1 focus:ring-primary/30 text-foreground px-3 py-2 text-xs"
                           placeholder={i18nService.t('ollamaDisplayNamePlaceholder')}
                         />
-                        <p className="mt-1 text-[11px] text-secondary/70">
+                        <p className="mt-1 text-[11px] text-muted">
                           {i18nService.t('ollamaDisplayNameHint')}
                         </p>
                       </div>

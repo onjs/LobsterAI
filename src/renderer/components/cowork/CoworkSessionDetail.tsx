@@ -635,7 +635,7 @@ const TodoWriteInputView: React.FC<{ items: ParsedTodoItem[] }> = ({ items }) =>
       case 'pending':
       case 'unknown':
       default:
-        return 'bg-transparent border-secondary/60';
+        return 'bg-transparent border-border';
     }
   };
 
@@ -652,7 +652,7 @@ const TodoWriteInputView: React.FC<{ items: ParsedTodoItem[] }> = ({ items }) =>
           <div className="min-w-0 flex-1">
             <div className={`text-xs whitespace-pre-wrap break-words leading-5 ${
               item.status === 'completed'
-                ? 'text-secondary/80'
+                ? 'text-muted'
                 : 'text-foreground'
             }`}>
               {item.primaryText}
@@ -712,7 +712,7 @@ const ToolCallGroup: React.FC<{
     <div className="relative py-1">
       {/* Vertical connecting line to next tool group */}
       {!isLastInSequence && (
-        <div className="absolute left-[3.5px] top-[14px] bottom-[-8px] w-px bg-secondary/30" />
+        <div className="absolute left-[3.5px] top-[14px] bottom-[-8px] w-px bg-border" />
       )}
       <button
         onClick={() => setIsExpanded(!isExpanded)}
@@ -731,7 +731,7 @@ const ToolCallGroup: React.FC<{
               {toolName}
             </span>
             {toolInputSummary && (
-              <code className="text-xs text-secondary/80 font-mono truncate max-w-[400px]">
+              <code className="text-xs text-muted font-mono truncate max-w-[400px]">
                 {toolInputSummary}
               </code>
             )}
@@ -739,10 +739,10 @@ const ToolCallGroup: React.FC<{
           {toolResult && !isTodoWriteTool && (hasToolResultText || showNoDetailError) && (
             <div className={`text-xs mt-0.5 ${
               hasToolResultText
-                ? 'text-secondary/60'
+                ? 'text-muted'
                 : showNoDetailError
                   ? 'text-red-500/80'
-                  : 'text-secondary/60'
+                  : 'text-muted'
             }`}>
               {hasToolResultText
                 ? (toolResultSummary ?? `${resultLineCount} ${resultLineCount === 1 ? 'line' : 'lines'} of output`)
@@ -750,7 +750,7 @@ const ToolCallGroup: React.FC<{
             </div>
           )}
           {!toolResult && (
-            <div className="text-xs text-secondary/60 mt-0.5">
+            <div className="text-xs text-muted mt-0.5">
               {i18nService.t('coworkToolRunning')}
             </div>
           )}
@@ -782,13 +782,13 @@ const ToolCallGroup: React.FC<{
                       ? 'text-red-400'
                       : hasToolResultText
                         ? 'text-secondary'
-                        : 'text-secondary/70 italic'
+                        : 'text-muted italic'
                   }`}>
                     {displayToolResult}
                   </div>
                 )}
                 {!toolResult && (
-                  <div className="text-secondary/60 mt-1.5 italic">
+                  <div className="text-muted mt-1.5 italic">
                     {i18nService.t('coworkToolRunning')}
                   </div>
                 )}
@@ -831,7 +831,7 @@ const ToolCallGroup: React.FC<{
             <div className="space-y-2">
               {toolInputDisplay && (
                 <div>
-                  <div className="text-[10px] font-medium text-secondary/70 uppercase tracking-wider mb-1">
+                  <div className="text-[10px] font-medium text-muted uppercase tracking-wider mb-1">
                     {i18nService.t('coworkToolInput')}
                   </div>
                   <div className="max-h-48 overflow-y-auto">
@@ -843,7 +843,7 @@ const ToolCallGroup: React.FC<{
               )}
               {toolResult && (hasToolResultText || showNoDetailError) && (
                 <div>
-                  <div className="text-[10px] font-medium text-secondary/70 uppercase tracking-wider mb-1">
+                  <div className="text-[10px] font-medium text-muted uppercase tracking-wider mb-1">
                     {i18nService.t('coworkToolResult')}
                   </div>
                   <div className="max-h-64 overflow-y-auto">
@@ -985,11 +985,11 @@ export const UserMessageItem: React.FC<{ message: CoworkMessage; skills: Skill[]
                 {messageSkills.map(skill => (
                   <div
                     key={skill.id}
-                    className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-md bg-primary/5 dark:bg-primary/10"
+                    className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-md bg-primary-muted"
                     title={skill.description}
                   >
-                    <PuzzleIcon className="h-2.5 w-2.5 text-primary/70" />
-                    <span className="text-[10px] font-medium text-primary/70 max-w-[60px] truncate">
+                    <PuzzleIcon className="h-2.5 w-2.5 text-primary" />
+                    <span className="text-[10px] font-medium text-primary max-w-[60px] truncate">
                       {skill.name}
                     </span>
                   </div>
@@ -1133,7 +1133,7 @@ const ThinkingBlock: React.FC<{
     <div className="rounded-lg border border-border overflow-hidden">
       <button
         onClick={() => setIsExpanded(!isExpanded)}
-        className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-surface-raised/50 transition-colors"
+        className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-surface-raised transition-colors"
       >
         <ChevronRightIcon
           className={`h-3.5 w-3.5 text-secondary flex-shrink-0 transition-transform duration-200 ${
@@ -1149,7 +1149,7 @@ const ThinkingBlock: React.FC<{
       </button>
       {isExpanded && (
         <div className="px-3 pb-3 max-h-64 overflow-y-auto">
-          <div className="text-xs leading-relaxed/80 text-secondary/80 whitespace-pre-wrap">
+          <div className="text-xs leading-relaxed text-muted whitespace-pre-wrap">
             {displayContent}
           </div>
         </div>
@@ -1210,14 +1210,14 @@ export const AssistantTurnBlock: React.FC<{
       <div className="py-1">
         <div className="flex items-start gap-2">
           <span className={`mt-1.5 w-2 h-2 rounded-full flex-shrink-0 ${
-            isToolError ? 'bg-red-500' : 'bg-secondary/50'
+            isToolError ? 'bg-red-500' : 'bg-surface-raised'
           }`} />
           <div className="flex-1 min-w-0">
             <div className="text-sm font-medium text-secondary">
               {i18nService.t('coworkToolResult')}
             </div>
             {resultLineCount > 0 && (
-              <div className="text-xs text-secondary/60 mt-0.5">
+              <div className="text-xs text-muted mt-0.5">
                 {resultLineCount} {resultLineCount === 1 ? 'line' : 'lines'} of output
               </div>
             )}
@@ -1225,13 +1225,13 @@ export const AssistantTurnBlock: React.FC<{
               <div className={`text-xs mt-0.5 ${
                 isToolError
                   ? 'text-red-500/80'
-                  : 'text-secondary/60'
+                  : 'text-muted'
               }`}>
                 {fallbackText}
               </div>
             )}
             {(hasToolResultText || showNoDetailError) && (
-              <div className="mt-2 px-3 py-2 rounded-lg/50 bg-surface/50 max-h-64 overflow-y-auto">
+              <div className="mt-2 px-3 py-2 rounded-lg bg-surface-raised max-h-64 overflow-y-auto">
                 <pre className={`text-xs whitespace-pre-wrap break-words font-mono ${
                   isToolError
                     ? 'text-red-500'
@@ -1990,7 +1990,7 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
   return (
     <div ref={detailRootRef} className="flex-1 flex flex-col bg-background h-full">
       {/* Header */}
-      <div className="draggable flex h-12 items-center justify-between px-4 border-b border-border bg-surface/50 shrink-0">
+      <div className="draggable flex h-12 items-center justify-between px-4 border-b border-border bg-surface shrink-0">
         {/* Left side: Toggle buttons (when collapsed) + Title */}
         <div className="flex h-full items-center gap-2 min-w-0">
           {isSidebarCollapsed && (

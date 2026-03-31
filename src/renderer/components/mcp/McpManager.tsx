@@ -542,7 +542,7 @@ const McpManager: React.FC = () => {
                         <button
                           type="button"
                           onClick={() => handleInstallFromRegistry(entry)}
-                          className="px-2.5 py-1 text-xs rounded-lg bg-primary text-white hover:bg-primary/90 transition-colors"
+                          className="px-2.5 py-1 text-xs rounded-lg bg-primary text-white hover:bg-primary-hover transition-colors"
                         >
                           {i18nService.t('mcpInstall')}
                         </button>

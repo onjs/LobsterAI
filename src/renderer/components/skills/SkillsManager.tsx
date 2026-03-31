@@ -630,7 +630,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly }) => {
                 <div className="flex items-center gap-2">
                 {skill.isOfficial && (
                   <>
-                    <span className="px-1.5 py-0.5 rounded bg-primary/10 text-primary font-medium">
+                    <span className="px-1.5 py-0.5 rounded bg-primary-muted text-primary font-medium">
                       {i18nService.t('official')}
                     </span>
                     <span>·</span>
@@ -757,7 +757,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly }) => {
                           type="button"
                           onClick={(e) => { e.stopPropagation(); handleInstallMarketplaceSkill(skill); }}
                           disabled={installingSkillId !== null}
-                          className="inline-flex items-center gap-1 px-2 py-1 text-[10px] font-medium rounded-lg bg-primary text-white hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                          className="inline-flex items-center gap-1 px-2 py-1 text-[10px] font-medium rounded-lg bg-primary text-white hover:bg-primary-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                         >
                           <ArrowDownTrayIcon className="h-3.5 w-3.5" />
                           {installingSkillId === skill.id ? i18nService.t('skillInstalling') : i18nService.t('skillInstall')}
@@ -906,7 +906,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly }) => {
                   type="button"
                   onClick={() => handleInstallMarketplaceSkill(selectedMarketplaceSkill)}
                   disabled={installingSkillId !== null}
-                  className="w-full py-2.5 rounded-xl bg-primary text-white text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1.5"
+                  className="w-full py-2.5 rounded-xl bg-primary text-white text-sm font-medium hover:bg-primary-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1.5"
                 >
                   <ArrowDownTrayIcon className="h-4 w-4" />
                   {installingSkillId === selectedMarketplaceSkill.id ? i18nService.t('skillInstalling') : i18nService.t('skillInstall')}
@@ -958,7 +958,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly }) => {
                     {selectedSkill.isOfficial && (
                       <div className="flex items-center text-xs">
                         <span className="w-16 flex-shrink-0 text-secondary">{i18nService.t('skillDetailSource')}</span>
-                        <span className="px-1.5 py-0.5 rounded bg-primary/10 text-primary font-medium">
+                        <span className="px-1.5 py-0.5 rounded bg-primary-muted text-primary font-medium">
                           {i18nService.t('official')}
                         </span>
                         {mp?.source?.author && (
@@ -1127,7 +1127,7 @@ const SkillsManager: React.FC<SkillsManagerProps> = ({ readOnly }) => {
                 type="button"
                 onClick={handleImportFromGithub}
                 disabled={isDownloadingSkill || !skillDownloadSource.trim()}
-                className="w-full py-2.5 rounded-xl bg-primary text-white text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50"
+                className="w-full py-2.5 rounded-xl bg-primary text-white text-sm font-medium hover:bg-primary-hover transition-colors disabled:opacity-50"
               >
                 {isDownloadingSkill ? i18nService.t('importingSkill') : i18nService.t('importSkill')}
               </button>
