@@ -17,6 +17,7 @@
   - 再恢复 outbound 重试队列
   - 最后从 `im_session_mappings` 修复 `im_session_routes`
 - 新增 `IMStore` 单测覆盖 route 修复与 recoverable run 查询。
+- 前端 schema IPC 已去 `openclaw` 耦合：新增 `im:config:schema`，旧通道保留兼容。
 
 ## 1. 边界冻结（必须先完成）
 

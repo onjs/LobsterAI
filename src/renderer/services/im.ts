@@ -279,18 +279,30 @@ class IMService {
   }
 
   /**
-   * Fetch the OpenClaw config schema (JSON Schema + uiHints) from the gateway.
+   * Fetch provider-agnostic IM config schema (JSON Schema + uiHints).
    */
-  async getOpenClawConfigSchema(): Promise<{ schema: Record<string, unknown>; uiHints: Record<string, Record<string, unknown>> } | null> {
+  async getConfigSchema(): Promise<{ schema: Record<string, unknown>; uiHints: Record<string, Record<string, unknown>> } | null> {
     try {
-      const result = await window.electron.im.getOpenClawConfigSchema();
+      const result = await window.electron.im.getConfigSchema();
       if (result.success && result.result) {
         return result.result;
+      }
+      // Compatibility fallback for older main-process channel wiring.
+      const fallback = await window.electron.im.getOpenClawConfigSchema();
+      if (fallback.success && fallback.result) {
+        return fallback.result;
       }
       return null;
     } catch {
       return null;
     }
+  }
+
+  /**
+   * @deprecated Use getConfigSchema instead.
+   */
+  async getOpenClawConfigSchema(): Promise<{ schema: Record<string, unknown>; uiHints: Record<string, Record<string, unknown>> } | null> {
+    return this.getConfigSchema();
   }
 }
 

@@ -143,7 +143,7 @@ const IMSettings: React.FC = () => {
   const [localIp, setLocalIp] = useState<string>('');
   const isMountedRef = useRef(true);
 
-  // OpenClaw config schema for schema-driven forms
+  // Provider-agnostic config schema for schema-driven forms
   const [openclawSchema, setOpenclawSchema] = useState<{ schema: Record<string, unknown>; uiHints: Record<string, Record<string, unknown>> } | null>(null);
 
   // Subscribe to language changes
@@ -272,8 +272,8 @@ const IMSettings: React.FC = () => {
     void imService.init().then(() => {
       if (!cancelled) {
         setConfigLoaded(true);
-        // Fetch OpenClaw config schema for schema-driven rendering
-        imService.getOpenClawConfigSchema().then(schema => {
+        // Fetch provider-agnostic schema for schema-driven rendering
+        imService.getConfigSchema().then(schema => {
           if (schema && isMountedRef.current) setOpenclawSchema(schema);
         });
       }

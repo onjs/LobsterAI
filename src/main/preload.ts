@@ -348,8 +348,10 @@ contextBridge.exposeInMainWorld('electron', {
     // Status
     getStatus: () => ipcRenderer.invoke('im:status:get'),
     getLocalIp: () => ipcRenderer.invoke('im:getLocalIp') as Promise<string>,
-    // OpenClaw config schema
-    getOpenClawConfigSchema: () => ipcRenderer.invoke('im:openclaw:config-schema'),
+    // Provider-agnostic config schema
+    getConfigSchema: () => ipcRenderer.invoke('im:config:schema'),
+    // Backward-compatible alias
+    getOpenClawConfigSchema: () => ipcRenderer.invoke('im:config:schema'),
 
 
     // Weixin QR login

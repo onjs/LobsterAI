@@ -4123,7 +4123,7 @@ if (!gotTheLock) {
     }
     return '127.0.0.1';
   });
-  ipcMain.handle('im:openclaw:config-schema', async () => {
+  const handleIMConfigSchemaRequest = async () => {
     try {
       const result = await getIMGatewayManager().getOpenClawConfigSchema();
       return { success: true, result };
@@ -4133,7 +4133,9 @@ if (!gotTheLock) {
         error: error instanceof Error ? error.message : 'Failed to get OpenClaw config schema',
       };
     }
-  });
+  };
+  ipcMain.handle('im:config:schema', handleIMConfigSchemaRequest);
+  ipcMain.handle('im:openclaw:config-schema', handleIMConfigSchemaRequest);
 
   // ---- Pairing IPC handlers ----
 
