@@ -387,6 +387,19 @@ export interface IMSessionMapping {
   lastActiveAt: number;
 }
 
+export interface IMSessionRoute {
+  routeKey: string;
+  platform: IMPlatform;
+  conversationId: string;
+  threadId: string | null;
+  agentId: string;
+  provider: 'openclaw' | 'yd_cowork';
+  coworkSessionId: string;
+  lastEventId: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
 // ==================== IPC Result Types ====================
 
 export interface IMConfigResult {

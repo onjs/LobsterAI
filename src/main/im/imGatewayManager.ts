@@ -11,7 +11,7 @@ import { NimGateway } from './nimGateway';
 import { XiaomifengGateway } from './xiaomifengGateway';
 import { IMChatHandler } from './imChatHandler';
 import { IMCoworkHandler } from './imCoworkHandler';
-import { IMStore } from './imStore';
+import { IMStore, type IMOutboundDeliveryRecord } from './imStore';
 import type {
   IMScheduledTaskCreationResult,
   ParsedIMScheduledTaskRequest,
@@ -38,8 +38,35 @@ import type { Database } from 'sql.js';
 import type { CoworkRuntime } from '../libs/agentEngine/types';
 import type { CoworkStore } from '../coworkStore';
 import { classifyErrorKey } from '../../common/coworkErrorClassify';
+import type { CoworkAgentEngine } from '../libs/agentEngine';
+import {
+  createIMGatewayProvider,
+  type IManagedGatewayProvider,
+  type IMGatewayProviderRuntimeDeps,
+} from './imGatewayProviders';
+import {
+  IMGatewayProviderEnvKey,
+  IMGatewayProviderId,
+  type IMGatewayProviderSource,
+  resolveIMGatewayProvider,
+} from './imGatewayProviderRouter';
+import { InboundBus, OutboundBus } from './gateway';
+import type {
+  GatewayInboundEnvelope,
+  GatewayInboundResult,
+  GatewayOutboundEnvelope,
+} from './gateway/types';
+import {
+  GatewayDeliveryPolicy,
+  GatewayDeliveryStatus,
+  GatewayRoute,
+  GatewayRunStatus,
+} from './gateway/constants';
 const CONNECTIVITY_TIMEOUT_MS = 10_000;
 const INBOUND_ACTIVITY_WARN_AFTER_MS = 2 * 60 * 1000;
+const OUTBOUND_RECOVERY_INTERVAL_MS = 15_000;
+const OUTBOUND_RECOVERY_BATCH_SIZE = 20;
+const OUTBOUND_RECOVERY_STALE_FAILED_MS = 10_000;
 
 type GatewayClientLike = {
   request: <T = Record<string, unknown>>(
@@ -71,6 +98,7 @@ export interface IMGatewayManagerOptions {
   coworkStore?: CoworkStore;
   ensureCoworkReady?: () => Promise<void>;
   isOpenClawEngine?: () => boolean;
+  getCoworkAgentEngine?: () => CoworkAgentEngine;
   syncOpenClawConfig?: () => Promise<void>;
   ensureOpenClawGatewayConnected?: () => Promise<void>;
   getOpenClawGatewayClient?: () => GatewayClientLike | null;
@@ -93,6 +121,7 @@ export class IMGatewayManager extends EventEmitter {
   private getSkillsPrompt: (() => Promise<string | null>) | null = null;
   private ensureCoworkReady: (() => Promise<void>) | null = null;
   private isOpenClawEngine: (() => boolean) | null = null;
+  private getCoworkAgentEngine: (() => CoworkAgentEngine) | null = null;
   private syncOpenClawConfig: (() => Promise<void>) | null = null;
   private ensureOpenClawGatewayConnected: (() => Promise<void>) | null = null;
   private getOpenClawGatewayClient: (() => GatewayClientLike | null) | null = null;
@@ -109,7 +138,12 @@ export class IMGatewayManager extends EventEmitter {
   // Cowork dependencies
   private coworkRuntime: CoworkRuntime | null = null;
   private coworkStore: CoworkStore | null = null;
-
+  private gatewayProvider: IManagedGatewayProvider;
+  private gatewayProviderSource: IMGatewayProviderSource;
+  private inboundBus = new InboundBus();
+  private outboundBus = new OutboundBus();
+  private outboundRecoveryTimer: NodeJS.Timeout | null = null;
+  private outboundRecoveryRunning = false;
 
   // DingTalk direct HTTP API token cache
   private dingTalkAccessToken: string | null = null;
@@ -129,15 +163,459 @@ export class IMGatewayManager extends EventEmitter {
     }
     this.ensureCoworkReady = options?.ensureCoworkReady ?? null;
     this.isOpenClawEngine = options?.isOpenClawEngine ?? null;
+    this.getCoworkAgentEngine = options?.getCoworkAgentEngine ?? null;
     this.syncOpenClawConfig = options?.syncOpenClawConfig ?? null;
     this.ensureOpenClawGatewayConnected = options?.ensureOpenClawGatewayConnected ?? null;
     this.getOpenClawGatewayClient = options?.getOpenClawGatewayClient ?? null;
     this.ensureOpenClawGatewayReady = options?.ensureOpenClawGatewayReady ?? null;
     this.getOpenClawSessionKeysForCoworkSession = options?.getOpenClawSessionKeysForCoworkSession ?? null;
     this.createScheduledTask = options?.createScheduledTask ?? null;
+    const selection = this.resolveGatewayProviderSelection();
+    this.gatewayProvider = selection.provider;
+    this.gatewayProviderSource = selection.source;
+    console.log(
+      `[IMGatewayManager] selected gateway provider ${this.gatewayProvider.id} (source: ${this.gatewayProviderSource})`,
+    );
+    this.setupGatewayBuses();
+    this.startOutboundRecoveryLoop();
 
     // Forward gateway events
     this.setupGatewayEventForwarding();
+  }
+
+  private resolveConfiguredAgentEngine(): CoworkAgentEngine {
+    if (this.getCoworkAgentEngine) {
+      return this.getCoworkAgentEngine();
+    }
+    if (this.isOpenClawEngine?.()) {
+      return IMGatewayProviderId.OpenClaw;
+    }
+    return IMGatewayProviderId.YdCowork;
+  }
+
+  private resolveGatewayProviderSelection(): {
+    provider: IManagedGatewayProvider;
+    source: IMGatewayProviderSource;
+  } {
+    const selection = resolveIMGatewayProvider({
+      envEngine: process.env[IMGatewayProviderEnvKey.CoworkAgentEngine],
+      configuredEngine: this.resolveConfiguredAgentEngine(),
+    });
+    return {
+      provider: createIMGatewayProvider(selection.providerId),
+      source: selection.source,
+    };
+  }
+
+  private getGatewayProvider(): IManagedGatewayProvider {
+    const nextSelection = this.resolveGatewayProviderSelection();
+    const nextProvider = nextSelection.provider;
+    if (nextProvider.id !== this.gatewayProvider.id) {
+      console.log(
+        `[IMGatewayManager] switched gateway provider from ${this.gatewayProvider.id} to ${nextProvider.id} (source: ${nextSelection.source})`,
+      );
+    }
+    this.gatewayProvider = nextProvider;
+    this.gatewayProviderSource = nextSelection.source;
+    return this.gatewayProvider;
+  }
+
+  private getGatewayProviderRuntimeDeps(): IMGatewayProviderRuntimeDeps {
+    return {
+      syncOpenClawConfig: this.syncOpenClawConfig ?? undefined,
+      ensureOpenClawGatewayConnected: this.ensureOpenClawGatewayConnected ?? undefined,
+    };
+  }
+
+  private setupGatewayBuses(): void {
+    this.inboundBus.registerHandler((envelope) => this.processInboundEnvelope(envelope));
+    this.outboundBus.registerHandler((envelope) => this.processOutboundEnvelope(envelope));
+  }
+
+  private createRunId(message: IMMessage): string {
+    return `${Date.now()}_${message.platform}_${message.messageId}`;
+  }
+
+  private resolveBoundAgentId(platform: IMPlatform): string {
+    const bindings = this.imStore.getIMSettings().platformAgentBindings;
+    const bound = bindings?.[platform]?.trim();
+    return bound || GatewayRoute.DefaultAgentId;
+  }
+
+  private buildRunRouteKey(envelope: GatewayInboundEnvelope, agentId?: string): string {
+    const normalizedAgentId = agentId?.trim() || this.resolveBoundAgentId(envelope.platform);
+    return [
+      envelope.platform,
+      envelope.conversationId,
+      GatewayRoute.NoThread,
+      normalizedAgentId,
+    ].join(GatewayRoute.KeySeparator);
+  }
+
+  private buildOutboundDeliveryId(envelope: GatewayOutboundEnvelope): string {
+    return `${envelope.runId}:0`;
+  }
+
+  private async sleep(ms: number): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private createInboundEnvelope(
+    message: IMMessage,
+    replyFn: (text: string) => Promise<void>,
+  ): GatewayInboundEnvelope {
+    return {
+      runId: this.createRunId(message),
+      eventId: message.messageId,
+      platform: message.platform,
+      conversationId: message.conversationId,
+      threadId: null,
+      receivedAt: message.timestamp || Date.now(),
+      message,
+      replyFn,
+    };
+  }
+
+  private async processInboundEnvelope(
+    envelope: GatewayInboundEnvelope,
+  ): Promise<GatewayInboundResult | null> {
+    this.imStore.updateGatewayRun({
+      runId: envelope.runId,
+      status: GatewayRunStatus.Running,
+    });
+    this.emit('gatewayRunState', {
+      runId: envelope.runId,
+      status: GatewayRunStatus.Running,
+      platform: envelope.platform,
+      conversationId: envelope.conversationId,
+      updatedAt: Date.now(),
+    });
+
+    let response: string;
+    if (this.coworkHandler) {
+      if (this.ensureCoworkReady) {
+        await this.ensureCoworkReady();
+      }
+      response = await this.coworkHandler.processMessage(envelope.message);
+    } else {
+      if (!this.chatHandler) {
+        this.updateChatHandler();
+      }
+      if (!this.chatHandler) {
+        throw new Error('Chat handler not available');
+      }
+      response = await this.chatHandler.processMessage(envelope.message);
+    }
+
+    return {
+      runId: envelope.runId,
+      platform: envelope.platform,
+      conversationId: envelope.conversationId,
+      replyText: response,
+      completedAt: Date.now(),
+    };
+  }
+
+  private async processOutboundEnvelope(envelope: GatewayOutboundEnvelope): Promise<void> {
+    const payloadJson = JSON.stringify({
+      text: envelope.text,
+      createdAt: envelope.createdAt,
+    });
+    await this.deliverOutboundWithRetry({
+      deliveryId: this.buildOutboundDeliveryId(envelope),
+      runId: envelope.runId,
+      platform: envelope.platform,
+      conversationId: envelope.conversationId,
+      payloadJson,
+      deliver: envelope.deliver,
+      text: envelope.text,
+      maxRetries: GatewayDeliveryPolicy.DefaultMaxRetries,
+      startAttempt: 0,
+      insertIfMissing: true,
+    });
+  }
+
+  private resolveRunContext(platform: IMPlatform, conversationId: string): {
+    routeKey: string;
+    coworkSessionId: string | null;
+  } {
+    const agentId = this.resolveBoundAgentId(platform);
+    const route = this.imStore.findSessionRoute({
+      platform,
+      conversationId,
+      agentId,
+      threadId: null,
+    });
+    const mapping = this.imStore.getSessionMapping(conversationId, platform);
+    return {
+      routeKey: route?.routeKey ?? [
+        platform,
+        conversationId,
+        GatewayRoute.NoThread,
+        agentId,
+      ].join(GatewayRoute.KeySeparator),
+      coworkSessionId: mapping?.coworkSessionId ?? route?.coworkSessionId ?? null,
+    };
+  }
+
+  private updateRunContext(runId: string, platform: IMPlatform, conversationId: string): {
+    routeKey: string;
+    coworkSessionId: string | null;
+  } {
+    const context = this.resolveRunContext(platform, conversationId);
+    this.imStore.updateGatewayRun({
+      runId,
+      status: GatewayRunStatus.Running,
+      routeKey: context.routeKey,
+      coworkSessionId: context.coworkSessionId,
+    });
+    return context;
+  }
+
+  private markRunCompleted(runId: string, platform: IMPlatform, conversationId: string): void {
+    const context = this.resolveRunContext(platform, conversationId);
+    const finishedAt = Date.now();
+    this.imStore.updateGatewayRun({
+      runId,
+      status: GatewayRunStatus.Completed,
+      finishedAt,
+      routeKey: context.routeKey,
+      coworkSessionId: context.coworkSessionId,
+    });
+    this.emit('gatewayRunState', {
+      runId,
+      status: GatewayRunStatus.Completed,
+      platform,
+      conversationId,
+      updatedAt: finishedAt,
+    });
+  }
+
+  private markRunFailed(
+    runId: string,
+    platform: IMPlatform,
+    conversationId: string,
+    errorMessage: string,
+  ): void {
+    const context = this.resolveRunContext(platform, conversationId);
+    const finishedAt = Date.now();
+    this.imStore.updateGatewayRun({
+      runId,
+      status: GatewayRunStatus.Failed,
+      errorMessage,
+      finishedAt,
+      routeKey: context.routeKey,
+      coworkSessionId: context.coworkSessionId,
+    });
+    this.emit('gatewayRunState', {
+      runId,
+      status: GatewayRunStatus.Failed,
+      platform,
+      conversationId,
+      errorMessage,
+      updatedAt: finishedAt,
+    });
+  }
+
+  private markRunCancelled(runId: string, platform: IMPlatform, conversationId: string): void {
+    const context = this.resolveRunContext(platform, conversationId);
+    const finishedAt = Date.now();
+    this.imStore.updateGatewayRun({
+      runId,
+      status: GatewayRunStatus.Cancelled,
+      finishedAt,
+      routeKey: context.routeKey,
+      coworkSessionId: context.coworkSessionId,
+      errorMessage: 'Replaced by a newer IM request',
+    });
+    this.emit('gatewayRunState', {
+      runId,
+      status: GatewayRunStatus.Cancelled,
+      platform,
+      conversationId,
+      updatedAt: finishedAt,
+    });
+  }
+
+  private async deliverOutboundWithRetry(params: {
+    deliveryId: string;
+    runId: string;
+    platform: IMPlatform;
+    conversationId: string;
+    payloadJson: string;
+    text: string;
+    deliver: (text: string) => Promise<void>;
+    maxRetries: number;
+    startAttempt: number;
+    insertIfMissing: boolean;
+  }): Promise<void> {
+    if (params.insertIfMissing) {
+      const inserted = this.imStore.insertOutboundDelivery({
+        id: params.deliveryId,
+        runId: params.runId,
+        platform: params.platform,
+        conversationId: params.conversationId,
+        threadId: null,
+        payloadJson: params.payloadJson,
+        maxRetries: params.maxRetries,
+      });
+      if (!inserted.inserted) {
+        console.log(`[IMGatewayManager] duplicate outbound delivery skipped: ${params.deliveryId}`);
+        return;
+      }
+    }
+
+    for (let attempt = params.startAttempt; attempt <= params.maxRetries; attempt += 1) {
+      this.imStore.updateOutboundDeliveryState({
+        id: params.deliveryId,
+        status: GatewayDeliveryStatus.Sending,
+        retryCount: attempt,
+      });
+
+      try {
+        await params.deliver(params.text);
+        this.imStore.updateOutboundDeliveryState({
+          id: params.deliveryId,
+          status: GatewayDeliveryStatus.Sent,
+          retryCount: attempt,
+          nextRetryAt: null,
+          lastError: null,
+        });
+        this.markRunCompleted(params.runId, params.platform, params.conversationId);
+        return;
+      } catch (error: any) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        const hasRetry = attempt < params.maxRetries;
+        if (!hasRetry) {
+          this.imStore.updateOutboundDeliveryState({
+            id: params.deliveryId,
+            status: GatewayDeliveryStatus.DeadLetter,
+            retryCount: attempt,
+            nextRetryAt: null,
+            lastError: errorMessage,
+          });
+          throw error;
+        }
+
+        const nextRetryAt = Date.now() + GatewayDeliveryPolicy.RetryBackoffBaseMs * (attempt + 1);
+        this.imStore.updateOutboundDeliveryState({
+          id: params.deliveryId,
+          status: GatewayDeliveryStatus.Failed,
+          retryCount: attempt,
+          nextRetryAt,
+          lastError: errorMessage,
+        });
+        await this.sleep(Math.max(0, nextRetryAt - Date.now()));
+      }
+    }
+  }
+
+  private parseOutboundPayload(payloadJson: string): { text: string; createdAt: number } | null {
+    try {
+      const payload = JSON.parse(payloadJson) as { text?: unknown; createdAt?: unknown };
+      if (typeof payload.text !== 'string' || !payload.text.trim()) {
+        return null;
+      }
+      const createdAt = typeof payload.createdAt === 'number' ? payload.createdAt : Date.now();
+      return {
+        text: payload.text,
+        createdAt,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private async recoverOutboundDelivery(record: IMOutboundDeliveryRecord): Promise<void> {
+    if (!this.isConnected(record.platform)) {
+      console.debug(
+        `[IMGatewayManager] Skip outbound recovery for ${record.platform}:${record.conversationId} because gateway is not connected`,
+      );
+      return;
+    }
+
+    const payload = this.parseOutboundPayload(record.payloadJson);
+    if (!payload) {
+      this.imStore.updateOutboundDeliveryState({
+        id: record.id,
+        status: GatewayDeliveryStatus.DeadLetter,
+        nextRetryAt: null,
+        lastError: 'Invalid outbound payload JSON',
+      });
+      this.markRunFailed(
+        record.runId,
+        record.platform,
+        record.conversationId,
+        'Invalid outbound payload JSON',
+      );
+      return;
+    }
+
+    const startAttempt = record.status === GatewayDeliveryStatus.Pending
+      ? 0
+      : Math.min(record.maxRetries, record.retryCount + 1);
+    await this.deliverOutboundWithRetry({
+      deliveryId: record.id,
+      runId: record.runId,
+      platform: record.platform,
+      conversationId: record.conversationId,
+      payloadJson: record.payloadJson,
+      text: payload.text,
+      deliver: async (text: string) => {
+        const sent = await this.sendConversationReply(record.platform, record.conversationId, text);
+        if (!sent) {
+          throw new Error('Recovered outbound delivery failed');
+        }
+      },
+      maxRetries: record.maxRetries,
+      startAttempt,
+      insertIfMissing: false,
+    });
+  }
+
+  private async recoverPendingOutboundDeliveries(): Promise<void> {
+    if (this.outboundRecoveryRunning) {
+      return;
+    }
+    this.outboundRecoveryRunning = true;
+    const deliveries = this.imStore.listRecoverableOutboundDeliveries({
+      staleFailedMs: OUTBOUND_RECOVERY_STALE_FAILED_MS,
+      limit: OUTBOUND_RECOVERY_BATCH_SIZE,
+    });
+    try {
+      if (!deliveries.length) {
+        return;
+      }
+
+      for (const delivery of deliveries) {
+        try {
+          await this.recoverOutboundDelivery(delivery);
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          this.markRunFailed(delivery.runId, delivery.platform, delivery.conversationId, errorMessage);
+        }
+      }
+    } finally {
+      this.outboundRecoveryRunning = false;
+    }
+  }
+
+  private startOutboundRecoveryLoop(): void {
+    const resetCount = this.imStore.resetSendingOutboundDeliveries();
+    if (resetCount > 0) {
+      console.warn(`[IMGatewayManager] reset ${resetCount} stuck outbound deliveries from sending to failed`);
+    }
+    if (this.outboundRecoveryTimer) {
+      clearInterval(this.outboundRecoveryTimer);
+    }
+    this.outboundRecoveryTimer = setInterval(() => {
+      this.recoverPendingOutboundDeliveries().catch((error) => {
+        console.error('[IMGatewayManager] outbound delivery recovery loop failed:', error);
+      });
+    }, OUTBOUND_RECOVERY_INTERVAL_MS);
+    void this.recoverPendingOutboundDeliveries().catch((error) => {
+      console.error('[IMGatewayManager] initial outbound delivery recovery failed:', error);
+    });
   }
 
   /**
@@ -224,41 +702,91 @@ export class IMGatewayManager extends EventEmitter {
     ): Promise<void> => {
       // Persist notification target whenever we receive a message
       this.persistNotificationTarget(message.platform);
+      const inboundEnvelope = this.createInboundEnvelope(message, replyFn);
+      const inserted = this.imStore.insertInboundEvent({
+        id: inboundEnvelope.runId,
+        platform: inboundEnvelope.platform,
+        eventId: inboundEnvelope.eventId,
+        conversationId: inboundEnvelope.conversationId,
+        threadId: inboundEnvelope.threadId,
+        senderId: message.senderId,
+        eventType: 'message',
+        contentText: message.content,
+        payloadJson: JSON.stringify({
+          messageId: message.messageId,
+          chatType: message.chatType,
+          chatSubType: message.chatSubType ?? null,
+        }),
+        receivedAt: inboundEnvelope.receivedAt,
+      });
+      if (!inserted.accepted) {
+        console.log(
+          `[IMGatewayManager] duplicate inbound event ignored for ${message.platform}:${message.messageId}`,
+        );
+        return;
+      }
+      this.imStore.createGatewayRun({
+        runId: inboundEnvelope.runId,
+        provider: this.getGatewayProvider().id,
+        platform: inboundEnvelope.platform,
+        routeKey: this.buildRunRouteKey(inboundEnvelope, this.resolveBoundAgentId(message.platform)),
+        inboundEventId: inboundEnvelope.runId,
+        coworkSessionId: this.imStore.getSessionMapping(
+          message.conversationId,
+          message.platform,
+        )?.coworkSessionId ?? undefined,
+        status: GatewayRunStatus.Queued,
+      });
+      this.emit('gatewayRunState', {
+        runId: inboundEnvelope.runId,
+        status: GatewayRunStatus.Queued,
+        platform: inboundEnvelope.platform,
+        conversationId: inboundEnvelope.conversationId,
+        updatedAt: Date.now(),
+      });
 
       try {
-        let response: string;
-
-        // Always use Cowork mode if handler is available
-        if (this.coworkHandler) {
-          if (this.ensureCoworkReady) {
-            await this.ensureCoworkReady();
-          }
-          console.log('[IMGatewayManager] Using Cowork mode for message processing');
-          response = await this.coworkHandler.processMessage(message);
-        } else {
-          // Fallback to regular chat handler
-          if (!this.chatHandler) {
-            this.updateChatHandler();
-          }
-
-          if (!this.chatHandler) {
-            throw new Error('Chat handler not available');
-          }
-
-          response = await this.chatHandler.processMessage(message);
-        }
-
-        await replyFn(response);
-      } catch (error: any) {
-        console.error(`[IMGatewayManager] Error processing message: ${error.message}`);
-        // Don't send "Replaced by a newer IM request" error to user, just log it
-        if (error.message === 'Replaced by a newer IM request') {
+        const result = await this.inboundBus.publish(inboundEnvelope);
+        if (!result) {
+          this.markRunFailed(
+            inboundEnvelope.runId,
+            inboundEnvelope.platform,
+            inboundEnvelope.conversationId,
+            'Inbound bus returned empty result',
+          );
           return;
         }
+        this.updateRunContext(result.runId, result.platform, result.conversationId);
+        const outboundEnvelope: GatewayOutboundEnvelope = {
+          runId: result.runId,
+          platform: result.platform,
+          conversationId: result.conversationId,
+          text: result.replyText,
+          createdAt: result.completedAt,
+          deliver: replyFn,
+        };
+        await this.outboundBus.publish(outboundEnvelope);
+      } catch (error: any) {
+        console.error(`[IMGatewayManager] Error processing message: ${error.message}`);
+        const rawMessage = error instanceof Error ? error.message : String(error);
+        if (rawMessage === 'Replaced by a newer IM request') {
+          this.markRunCancelled(
+            inboundEnvelope.runId,
+            inboundEnvelope.platform,
+            inboundEnvelope.conversationId,
+          );
+          return;
+        }
+        this.markRunFailed(
+          inboundEnvelope.runId,
+          inboundEnvelope.platform,
+          inboundEnvelope.conversationId,
+          rawMessage,
+        );
         // Send error message to user
         try {
-          const errorKey = classifyErrorKey(error.message);
-          const friendlyMessage = errorKey ? t(errorKey) : error.message;
+          const errorKey = classifyErrorKey(rawMessage);
+          const friendlyMessage = errorKey ? t(errorKey) : rawMessage;
           await replyFn(`${t('imErrorPrefix')}: ${friendlyMessage}`);
         } catch (replyError) {
           console.error(`[IMGatewayManager] Failed to send error reply: ${replyError}`);
@@ -721,117 +1249,34 @@ export class IMGatewayManager extends EventEmitter {
     // Ensure chat handler is ready
     this.updateChatHandler();
 
-    if (platform === 'dingtalk') {
-      // DingTalk runs via OpenClaw gateway (dingtalk-connector plugin)
-      console.log('[IMGatewayManager] DingTalk in OpenClaw mode, syncing config instead of starting direct gateway');
-      await this.syncOpenClawConfig?.();
-      await this.ensureOpenClawGatewayConnected?.();
-      return;
-    } else if (platform === 'feishu') {
-      // Feishu runs via OpenClaw gateway (feishu-openclaw-plugin)
-      console.log('[IMGatewayManager] Feishu in OpenClaw mode, syncing config instead of starting direct gateway');
-      await this.syncOpenClawConfig?.();
-      await this.ensureOpenClawGatewayConnected?.();
-      return;
-    } else if (platform === 'telegram') {
-      // Telegram always runs via OpenClaw gateway
-      console.log('[IMGatewayManager] Telegram in OpenClaw mode, syncing config instead of starting direct gateway');
-      await this.syncOpenClawConfig?.();
-      // Connect the gateway WebSocket so channel events (e.g. Telegram messages) are received
-      await this.ensureOpenClawGatewayConnected?.();
-      return;
-    } else if (platform === 'discord') {
-      // Discord runs via OpenClaw gateway
-      console.log('[IMGatewayManager] Discord in OpenClaw mode, syncing config instead of starting direct gateway');
-      await this.syncOpenClawConfig?.();
-      await this.ensureOpenClawGatewayConnected?.();
-      return;
-    } else if (platform === 'nim') {
-      // NIM runs via OpenClaw gateway (openclaw-nim plugin)
-      console.log('[IMGatewayManager] NIM in OpenClaw mode, syncing config instead of starting direct gateway');
-      await this.syncOpenClawConfig?.();
-      await this.ensureOpenClawGatewayConnected?.();
-      return;
-    } else if (platform === 'xiaomifeng') {
-      await this.xiaomifengGateway.start(config.xiaomifeng);
-    } else if (platform === 'qq') {
-      // QQ runs via OpenClaw gateway (qqbot plugin)
-      console.log('[IMGatewayManager] QQ in OpenClaw mode, syncing config instead of starting direct gateway');
-      await this.syncOpenClawConfig?.();
-      await this.ensureOpenClawGatewayConnected?.();
-      return;
-    } else if (platform === 'wecom') {
-      // WeCom runs via OpenClaw gateway (wecom-openclaw-plugin)
-      console.log('[IMGatewayManager] WeCom in OpenClaw mode, syncing config instead of starting direct gateway');
-      await this.syncOpenClawConfig?.();
-      await this.ensureOpenClawGatewayConnected?.();
-      return;
-    } else if (platform === 'weixin') {
-      // Weixin runs via OpenClaw gateway (weixin-openclaw-plugin)
-      console.debug('[IMGatewayManager] Weixin in OpenClaw mode, syncing config instead of starting direct gateway');
-      await this.syncOpenClawConfig?.();
-      await this.ensureOpenClawGatewayConnected?.();
-      return;
-    } else if (platform === 'popo') {
-      // POPO runs via OpenClaw gateway (moltbot-popo plugin)
-      console.log('[IMGatewayManager] POPO in OpenClaw mode, syncing config instead of starting direct gateway');
-      await this.syncOpenClawConfig?.();
-      await this.ensureOpenClawGatewayConnected?.();
+    const provider = this.getGatewayProvider();
+    const managed = await provider.startManagedPlatform(
+      platform,
+      this.getGatewayProviderRuntimeDeps(),
+    );
+    if (managed) {
       return;
     }
 
-    // Restore persisted notification target
-    this.restoreNotificationTarget(platform);
+    if (platform === 'xiaomifeng') {
+      await this.xiaomifengGateway.start(config.xiaomifeng);
+      // Restore persisted notification target
+      this.restoreNotificationTarget(platform);
+    }
   }
 
   async stopGateway(platform: IMPlatform): Promise<void> {
-    if (platform === 'dingtalk') {
-      // DingTalk runs via OpenClaw gateway
-      console.log('[IMGatewayManager] DingTalk in OpenClaw mode, syncing disabled config');
-      await this.syncOpenClawConfig?.();
+    const provider = this.getGatewayProvider();
+    const managed = await provider.stopManagedPlatform(
+      platform,
+      this.getGatewayProviderRuntimeDeps(),
+    );
+    if (managed) {
       return;
-    } else if (platform === 'feishu') {
-      // Feishu runs via OpenClaw gateway
-      console.log('[IMGatewayManager] Feishu in OpenClaw mode, syncing disabled config');
-      await this.syncOpenClawConfig?.();
-      return;
-    } else if (platform === 'telegram') {
-      // Telegram always runs via OpenClaw gateway
-      console.log('[IMGatewayManager] Telegram in OpenClaw mode, syncing disabled config');
-      await this.syncOpenClawConfig?.();
-      return;
-    } else if (platform === 'discord') {
-      // Discord runs via OpenClaw gateway
-      console.log('[IMGatewayManager] Discord in OpenClaw mode, syncing disabled config');
-      await this.syncOpenClawConfig?.();
-      return;
-    } else if (platform === 'nim') {
-      // NIM runs via OpenClaw gateway
-      console.log('[IMGatewayManager] NIM in OpenClaw mode, syncing disabled config');
-      await this.syncOpenClawConfig?.();
-      return;
-    } else if (platform === 'xiaomifeng') {
+    }
+
+    if (platform === 'xiaomifeng') {
       await this.xiaomifengGateway.stop();
-    } else if (platform === 'qq') {
-      // QQ runs via OpenClaw gateway
-      console.log('[IMGatewayManager] QQ in OpenClaw mode, syncing disabled config');
-      await this.syncOpenClawConfig?.();
-      return;
-    } else if (platform === 'wecom') {
-      // WeCom runs via OpenClaw gateway
-      console.log('[IMGatewayManager] WeCom in OpenClaw mode, syncing disabled config');
-      await this.syncOpenClawConfig?.();
-      return;
-    } else if (platform === 'weixin') {
-      // Weixin runs via OpenClaw gateway
-      console.debug('[IMGatewayManager] Weixin in OpenClaw mode, syncing disabled config');
-      await this.syncOpenClawConfig?.();
-      return;
-    } else if (platform === 'popo') {
-      // POPO runs via OpenClaw gateway
-      console.log('[IMGatewayManager] POPO in OpenClaw mode, syncing disabled config');
-      await this.syncOpenClawConfig?.();
-      return;
     }
   }
 
@@ -846,7 +1291,8 @@ export class IMGatewayManager extends EventEmitter {
    */
   async startAllEnabled(): Promise<void> {
     const config = this.getConfig();
-    const shouldAutoStartOpenClawPlatforms = this.isOpenClawEngine ? this.isOpenClawEngine() : true;
+    const provider = this.getGatewayProvider();
+    const shouldAutoStartManagedPlatforms = provider.shouldAutoStartManagedPlatforms();
 
     // Ensure chat handler is ready (called once instead of per-platform)
     this.updateChatHandler();
@@ -861,57 +1307,67 @@ export class IMGatewayManager extends EventEmitter {
       }
     }
 
-    // --- OpenClaw platforms: collect and batch into a single sync ---
+    // --- Managed platforms: collect and batch ---
 
-    const openClawPlatformsToStart: IMPlatform[] = [];
+    const managedPlatformsToStart: IMPlatform[] = [];
 
     if (config.dingtalk.enabled && config.dingtalk.clientId && config.dingtalk.clientSecret) {
-      openClawPlatformsToStart.push('dingtalk');
+      managedPlatformsToStart.push('dingtalk');
     }
     if (config.feishu.enabled && config.feishu.appId && config.feishu.appSecret) {
-      openClawPlatformsToStart.push('feishu');
+      managedPlatformsToStart.push('feishu');
     }
     if (config.telegram?.enabled && config.telegram.botToken) {
-      openClawPlatformsToStart.push('telegram');
+      managedPlatformsToStart.push('telegram');
     }
     if (config.discord.enabled && config.discord.botToken) {
-      openClawPlatformsToStart.push('discord');
+      managedPlatformsToStart.push('discord');
     }
     if (config.qq?.enabled && config.qq?.appId && config.qq?.appSecret) {
-      openClawPlatformsToStart.push('qq');
+      managedPlatformsToStart.push('qq');
     }
     if (config.wecom?.enabled && config.wecom?.botId && config.wecom?.secret) {
-      openClawPlatformsToStart.push('wecom');
+      managedPlatformsToStart.push('wecom');
     }
     if (config.weixin?.enabled) {
-      openClawPlatformsToStart.push('weixin');
+      managedPlatformsToStart.push('weixin');
     }
     if (config.popo?.enabled && config.popo?.appKey && config.popo?.appSecret && config.popo?.aesKey && (config.popo.connectionMode === 'websocket' || config.popo.token)) {
-      openClawPlatformsToStart.push('popo');
+      managedPlatformsToStart.push('popo');
     }
     if (config.nim?.enabled && config.nim.appKey && config.nim.account && config.nim.token) {
-      openClawPlatformsToStart.push('nim');
+      managedPlatformsToStart.push('nim');
     }
 
-    if (openClawPlatformsToStart.length > 0 && !shouldAutoStartOpenClawPlatforms) {
+    if (managedPlatformsToStart.length > 0 && !shouldAutoStartManagedPlatforms) {
       console.log(
-        `[IMGatewayManager] Skipping OpenClaw platform auto-start because agentEngine is not openclaw: ${openClawPlatformsToStart.join(', ')}`
+        `[IMGatewayManager] Skipping ${provider.id} managed platform auto-start: ${managedPlatformsToStart.join(', ')}`
       );
       return;
     }
 
-    if (openClawPlatformsToStart.length > 0) {
-      console.log(`[IMGatewayManager] Starting OpenClaw platforms in batch: ${openClawPlatformsToStart.join(', ')}`);
+    if (managedPlatformsToStart.length > 0) {
+      console.log(
+        `[IMGatewayManager] Starting managed platforms in batch via ${provider.id}: ${managedPlatformsToStart.join(', ')}`,
+      );
       try {
-        await this.syncOpenClawConfig?.();
-        await this.ensureOpenClawGatewayConnected?.();
+        await provider.startAllManagedPlatforms(
+          managedPlatformsToStart,
+          this.getGatewayProviderRuntimeDeps(),
+        );
       } catch (error: any) {
-        console.error(`[IMGatewayManager] Failed to start OpenClaw platforms: ${error.message}`);
+        console.error(
+          `[IMGatewayManager] Failed to start managed platforms via ${provider.id}: ${error.message}`,
+        );
       }
     }
   }
 
   async stopAll(): Promise<void> {
+    if (this.outboundRecoveryTimer) {
+      clearInterval(this.outboundRecoveryTimer);
+      this.outboundRecoveryTimer = null;
+    }
     await Promise.all([
       this.xiaomifengGateway.stop(),
     ]);
@@ -974,25 +1430,13 @@ export class IMGatewayManager extends EventEmitter {
     }
 
     try {
-      if (platform === 'nim') {
-        // NIM runs via OpenClaw; notifications not yet supported via plugin
-        console.log('[IMGatewayManager] NIM notification via OpenClaw not yet supported');
-      } else if (platform === 'qq') {
-        // QQ runs via OpenClaw; notifications are handled by the qqbot plugin
-        console.log('[IMGatewayManager] QQ notification via OpenClaw not yet supported');
-      } else if (platform === 'wecom') {
-        // WeCom runs via OpenClaw; notifications are handled by the wecom-openclaw-plugin
-        console.log('[IMGatewayManager] WeCom notification via OpenClaw not yet supported');
-      } else if (platform === 'weixin') {
-        // Weixin runs via OpenClaw; notifications are handled by the weixin-openclaw-plugin
-        console.debug('[IMGatewayManager] Weixin notification via OpenClaw not yet supported');
-      } else if (platform === 'popo') {
-        // POPO runs via OpenClaw; notifications are handled by the moltbot-popo plugin
-        console.log('[IMGatewayManager] POPO notification via OpenClaw not yet supported');
-      } else if (platform === 'xiaomifeng') {
+      if (platform === 'xiaomifeng') {
         await this.xiaomifengGateway.sendNotification(text);
+        return true;
       }
-      return true;
+
+      console.warn(`[IMGatewayManager] Notification delivery for ${platform} is not implemented in current provider`);
+      return false;
     } catch (error: any) {
       console.error(`[IMGatewayManager] Failed to send notification via ${platform}:`, error.message);
       return false;
@@ -1006,25 +1450,13 @@ export class IMGatewayManager extends EventEmitter {
     }
 
     try {
-      if (platform === 'nim') {
-        // NIM runs via OpenClaw; notifications not yet supported via plugin
-        console.log('[IMGatewayManager] NIM notification with media via OpenClaw not yet supported');
-      } else if (platform === 'qq') {
-        // QQ runs via OpenClaw; notifications are handled by the qqbot plugin
-        console.log('[IMGatewayManager] QQ notification with media via OpenClaw not yet supported');
-      } else if (platform === 'wecom') {
-        // WeCom runs via OpenClaw; notifications are handled by the wecom-openclaw-plugin
-        console.log('[IMGatewayManager] WeCom notification with media via OpenClaw not yet supported');
-      } else if (platform === 'weixin') {
-        // Weixin runs via OpenClaw; notifications are handled by the weixin-openclaw-plugin
-        console.debug('[IMGatewayManager] Weixin notification with media via OpenClaw not yet supported');
-      } else if (platform === 'popo') {
-        // POPO runs via OpenClaw; notifications are handled by the moltbot-popo plugin
-        console.log('[IMGatewayManager] POPO notification with media via OpenClaw not yet supported');
-      } else if (platform === 'xiaomifeng') {
+      if (platform === 'xiaomifeng') {
         await this.xiaomifengGateway.sendNotificationWithMedia(text);
+        return true;
       }
-      return true;
+
+      console.warn(`[IMGatewayManager] Notification with media for ${platform} is not implemented in current provider`);
+      return false;
     } catch (error: any) {
       console.error(`[IMGatewayManager] Failed to send notification with media via ${platform}:`, error.message);
       return false;
@@ -1785,6 +2217,27 @@ export class IMGatewayManager extends EventEmitter {
         case 'xiaomifeng':
           await this.xiaomifengGateway.sendConversationNotification(conversationId, text);
           return true;
+        case 'nim':
+          await this.nimGateway.sendConversationNotification(conversationId, text);
+          return true;
+        case 'dingtalk': {
+          const resolvedTarget = await this.resolveDingTalkConversationReplyTarget(conversationId)
+            ?? this.parseDingTalkConversationTarget(conversationId);
+          if (!resolvedTarget) {
+            console.warn(`[IMGatewayManager] Failed to resolve DingTalk reply target for ${conversationId}`);
+            return false;
+          }
+          if (!resolvedTarget.target.startsWith('user:')) {
+            console.warn(`[IMGatewayManager] Unsupported DingTalk target for direct reply: ${resolvedTarget.target}`);
+            return false;
+          }
+          const userId = resolvedTarget.target.slice('user:'.length).trim();
+          if (!userId) {
+            console.warn(`[IMGatewayManager] Empty DingTalk userId resolved from target: ${resolvedTarget.target}`);
+            return false;
+          }
+          return this.sendDingTalkDirectHttp(userId, text);
+        }
         default:
           return this.sendNotificationWithMedia(platform, text);
       }

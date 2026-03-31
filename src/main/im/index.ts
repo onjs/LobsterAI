@@ -9,5 +9,19 @@ export { NimGateway } from './nimGateway';
 export { IMChatHandler } from './imChatHandler';
 export { IMCoworkHandler, type IMCoworkHandlerOptions } from './imCoworkHandler';
 export { IMGatewayManager, type IMGatewayManagerOptions } from './imGatewayManager';
+export {
+  IMGatewayProviderId,
+  IMGatewayProviderSource,
+  IMGatewayProviderEnvKey,
+  resolveIMGatewayProvider,
+} from './imGatewayProviderRouter';
+export {
+  createIMGatewayProvider,
+  OpenClawManagedPlatform,
+  type IManagedGatewayProvider,
+  type IMGatewayProviderRuntimeDeps,
+} from './imGatewayProviders';
+export * from './imGatewayContracts';
+export * from './gateway';
 export { parseMediaMarkers, stripMediaMarkers } from './dingtalkMediaParser';
 export { buildIMMediaInstruction } from './imMediaInstruction';

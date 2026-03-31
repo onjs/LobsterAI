@@ -21,6 +21,8 @@ import {
 } from './imScheduledTaskHandler';
 import { buildScheduledTaskEnginePrompt } from '../../scheduled-task/enginePrompt';
 import { t } from '../i18n';
+import { IMSessionRouter } from './gateway';
+import { GatewayRoute } from './gateway/constants';
 
 interface MessageAccumulator {
   messages: CoworkMessage[];
@@ -75,6 +77,7 @@ export class IMCoworkHandler extends EventEmitter {
     request: ParsedIMScheduledTaskRequest;
   }) => Promise<IMScheduledTaskCreationResult>;
   private sendAsyncReply?: (platform: IMPlatform, conversationId: string, text: string) => Promise<boolean>;
+  private sessionRouter: IMSessionRouter;
 
   // Track active sessions' message accumulation
   private messageAccumulators: Map<string, MessageAccumulator> = new Map();
@@ -98,17 +101,27 @@ export class IMCoworkHandler extends EventEmitter {
     this.detectScheduledTaskRequest = options.detectScheduledTaskRequest;
     this.createScheduledTask = options.createScheduledTask;
     this.sendAsyncReply = options.sendAsyncReply;
+    this.sessionRouter = new IMSessionRouter(this.imStore);
 
     this.initializeMappedSessions();
     this.setupEventListeners();
   }
 
   private initializeMappedSessions(): void {
+    const provider = this.resolveProviderId();
     for (const mapping of this.imStore.listSessionMappings()) {
       const session = this.coworkStore.getSession(mapping.coworkSessionId);
       if (!session) {
         continue;
       }
+      this.sessionRouter.bindRoute({
+        platform: mapping.platform,
+        conversationId: mapping.imConversationId,
+        agentId: mapping.agentId,
+        provider,
+        coworkSessionId: mapping.coworkSessionId,
+        lastEventId: null,
+      });
       this.trackSessionMapping(mapping);
     }
   }
@@ -268,10 +281,22 @@ export class IMCoworkHandler extends EventEmitter {
     senderId?: string,
     message?: IMMessage
   ): Promise<string> {
+    const provider = this.resolveProviderId();
+    const agentId = this.resolveBoundAgentId(platform);
+
     if (forceNewSession) {
+      const staleRoute = this.imStore.findSessionRoute({
+        platform,
+        conversationId: imConversationId,
+        agentId,
+      });
+      if (staleRoute) {
+        this.sessionRouter.removeRoute(staleRoute.routeKey);
+      }
       const stale = this.imStore.getSessionMapping(imConversationId, platform);
       if (stale) {
         this.imStore.deleteSessionMapping(imConversationId, platform);
+        this.sessionRouter.removeRoutesBySession(stale.coworkSessionId);
         this.imSessionIds.delete(stale.coworkSessionId);
         this.sessionConversationMap.delete(stale.coworkSessionId);
         this.clearPendingPermissionsBySessionId(stale.coworkSessionId);
@@ -280,32 +305,111 @@ export class IMCoworkHandler extends EventEmitter {
     }
 
     // Check existing mapping
-    const existing = forceNewSession ? null : this.imStore.getSessionMapping(imConversationId, platform);
-    if (existing) {
-      const session = this.coworkStore.getSession(existing.coworkSessionId);
-      if (!session) {
-        console.warn(
-          `[IMCoworkHandler] Found stale mapping for ${platform}:${imConversationId}, session ${existing.coworkSessionId} is missing`
-        );
-        this.imStore.deleteSessionMapping(imConversationId, platform);
-        this.imSessionIds.delete(existing.coworkSessionId);
-        this.sessionConversationMap.delete(existing.coworkSessionId);
-        this.clearPendingPermissionsBySessionId(existing.coworkSessionId);
-        this.coworkRuntime.stopSession(existing.coworkSessionId);
-      } else {
+    const existingRoute = forceNewSession
+      ? null
+      : this.sessionRouter.resolveRoute({
+          platform,
+          conversationId: imConversationId,
+          agentId,
+          provider,
+        });
+    if (existingRoute) {
+      const routeSession = this.coworkStore.getSession(existingRoute.coworkSessionId);
+      const existingMapping = this.imStore.getSessionMapping(imConversationId, platform);
+      const mappingSession = existingMapping
+        ? this.coworkStore.getSession(existingMapping.coworkSessionId)
+        : null;
+      const mappingMatchesAgent = Boolean(existingMapping && existingMapping.agentId === agentId);
+      const mappingUsable = Boolean(existingMapping && mappingSession && mappingMatchesAgent);
+
+      if (mappingUsable && (
+        !routeSession
+        || existingRoute.coworkSessionId !== existingMapping!.coworkSessionId
+        || existingRoute.provider !== provider
+      )) {
+        const reboundRoute = this.sessionRouter.bindRoute({
+          platform,
+          conversationId: imConversationId,
+          agentId,
+          provider,
+          coworkSessionId: existingMapping!.coworkSessionId,
+          lastEventId: message?.messageId ?? null,
+        });
         this.imStore.updateSessionLastActive(imConversationId, platform);
-        this.trackSessionMapping(existing);
-        return existing.coworkSessionId;
+        this.trackSessionMapping(existingMapping!);
+        this.sessionRouter.touchRoute(reboundRoute.routeKey, message?.messageId ?? null);
+        return existingMapping!.coworkSessionId;
+      }
+
+      if (!routeSession) {
+        console.warn(
+          `[IMCoworkHandler] Found stale route for ${platform}:${imConversationId}, session ${existingRoute.coworkSessionId} is missing`
+        );
+        this.sessionRouter.removeRoute(existingRoute.routeKey);
+        if (existingMapping) {
+          this.imStore.deleteSessionMapping(imConversationId, platform);
+          this.sessionRouter.removeRoutesBySession(existingMapping.coworkSessionId);
+          this.imSessionIds.delete(existingMapping.coworkSessionId);
+          this.sessionConversationMap.delete(existingMapping.coworkSessionId);
+          this.clearPendingPermissionsBySessionId(existingMapping.coworkSessionId);
+          this.coworkRuntime.stopSession(existingMapping.coworkSessionId);
+        }
+        this.imSessionIds.delete(existingRoute.coworkSessionId);
+        this.sessionConversationMap.delete(existingRoute.coworkSessionId);
+        this.clearPendingPermissionsBySessionId(existingRoute.coworkSessionId);
+        this.coworkRuntime.stopSession(existingRoute.coworkSessionId);
+      } else {
+        if (!existingMapping) {
+          this.trackSessionMapping(
+            this.imStore.createSessionMapping(
+              imConversationId,
+              platform,
+              existingRoute.coworkSessionId,
+              agentId,
+            ),
+          );
+        } else if (
+          existingMapping.coworkSessionId !== existingRoute.coworkSessionId
+          || existingMapping.agentId !== agentId
+        ) {
+          this.imStore.updateSessionMappingTarget(
+            imConversationId,
+            platform,
+            existingRoute.coworkSessionId,
+            agentId,
+          );
+          const refreshed = this.imStore.getSessionMapping(imConversationId, platform);
+          if (refreshed) {
+            this.trackSessionMapping(refreshed);
+          }
+        } else {
+          this.imStore.updateSessionLastActive(imConversationId, platform);
+          this.trackSessionMapping(existingMapping);
+        }
+        if (existingRoute.provider !== provider) {
+          this.sessionRouter.bindRoute({
+            routeKey: existingRoute.routeKey,
+            platform,
+            conversationId: imConversationId,
+            agentId,
+            provider,
+            coworkSessionId: existingRoute.coworkSessionId,
+            lastEventId: message?.messageId ?? null,
+          });
+        }
+        this.sessionRouter.touchRoute(existingRoute.routeKey, message?.messageId ?? null);
+        return existingRoute.coworkSessionId;
       }
     }
 
     // Create new Cowork session
-    return this.createCoworkSessionForConversation(imConversationId, platform, senderId, message);
+    return this.createCoworkSessionForConversation(imConversationId, platform, agentId, senderId, message);
   }
 
   private async createCoworkSessionForConversation(
     imConversationId: string,
     platform: IMPlatform,
+    agentId: string,
     senderId?: string,
     message?: IMMessage
   ): Promise<string> {
@@ -323,10 +427,6 @@ export class IMCoworkHandler extends EventEmitter {
       throw new Error(`IM 工作目录不存在或无效: ${resolvedWorkspaceRoot}`);
     }
 
-    // Resolve the agent bound to this platform
-    const imSettings = this.imStore.getIMSettings();
-    const agentId = imSettings.platformAgentBindings?.[platform] || 'main';
-
     const session = this.coworkStore.createSession(
       title,
       resolvedWorkspaceRoot,
@@ -337,10 +437,29 @@ export class IMCoworkHandler extends EventEmitter {
     );
 
     // Save mapping
-    const mapping = this.imStore.createSessionMapping(imConversationId, platform, session.id);
+    const mapping = this.imStore.createSessionMapping(imConversationId, platform, session.id, agentId);
     this.trackSessionMapping(mapping);
+    this.sessionRouter.bindRoute({
+      platform,
+      conversationId: imConversationId,
+      agentId,
+      provider: this.resolveProviderId(),
+      coworkSessionId: session.id,
+      lastEventId: message?.messageId ?? null,
+    });
 
     return session.id;
+  }
+
+  private resolveBoundAgentId(platform: IMPlatform): string {
+    const imSettings = this.imStore.getIMSettings();
+    const bound = imSettings.platformAgentBindings?.[platform]?.trim();
+    return bound || GatewayRoute.DefaultAgentId;
+  }
+
+  private resolveProviderId(): 'openclaw' | 'yd_cowork' {
+    const engine = this.coworkStore.getConfig().agentEngine;
+    return engine === 'openclaw' ? 'openclaw' : 'yd_cowork';
   }
 
   /**

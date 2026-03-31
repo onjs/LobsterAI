@@ -2,9 +2,14 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useSelector } from 'react-redux';
 import { RootState } from '../../store';
 import type { CoworkSessionStatus, CoworkSessionSummary } from '../../types/cowork';
+import type { IMPlatform } from '../../types/im';
 import CoworkSessionItem from './CoworkSessionItem';
 import { i18nService } from '../../services/i18n';
-import { ChevronDownIcon, ChevronRightIcon, ClockIcon } from '@heroicons/react/24/outline';
+import {
+  ChevronDownIcon,
+  ChevronRightIcon,
+  ClockIcon,
+} from '@heroicons/react/24/outline';
 
 interface CoworkSessionListProps {
   sessions: CoworkSessionSummary[];
@@ -21,6 +26,43 @@ interface CoworkSessionListProps {
 }
 
 const SCHEDULED_TITLE_PREFIX = '[Scheduled]';
+const IM_SESSION_CHANNELS = [
+  'dingtalk',
+  'feishu',
+  'telegram',
+  'discord',
+  'qqbot',
+  'wecom',
+  'popo',
+  'nim',
+  'openclaw-weixin',
+  'xiaomifeng',
+] as const;
+const IM_PLATFORM_ORDER: readonly IMPlatform[] = [
+  'dingtalk',
+  'feishu',
+  'wecom',
+  'weixin',
+  'qq',
+  'popo',
+  'nim',
+  'xiaomifeng',
+  'telegram',
+  'discord',
+];
+const IM_PLATFORM_LABEL_KEYS: Record<IMPlatform, string> = {
+  dingtalk: 'scheduledTasksFormNotifyDingtalk',
+  feishu: 'scheduledTasksFormNotifyFeishu',
+  qq: 'scheduledTasksFormNotifyQq',
+  telegram: 'scheduledTasksFormNotifyTelegram',
+  discord: 'scheduledTasksFormNotifyDiscord',
+  nim: 'scheduledTasksFormNotifyNim',
+  xiaomifeng: 'scheduledTasksFormNotifyXiaomifeng',
+  wecom: 'scheduledTasksFormNotifyWecom',
+  popo: 'scheduledTasksFormNotifyPopo',
+  weixin: 'scheduledTasksFormNotifyWeixin',
+};
+const IM_PLATFORM_SET = new Set<IMPlatform>(IM_PLATFORM_ORDER);
 
 const statusLabels: Record<CoworkSessionStatus, string> = {
   idle: 'coworkStatusIdle',
@@ -47,6 +89,10 @@ function formatRunTime(timestamp: number): string {
   return `${year}-${month}-${day} ${hour}:${minute}`;
 }
 
+function isImPlatform(value: string): value is IMPlatform {
+  return IM_PLATFORM_SET.has(value as IMPlatform);
+}
+
 const CoworkSessionList: React.FC<CoworkSessionListProps> = ({
   sessions,
   currentSessionId,
@@ -62,6 +108,9 @@ const CoworkSessionList: React.FC<CoworkSessionListProps> = ({
 }) => {
   const unreadSessionIds = useSelector((state: RootState) => state.cowork.unreadSessionIds);
   const unreadSessionIdSet = useMemo(() => new Set(unreadSessionIds), [unreadSessionIds]);
+  const [imExpanded, setImExpanded] = useState(true);
+  const [manualExpanded, setManualExpanded] = useState(true);
+  const [imSessionPlatformMap, setImSessionPlatformMap] = useState<Record<string, IMPlatform>>({});
   const [scheduledExpanded, setScheduledExpanded] = useState(true);
   const [expandedTaskGroups, setExpandedTaskGroups] = useState<Set<string>>(new Set());
 
@@ -82,19 +131,87 @@ const CoworkSessionList: React.FC<CoworkSessionListProps> = ({
     return [...pinnedSessions, ...unpinnedSessions];
   }, [sessions]);
 
-  const { scheduledGroups, manualSessions } = useMemo(() => {
+  const sessionIdsKey = useMemo(
+    () => sortedSessions.map((session) => session.id).sort().join('|'),
+    [sortedSessions],
+  );
+
+  useEffect(() => {
+    let disposed = false;
+    const loadImSessionMappings = async () => {
+      if (!sessionIdsKey) {
+        if (!disposed) setImSessionPlatformMap({});
+        return;
+      }
+      const listConversations = window.electron?.scheduledTasks?.listChannelConversations;
+      if (!listConversations) {
+        if (!disposed) setImSessionPlatformMap({});
+        return;
+      }
+      try {
+        const results = await Promise.all(
+          IM_SESSION_CHANNELS.map((channel) => listConversations(channel)),
+        );
+        if (disposed) return;
+
+        const nextMap: Record<string, IMPlatform> = {};
+        for (const result of results) {
+          if (!result?.success || !Array.isArray(result.conversations)) continue;
+          for (const conversation of result.conversations) {
+            const platform = typeof conversation.platform === 'string' ? conversation.platform : '';
+            if (!conversation.coworkSessionId || !isImPlatform(platform)) continue;
+            nextMap[conversation.coworkSessionId] = platform;
+          }
+        }
+        setImSessionPlatformMap(nextMap);
+      } catch (error) {
+        console.warn('[CoworkSessionList] Failed to load IM session mappings:', error);
+      }
+    };
+
+    void loadImSessionMappings();
+    return () => {
+      disposed = true;
+    };
+  }, [sessionIdsKey]);
+
+  const { imGroups, scheduledGroups, manualSessions } = useMemo(() => {
+    const imGroupMap = new Map<IMPlatform, CoworkSessionSummary[]>();
     const groupMap = new Map<string, CoworkSessionSummary[]>();
     const manual: CoworkSessionSummary[] = [];
     sortedSessions.forEach((session) => {
       const scheduledTaskName = parseScheduledTaskName(session.title);
-      if (!scheduledTaskName) {
-        manual.push(session);
+      if (scheduledTaskName) {
+        const bucket = groupMap.get(scheduledTaskName) ?? [];
+        bucket.push(session);
+        groupMap.set(scheduledTaskName, bucket);
         return;
       }
-      const bucket = groupMap.get(scheduledTaskName) ?? [];
-      bucket.push(session);
-      groupMap.set(scheduledTaskName, bucket);
+      const imPlatform = imSessionPlatformMap[session.id];
+      if (imPlatform) {
+        const bucket = imGroupMap.get(imPlatform) ?? [];
+        bucket.push(session);
+        imGroupMap.set(imPlatform, bucket);
+        return;
+      }
+      manual.push(session);
     });
+
+    const platformGroups = IM_PLATFORM_ORDER
+      .map((platform) => {
+        const taskSessions = imGroupMap.get(platform);
+        if (!taskSessions || taskSessions.length === 0) return null;
+        return {
+          platform,
+          labelKey: IM_PLATFORM_LABEL_KEYS[platform],
+          sessions: [...taskSessions].sort((a, b) => b.updatedAt - a.updatedAt),
+        };
+      })
+      .filter((group): group is {
+        platform: IMPlatform;
+        labelKey: string;
+        sessions: CoworkSessionSummary[];
+      } => group !== null);
 
     const groups = Array.from(groupMap.entries())
       .map(([taskName, taskSessions]) => ({
@@ -105,10 +222,11 @@ const CoworkSessionList: React.FC<CoworkSessionListProps> = ({
       .sort((a, b) => b.latestUpdatedAt - a.latestUpdatedAt);
 
     return {
+      imGroups: platformGroups,
       scheduledGroups: groups,
       manualSessions: manual,
     };
-  }, [sortedSessions]);
+  }, [sortedSessions, imSessionPlatformMap]);
 
   useEffect(() => {
     setExpandedTaskGroups((prev) => {
@@ -171,6 +289,53 @@ const CoworkSessionList: React.FC<CoworkSessionListProps> = ({
 
   return (
     <div className="space-y-3">
+      {imGroups.length > 0 && (
+        <div>
+          <button
+            type="button"
+            onClick={() => setImExpanded((prev) => !prev)}
+            className="w-full flex items-center gap-1.5 px-2 py-1 rounded-lg hover:bg-claude-surfaceHover dark:hover:bg-claude-darkSurfaceHover transition-colors"
+          >
+            {imExpanded ? (
+              <ChevronDownIcon className="h-3.5 w-3.5 dark:text-claude-darkTextSecondary text-claude-textSecondary" />
+            ) : (
+              <ChevronRightIcon className="h-3.5 w-3.5 dark:text-claude-darkTextSecondary text-claude-textSecondary" />
+            )}
+            <span className="text-sm font-medium dark:text-claude-darkTextSecondary text-claude-textSecondary">
+              {i18nService.t('coworkImTasks')}
+            </span>
+          </button>
+
+          {imExpanded && (
+            <div className="mt-1 space-y-1 pl-1">
+              {imGroups.map((group) => {
+                const activeSessionInGroup = group.sessions.find((session) => session.id === currentSessionId) ?? null;
+                const targetSession = activeSessionInGroup ?? group.sessions[0];
+                const isActive = Boolean(activeSessionInGroup);
+                const label = `${i18nService.t('coworkMyPrefix')}${i18nService.t(group.labelKey)}`;
+                return (
+                  <div key={group.platform}>
+                    <button
+                      type="button"
+                      onClick={() => onSelectSession(targetSession.id)}
+                      className={`w-full flex items-center gap-2 rounded-lg px-2 py-1.5 text-left transition-colors ${
+                        isActive
+                          ? 'bg-black/[0.06] dark:bg-white/[0.08]'
+                          : 'hover:bg-claude-surfaceHover dark:hover:bg-claude-darkSurfaceHover'
+                      }`}
+                    >
+                      <span className="min-w-0 flex-1 truncate text-sm font-medium dark:text-claude-darkText text-claude-text">
+                        {label}
+                      </span>
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
       {scheduledGroups.length > 0 && (
         <div>
           <button
@@ -248,33 +413,50 @@ const CoworkSessionList: React.FC<CoworkSessionListProps> = ({
       )}
 
       <div>
-        <div className="px-2 pb-1 text-sm font-medium dark:text-claude-darkTextSecondary text-claude-textSecondary">
-          {i18nService.t('coworkManualTasks')}
-        </div>
-        {manualSessions.length === 0 ? (
-          <div className="px-2 py-2 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
-            {i18nService.t('coworkNoSessions')}
-          </div>
-        ) : (
-          <div className="space-y-2">
-            {manualSessions.map((session) => (
-              <CoworkSessionItem
-                key={session.id}
-                session={session}
-                hasUnread={unreadSessionIdSet.has(session.id)}
-                isActive={session.id === currentSessionId}
-                isBatchMode={false}
-                isSelected={selectedIds.has(session.id)}
-                showBatchOption={showBatchOption}
-                onSelect={() => onSelectSession(session.id)}
-                onDelete={() => onDeleteSession(session.id)}
-                onTogglePin={(pinned) => onTogglePin(session.id, pinned)}
-                onRename={(title) => onRenameSession(session.id, title)}
-                onToggleSelection={() => onToggleSelection(session.id)}
-                onEnterBatchMode={() => onEnterBatchMode(session.id)}
-              />
-            ))}
-          </div>
+        <button
+          type="button"
+          onClick={() => setManualExpanded((prev) => !prev)}
+          className="w-full flex items-center gap-1.5 px-2 py-1 rounded-lg hover:bg-claude-surfaceHover dark:hover:bg-claude-darkSurfaceHover transition-colors"
+        >
+          {manualExpanded ? (
+            <ChevronDownIcon className="h-3.5 w-3.5 dark:text-claude-darkTextSecondary text-claude-textSecondary" />
+          ) : (
+            <ChevronRightIcon className="h-3.5 w-3.5 dark:text-claude-darkTextSecondary text-claude-textSecondary" />
+          )}
+          <span className="text-sm font-medium dark:text-claude-darkTextSecondary text-claude-textSecondary">
+            {i18nService.t('coworkManualTasks')}
+          </span>
+        </button>
+
+        {manualExpanded && (
+          manualSessions.length === 0 ? (
+            <div className="px-2 py-2 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
+              {i18nService.t('coworkNoSessions')}
+            </div>
+          ) : (
+            <div className="mt-1 space-y-1 pl-1">
+              {manualSessions.map((session) => {
+                const isActive = session.id === currentSessionId;
+                return (
+                  <div key={session.id}>
+                    <button
+                      type="button"
+                      onClick={() => onSelectSession(session.id)}
+                      className={`w-full flex items-center gap-2 rounded-lg px-2 py-1.5 text-left transition-colors ${
+                        isActive
+                          ? 'bg-black/[0.06] dark:bg-white/[0.08]'
+                          : 'hover:bg-claude-surfaceHover dark:hover:bg-claude-darkSurfaceHover'
+                      }`}
+                    >
+                      <span className="min-w-0 flex-1 truncate text-sm font-medium dark:text-claude-darkText text-claude-text">
+                        {session.title}
+                      </span>
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )
         )}
       </div>
     </div>

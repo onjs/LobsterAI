@@ -1385,6 +1385,7 @@ const getIMGatewayManager = () => {
           }
         },
         isOpenClawEngine: () => resolveCoworkAgentEngine() === 'openclaw',
+        getCoworkAgentEngine: resolveCoworkAgentEngine,
         syncOpenClawConfig: async () => {
           await syncOpenClawConfig({
             reason: 'im-gateway-start',
@@ -2926,7 +2927,9 @@ if (!gotTheLock) {
       // Clean up IM session mapping so that new channel messages
       // create a fresh session instead of referencing a deleted one.
       try {
-        getIMGatewayManager()?.getIMStore()?.deleteSessionMappingByCoworkSessionId(sessionId);
+        const imStore = getIMGatewayManager()?.getIMStore();
+        imStore?.deleteSessionMappingByCoworkSessionId(sessionId);
+        imStore?.deleteSessionRoutesByCoworkSessionId(sessionId);
       } catch {
         // IM store may not be initialised yet; safe to ignore.
       }
@@ -2953,7 +2956,9 @@ if (!gotTheLock) {
       const router = getCoworkEngineRouter();
       for (const sessionId of sessionIds) {
         try {
-          getIMGatewayManager()?.getIMStore()?.deleteSessionMappingByCoworkSessionId(sessionId);
+          const imStore = getIMGatewayManager()?.getIMStore();
+          imStore?.deleteSessionMappingByCoworkSessionId(sessionId);
+          imStore?.deleteSessionRoutesByCoworkSessionId(sessionId);
         } catch {
           // IM store may not be initialised yet; safe to ignore.
         }
@@ -3016,6 +3021,10 @@ if (!gotTheLock) {
 
   ipcMain.handle('cowork:session:remoteManaged', async (_event, sessionId: string) => {
     try {
+      const currentEngine = getCoworkStore().getConfig().agentEngine;
+      if (currentEngine !== 'openclaw') {
+        return { success: true, remoteManaged: false };
+      }
       const mapping = getIMGatewayManager()?.getIMStore()?.getSessionMappingByCoworkSessionId(sessionId);
       return { success: true, remoteManaged: !!mapping };
     } catch (error) {

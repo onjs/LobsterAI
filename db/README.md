@@ -2,6 +2,8 @@
 
 主 DDL 文件：`db/lobsterai-ddl.sql`
 
+IM Gateway 新架构 DDL 草案：`db/yd-cowork-im-gateway-ddl.sql`
+
 ## 表清单（按模块）
 
 - Core
@@ -27,3 +29,4 @@
 
 - 该 DDL 以当前本地运行库 `~/Library/Application Support/LobsterAI/lobsterai.sqlite` 的 `.schema` 为主。
 - `scheduled_task_meta` 由代码按需创建（OpenClaw cron 元数据映射），可能在未使用对应功能时不存在于实际库中。
+- `yd-cowork-im-gateway-ddl.sql` 为“统一网关架构”前瞻性设计稿，建议通过迁移脚本按阶段落地，不直接全量替换现有表。

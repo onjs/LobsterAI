@@ -9,6 +9,7 @@ import type { CoworkStore } from '../coworkStore';
 import type { IMStore } from '../im/imStore';
 import type { IMPlatform } from '../im/types';
 import { t } from '../i18n';
+import { GatewayRoute } from '../im/gateway/constants';
 
 const LOBSTERAI_SESSION_PREFIX = 'lobsterai:';
 export const DEFAULT_MANAGED_AGENT_ID = 'main';
@@ -239,6 +240,31 @@ export class OpenClawChannelSessionSync {
     this.resolveJobName = deps.resolveJobName ?? null;
   }
 
+  private upsertOpenClawRoute(
+    platform: IMPlatform,
+    conversationId: string,
+    coworkSessionId: string,
+    agentId: string,
+  ): void {
+    const normalizedAgentId = agentId.trim() || GatewayRoute.DefaultAgentId;
+    const routeKey = [
+      platform,
+      conversationId,
+      GatewayRoute.NoThread,
+      normalizedAgentId,
+    ].join(GatewayRoute.KeySeparator);
+    this.imStore.upsertSessionRoute({
+      routeKey,
+      platform,
+      conversationId,
+      threadId: null,
+      agentId: normalizedAgentId,
+      provider: 'openclaw',
+      coworkSessionId,
+      lastEventId: null,
+    });
+  }
+
   /**
    * Check if a gateway session key belongs to the agent currently bound to its platform.
    * When users switch agent bindings, the gateway retains old sessions under the previous
@@ -316,7 +342,9 @@ export class OpenClawChannelSessionSync {
           const cwd = this.getDefaultCwd();
           const newSession = this.coworkStore.createSession(title, cwd, '', 'local', [], currentAgentId);
           console.log('[ChannelSessionSync] created new session for agent change:', newSession.id);
+          this.imStore.deleteSessionRoutesByCoworkSessionId(existingMapping.coworkSessionId);
           this.imStore.updateSessionMappingTarget(parsed.conversationId, parsed.platform, newSession.id, currentAgentId);
+          this.upsertOpenClawRoute(parsed.platform, parsed.conversationId, newSession.id, currentAgentId);
           this.syncedSessionKeys.set(sessionKey, newSession.id);
           // Mark so pollChannelSessions skips full history sync for this session —
           // old gateway messages should not be pulled into the new session.
@@ -324,12 +352,19 @@ export class OpenClawChannelSessionSync {
           return newSession.id;
         }
         console.log('[ChannelSessionSync] existing cowork session found, reusing:', existingMapping.coworkSessionId);
+        this.upsertOpenClawRoute(
+          parsed.platform,
+          parsed.conversationId,
+          existingMapping.coworkSessionId,
+          currentAgentId,
+        );
         this.syncedSessionKeys.set(sessionKey, existingMapping.coworkSessionId);
         this.imStore.updateSessionLastActive(parsed.conversationId, parsed.platform);
         return existingMapping.coworkSessionId;
       }
       // Session was deleted, remove stale mapping
       console.log('[ChannelSessionSync] cowork session deleted, removing stale mapping');
+      this.imStore.deleteSessionRoutesByCoworkSessionId(existingMapping.coworkSessionId);
       this.imStore.deleteSessionMapping(parsed.conversationId, parsed.platform);
     }
 
@@ -357,6 +392,7 @@ export class OpenClawChannelSessionSync {
 
     // 6. Persist mapping
     this.imStore.createSessionMapping(parsed.conversationId, parsed.platform, session.id, agentId);
+    this.upsertOpenClawRoute(parsed.platform, parsed.conversationId, session.id, agentId);
     console.log('[ChannelSessionSync] persisted mapping: conversationId=', parsed.conversationId, '→ sessionId=', session.id);
 
     // 7. Cache
@@ -391,10 +427,17 @@ export class OpenClawChannelSessionSync {
     if (existingMapping) {
       const session = this.coworkStore.getSession(existingMapping.coworkSessionId);
       if (session) {
+        this.upsertOpenClawRoute(
+          parsed.platform,
+          parsed.conversationId,
+          existingMapping.coworkSessionId,
+          existingMapping.agentId,
+        );
         this.syncedSessionKeys.set(sessionKey, existingMapping.coworkSessionId);
         return existingMapping.coworkSessionId;
       }
       // Stale mapping, clean up
+      this.imStore.deleteSessionRoutesByCoworkSessionId(existingMapping.coworkSessionId);
       this.imStore.deleteSessionMapping(parsed.conversationId, parsed.platform);
     }
 

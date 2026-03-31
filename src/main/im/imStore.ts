@@ -19,6 +19,7 @@ import {
   IMSettings,
   IMPlatform,
   IMSessionMapping,
+  IMSessionRoute,
   DEFAULT_DINGTALK_OPENCLAW_CONFIG,
   DEFAULT_FEISHU_OPENCLAW_CONFIG,
   DEFAULT_TELEGRAM_OPENCLAW_CONFIG,
@@ -31,11 +32,38 @@ import {
   DEFAULT_WEIXIN_CONFIG,
   DEFAULT_IM_SETTINGS,
 } from './types';
+import {
+  ensureImGatewayMigrationSchema,
+  ImGatewayMigrationConfigKey,
+  ImGatewayMigrationEnvKey,
+  ImGatewayMigrationPhase,
+} from './imGatewayMigrations';
+import {
+  GatewayDeliveryStatus,
+  type GatewayDeliveryStatus as GatewayDeliveryStatusType,
+  type GatewayRunStatus,
+} from './gateway/constants';
 
 interface StoredConversationReplyRoute {
   channel: string;
   to: string;
   accountId?: string;
+}
+
+export interface IMOutboundDeliveryRecord {
+  id: string;
+  runId: string;
+  platform: IMPlatform;
+  conversationId: string;
+  threadId: string | null;
+  payloadJson: string;
+  status: GatewayDeliveryStatusType;
+  retryCount: number;
+  maxRetries: number;
+  nextRetryAt: number | null;
+  lastError: string | null;
+  createdAt: number;
+  updatedAt: number;
 }
 
 export class IMStore {
@@ -76,6 +104,16 @@ export class IMStore {
     if (!mappingColNames.includes('agent_id')) {
       this.db.run("ALTER TABLE im_session_mappings ADD COLUMN agent_id TEXT NOT NULL DEFAULT 'main'");
     }
+
+    const storedPhase = this.getConfigValue<string>(ImGatewayMigrationConfigKey.Phase);
+    ensureImGatewayMigrationSchema({
+      db: this.db,
+      saveDb: this.saveDb,
+      envPhase: process.env[ImGatewayMigrationEnvKey.Phase],
+      storedPhase,
+      defaultPhase: ImGatewayMigrationPhase.Phase3,
+      persistPhase: (phase) => this.setConfigValue(ImGatewayMigrationConfigKey.Phase, phase),
+    });
 
     this.saveDb();
   }
@@ -169,8 +207,8 @@ export class IMStore {
           };
           const now = Date.now();
           this.db.run(
-            'INSERT OR REPLACE INTO im_config (key, value, created_at, updated_at) VALUES (?, ?, ?, ?)',
-            ['telegramOpenClaw', JSON.stringify(newConfig), now, now]
+            'INSERT OR REPLACE INTO im_config (key, value, updated_at) VALUES (?, ?, ?)',
+            ['telegramOpenClaw', JSON.stringify(newConfig), now]
           );
           this.db.run('DELETE FROM im_config WHERE key = ?', ['telegram']);
           changed = true;
@@ -755,5 +793,438 @@ export class IMStore {
       createdAt: row[4] as number,
       lastActiveAt: row[5] as number,
     }));
+  }
+
+  // ==================== Session Route Operations ====================
+
+  getSessionRoute(routeKey: string): IMSessionRoute | null {
+    const result = this.db.exec(
+      'SELECT route_key, platform, conversation_id, thread_id, agent_id, provider, cowork_session_id, last_event_id, created_at, updated_at FROM im_session_routes WHERE route_key = ? LIMIT 1',
+      [routeKey],
+    );
+    if (!result[0]?.values[0]) return null;
+    const row = result[0].values[0];
+    return {
+      routeKey: row[0] as string,
+      platform: row[1] as IMPlatform,
+      conversationId: row[2] as string,
+      threadId: (row[3] as string | null) ?? null,
+      agentId: row[4] as string,
+      provider: row[5] as 'openclaw' | 'yd_cowork',
+      coworkSessionId: row[6] as string,
+      lastEventId: (row[7] as string | null) ?? null,
+      createdAt: row[8] as number,
+      updatedAt: row[9] as number,
+    };
+  }
+
+  findSessionRoute(params: {
+    platform: IMPlatform;
+    conversationId: string;
+    threadId?: string | null;
+    agentId: string;
+  }): IMSessionRoute | null {
+    const normalizedThreadId = params.threadId?.trim() || null;
+    const result = this.db.exec(
+      normalizedThreadId
+        ? 'SELECT route_key, platform, conversation_id, thread_id, agent_id, provider, cowork_session_id, last_event_id, created_at, updated_at FROM im_session_routes WHERE platform = ? AND conversation_id = ? AND thread_id = ? AND agent_id = ? ORDER BY updated_at DESC LIMIT 1'
+        : 'SELECT route_key, platform, conversation_id, thread_id, agent_id, provider, cowork_session_id, last_event_id, created_at, updated_at FROM im_session_routes WHERE platform = ? AND conversation_id = ? AND thread_id IS NULL AND agent_id = ? ORDER BY updated_at DESC LIMIT 1',
+      normalizedThreadId
+        ? [params.platform, params.conversationId, normalizedThreadId, params.agentId]
+        : [params.platform, params.conversationId, params.agentId],
+    );
+    if (!result[0]?.values[0]) return null;
+    const row = result[0].values[0];
+    return {
+      routeKey: row[0] as string,
+      platform: row[1] as IMPlatform,
+      conversationId: row[2] as string,
+      threadId: (row[3] as string | null) ?? null,
+      agentId: row[4] as string,
+      provider: row[5] as 'openclaw' | 'yd_cowork',
+      coworkSessionId: row[6] as string,
+      lastEventId: (row[7] as string | null) ?? null,
+      createdAt: row[8] as number,
+      updatedAt: row[9] as number,
+    };
+  }
+
+  upsertSessionRoute(route: {
+    routeKey: string;
+    platform: IMPlatform;
+    conversationId: string;
+    threadId?: string | null;
+    agentId: string;
+    provider: 'openclaw' | 'yd_cowork';
+    coworkSessionId: string;
+    lastEventId?: string | null;
+  }): IMSessionRoute {
+    const now = Date.now();
+    const threadId = route.threadId?.trim() || null;
+    const lastEventId = route.lastEventId?.trim() || null;
+    const previous = this.getSessionRoute(route.routeKey);
+    this.db.run(
+      `INSERT INTO im_session_routes (
+        route_key,
+        platform,
+        conversation_id,
+        thread_id,
+        agent_id,
+        provider,
+        cowork_session_id,
+        last_event_id,
+        created_at,
+        updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(route_key) DO UPDATE SET
+        platform = excluded.platform,
+        conversation_id = excluded.conversation_id,
+        thread_id = excluded.thread_id,
+        agent_id = excluded.agent_id,
+        provider = excluded.provider,
+        cowork_session_id = excluded.cowork_session_id,
+        last_event_id = excluded.last_event_id,
+        updated_at = excluded.updated_at`,
+      [
+        route.routeKey,
+        route.platform,
+        route.conversationId,
+        threadId,
+        route.agentId,
+        route.provider,
+        route.coworkSessionId,
+        lastEventId,
+        previous?.createdAt ?? now,
+        now,
+      ],
+    );
+    this.saveDb();
+    return {
+      routeKey: route.routeKey,
+      platform: route.platform,
+      conversationId: route.conversationId,
+      threadId,
+      agentId: route.agentId,
+      provider: route.provider,
+      coworkSessionId: route.coworkSessionId,
+      lastEventId,
+      createdAt: previous?.createdAt ?? now,
+      updatedAt: now,
+    };
+  }
+
+  updateSessionRouteLastEvent(routeKey: string, eventId: string | null): void {
+    const now = Date.now();
+    this.db.run(
+      'UPDATE im_session_routes SET last_event_id = ?, updated_at = ? WHERE route_key = ?',
+      [eventId, now, routeKey],
+    );
+    this.saveDb();
+  }
+
+  deleteSessionRoute(routeKey: string): void {
+    this.db.run('DELETE FROM im_session_routes WHERE route_key = ?', [routeKey]);
+    this.saveDb();
+  }
+
+  deleteSessionRoutesByCoworkSessionId(coworkSessionId: string): void {
+    this.db.run('DELETE FROM im_session_routes WHERE cowork_session_id = ?', [coworkSessionId]);
+    this.saveDb();
+  }
+
+  // ==================== Inbound Event / Run Audit Operations ====================
+
+  insertInboundEvent(event: {
+    id: string;
+    platform: IMPlatform;
+    eventId: string;
+    conversationId: string;
+    threadId?: string | null;
+    senderId?: string | null;
+    eventType: 'message' | 'command' | 'system';
+    contentText?: string | null;
+    payloadJson?: string;
+    receivedAt: number;
+  }): { accepted: boolean } {
+    this.db.run(
+      `INSERT OR IGNORE INTO im_inbound_events (
+        id,
+        platform,
+        event_id,
+        conversation_id,
+        thread_id,
+        sender_id,
+        event_type,
+        content_text,
+        payload_json,
+        received_at,
+        dedup_status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        event.id,
+        event.platform,
+        event.eventId,
+        event.conversationId,
+        event.threadId?.trim() || null,
+        event.senderId?.trim() || null,
+        event.eventType,
+        event.contentText ?? null,
+        event.payloadJson ?? '{}',
+        event.receivedAt,
+        'accepted',
+      ],
+    );
+    const accepted = this.db.getRowsModified() > 0;
+    if (accepted) {
+      this.saveDb();
+    }
+    return { accepted };
+  }
+
+  createGatewayRun(params: {
+    runId: string;
+    provider: 'openclaw' | 'yd_cowork';
+    platform: IMPlatform;
+    routeKey: string;
+    inboundEventId?: string | null;
+    coworkSessionId?: string | null;
+    status: GatewayRunStatus | 'cancelled' | 'timeout';
+    metadataJson?: string;
+  }): void {
+    const now = Date.now();
+    this.db.run(
+      `INSERT INTO im_gateway_runs (
+        run_id,
+        provider,
+        platform,
+        route_key,
+        inbound_event_id,
+        cowork_session_id,
+        status,
+        started_at,
+        metadata_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        params.runId,
+        params.provider,
+        params.platform,
+        params.routeKey,
+        params.inboundEventId?.trim() || null,
+        params.coworkSessionId?.trim() || 'unknown',
+        params.status,
+        now,
+        params.metadataJson ?? '{}',
+      ],
+    );
+    this.saveDb();
+  }
+
+  updateGatewayRun(params: {
+    runId: string;
+    status: GatewayRunStatus | 'cancelled' | 'timeout';
+    errorCode?: string | null;
+    errorMessage?: string | null;
+    finishedAt?: number | null;
+    routeKey?: string | null;
+    coworkSessionId?: string | null;
+    metadataJson?: string | null;
+  }): void {
+    const finishedAt = params.finishedAt ?? null;
+    const startedResult = this.db.exec(
+      'SELECT started_at FROM im_gateway_runs WHERE run_id = ? LIMIT 1',
+      [params.runId],
+    );
+    const startedAt = (startedResult[0]?.values?.[0]?.[0] as number | undefined) ?? undefined;
+    const durationMs = finishedAt && startedAt ? Math.max(0, finishedAt - startedAt) : null;
+    this.db.run(
+      `UPDATE im_gateway_runs SET
+        status = ?,
+        error_code = ?,
+        error_message = ?,
+        finished_at = ?,
+        duration_ms = ?,
+        route_key = COALESCE(?, route_key),
+        cowork_session_id = COALESCE(?, cowork_session_id),
+        metadata_json = COALESCE(?, metadata_json)
+      WHERE run_id = ?`,
+      [
+        params.status,
+        params.errorCode?.trim() || null,
+        params.errorMessage?.trim() || null,
+        finishedAt,
+        durationMs,
+        params.routeKey?.trim() || null,
+        params.coworkSessionId?.trim() || null,
+        params.metadataJson?.trim() || null,
+        params.runId,
+      ],
+    );
+    this.saveDb();
+  }
+
+  insertOutboundDelivery(params: {
+    id: string;
+    runId: string;
+    platform: IMPlatform;
+    conversationId: string;
+    threadId?: string | null;
+    payloadJson: string;
+    maxRetries?: number;
+  }): { inserted: boolean } {
+    const now = Date.now();
+    this.db.run(
+      `INSERT OR IGNORE INTO im_outbound_deliveries (
+        id,
+        run_id,
+        platform,
+        conversation_id,
+        thread_id,
+        payload_json,
+        status,
+        retry_count,
+        max_retries,
+        created_at,
+        updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        params.id,
+        params.runId,
+        params.platform,
+        params.conversationId,
+        params.threadId?.trim() || null,
+        params.payloadJson,
+        GatewayDeliveryStatus.Pending,
+        0,
+        params.maxRetries ?? 3,
+        now,
+        now,
+      ],
+    );
+    const inserted = this.db.getRowsModified() > 0;
+    if (inserted) {
+      this.saveDb();
+    }
+    return { inserted };
+  }
+
+  updateOutboundDeliveryState(params: {
+    id: string;
+    status: GatewayDeliveryStatusType;
+    retryCount?: number;
+    nextRetryAt?: number | null;
+    lastError?: string | null;
+    channelMessageId?: string | null;
+  }): void {
+    const now = Date.now();
+    this.db.run(
+      `UPDATE im_outbound_deliveries SET
+        status = ?,
+        retry_count = COALESCE(?, retry_count),
+        next_retry_at = ?,
+        last_error = ?,
+        channel_message_id = ?,
+        updated_at = ?
+      WHERE id = ?`,
+      [
+        params.status,
+        params.retryCount ?? null,
+        params.nextRetryAt ?? null,
+        params.lastError?.trim() || null,
+        params.channelMessageId?.trim() || null,
+        now,
+        params.id,
+      ],
+    );
+    this.saveDb();
+  }
+
+  listRecoverableOutboundDeliveries(options?: {
+    now?: number;
+    staleSendingMs?: number;
+    staleFailedMs?: number;
+    limit?: number;
+  }): IMOutboundDeliveryRecord[] {
+    const now = options?.now ?? Date.now();
+    const staleSendingMs = options?.staleSendingMs ?? 30_000;
+    const staleFailedMs = options?.staleFailedMs ?? 10_000;
+    const limit = options?.limit ?? 20;
+    const result = this.db.exec(
+      `SELECT
+        id,
+        run_id,
+        platform,
+        conversation_id,
+        thread_id,
+        payload_json,
+        status,
+        retry_count,
+        max_retries,
+        next_retry_at,
+        last_error,
+        created_at,
+        updated_at
+      FROM im_outbound_deliveries
+      WHERE
+        status = ?
+        OR (status = ? AND (next_retry_at IS NULL OR next_retry_at <= ?) AND updated_at <= ?)
+        OR (status = ? AND updated_at <= ?)
+      ORDER BY created_at ASC
+      LIMIT ?`,
+      [
+        GatewayDeliveryStatus.Pending,
+        GatewayDeliveryStatus.Failed,
+        now,
+        now - staleFailedMs,
+        GatewayDeliveryStatus.Sending,
+        now - staleSendingMs,
+        limit,
+      ],
+    );
+    if (!result[0]?.values?.length) {
+      return [];
+    }
+    return result[0].values.map((row) => ({
+      id: row[0] as string,
+      runId: row[1] as string,
+      platform: row[2] as IMPlatform,
+      conversationId: row[3] as string,
+      threadId: (row[4] as string | null) ?? null,
+      payloadJson: row[5] as string,
+      status: row[6] as GatewayDeliveryStatusType,
+      retryCount: Number(row[7] as number),
+      maxRetries: Number(row[8] as number),
+      nextRetryAt: (row[9] as number | null) ?? null,
+      lastError: (row[10] as string | null) ?? null,
+      createdAt: row[11] as number,
+      updatedAt: row[12] as number,
+    }));
+  }
+
+  resetSendingOutboundDeliveries(options?: {
+    nextRetryAt?: number;
+    lastError?: string;
+  }): number {
+    const now = options?.nextRetryAt ?? Date.now();
+    const lastError = options?.lastError?.trim() || 'Recovered after process restart';
+    this.db.run(
+      `UPDATE im_outbound_deliveries SET
+        status = ?,
+        next_retry_at = ?,
+        last_error = ?,
+        updated_at = ?
+      WHERE status = ?`,
+      [
+        GatewayDeliveryStatus.Failed,
+        now,
+        lastError,
+        now,
+        GatewayDeliveryStatus.Sending,
+      ],
+    );
+    const affected = this.db.getRowsModified();
+    if (affected > 0) {
+      this.saveDb();
+    }
+    return affected;
   }
 }
