@@ -53,8 +53,9 @@ export const OpenClawProviderId = {
   OpenAI: 'openai',
   DeepSeek: 'deepseek',
   Qwen: 'qwen',
-  Zhipu: 'zhipu',
+  Zai: 'zai', // OpenClaw official provider ID for Zhipu/GLM
   Volcengine: 'volcengine',
+  VolcenginePlan: 'volcengine-plan', // OpenClaw coding plan provider for Volcengine
   Minimax: 'minimax',
   Youdaozhiyun: 'youdaozhiyun',
   StepFun: 'stepfun',

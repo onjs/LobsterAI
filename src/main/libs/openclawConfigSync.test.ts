@@ -176,12 +176,17 @@ const PROVIDER_REGISTRY: Record<string, ProviderDescriptor> = {
     normalizeBaseUrl: stripChatCompletionsSuffix,
   },
   [ProviderName.Zhipu]: {
-    providerId: OpenClawProviderId.Zhipu,
+    providerId: OpenClawProviderId.Zai,
     resolveApi: ({ apiType }) => mapApiTypeToOpenClawApi(apiType),
     normalizeBaseUrl: stripChatCompletionsSuffix,
   },
   [ProviderName.Volcengine]: {
     providerId: OpenClawProviderId.Volcengine,
+    resolveApi: ({ apiType }) => mapApiTypeToOpenClawApi(apiType),
+    normalizeBaseUrl: stripChatCompletionsSuffix,
+  },
+  [`${ProviderName.Volcengine}:codingPlan`]: {
+    providerId: OpenClawProviderId.VolcenginePlan,
     resolveApi: ({ apiType }) => mapApiTypeToOpenClawApi(apiType),
     normalizeBaseUrl: stripChatCompletionsSuffix,
   },
@@ -312,6 +317,16 @@ describe('resolveDescriptor', () => {
   test('codingPlan flag is ignored for providers without codingPlan entry', () => {
     const d = resolveDescriptor(ProviderName.OpenAI, true);
     expect(d.providerId).toBe(OpenClawProviderId.OpenAI);
+  });
+
+  test('volcengine with codingPlan uses volcengine-plan providerId', () => {
+    const d = resolveDescriptor(ProviderName.Volcengine, true);
+    expect(d.providerId).toBe(OpenClawProviderId.VolcenginePlan);
+  });
+
+  test('volcengine without codingPlan uses volcengine providerId', () => {
+    const d = resolveDescriptor(ProviderName.Volcengine, false);
+    expect(d.providerId).toBe(OpenClawProviderId.Volcengine);
   });
 });
 

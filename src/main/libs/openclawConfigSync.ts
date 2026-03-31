@@ -460,13 +460,19 @@ const PROVIDER_REGISTRY: Record<string, ProviderDescriptor> = {
   },
 
   [ProviderName.Zhipu]: {
-    providerId: OpenClawProviderId.Zhipu,
+    providerId: OpenClawProviderId.Zai,
     resolveApi: ({ apiType }) => mapApiTypeToOpenClawApi(apiType),
     normalizeBaseUrl: stripChatCompletionsSuffix,
   },
 
   [ProviderName.Volcengine]: {
     providerId: OpenClawProviderId.Volcengine,
+    resolveApi: ({ apiType }) => mapApiTypeToOpenClawApi(apiType),
+    normalizeBaseUrl: stripChatCompletionsSuffix,
+  },
+
+  [`${ProviderName.Volcengine}:codingPlan`]: {
+    providerId: OpenClawProviderId.VolcenginePlan,
     resolveApi: ({ apiType }) => mapApiTypeToOpenClawApi(apiType),
     normalizeBaseUrl: stripChatCompletionsSuffix,
   },
@@ -759,10 +765,20 @@ export class OpenClawConfigSync {
       }
     }
 
-    allProvidersMap[providerSelection.providerId] = providerSelection.providerConfig;
+    if (!allProvidersMap[providerSelection.providerId]) {
+      allProvidersMap[providerSelection.providerId] = providerSelection.providerConfig;
+    } else {
+      const existing = allProvidersMap[providerSelection.providerId];
+      const alreadyHas = existing.models.some(
+        (em) => em.id === providerSelection.providerConfig.models[0]?.id,
+      );
+      if (!alreadyHas && providerSelection.providerConfig.models.length > 0) {
+        existing.models.push(...providerSelection.providerConfig.models);
+      }
+    }
 
     const proxyPort = getOpenClawTokenProxyPort();
-    if (proxyPort && !allProvidersMap['lobsterai-server']) {
+    if (proxyPort && !allProvidersMap[ProviderName.LobsteraiServer]) {
       const serverModels = getAllServerModelMetadata();
       const firstServerModelId = serverModels[0]?.modelId || modelId;
       const firstServerSel = buildProviderSelection({
@@ -770,7 +786,7 @@ export class OpenClawConfigSync {
         baseURL: `http://127.0.0.1:${proxyPort}/v1`,
         modelId: firstServerModelId,
         apiType: 'openai',
-        providerName: 'lobsterai-server',
+        providerName: ProviderName.LobsteraiServer,
         supportsImage: serverModels[0]?.supportsImage,
       });
       const lobsteraiProviderConfig = { ...firstServerSel.providerConfig, models: [] as typeof firstServerSel.providerConfig.models };
@@ -778,14 +794,14 @@ export class OpenClawConfigSync {
         lobsteraiProviderConfig.models.push({
           id: sm.modelId,
           name: sm.modelId,
-          api: 'openai-completions',
+          api: OpenClawApiConst.OpenAICompletions as OpenClawProviderApi,
           input: sm.supportsImage ? ['text', 'image'] : ['text'],
         });
       }
       if (lobsteraiProviderConfig.models.length === 0) {
         lobsteraiProviderConfig.models.push(firstServerSel.providerConfig.models[0]);
       }
-      allProvidersMap['lobsterai-server'] = lobsteraiProviderConfig;
+      allProvidersMap[OpenClawProviderId.LobsteraiServer] = lobsteraiProviderConfig;
     }
 
     const sandboxMode = mapExecutionModeToSandboxMode(coworkConfig.executionMode || 'auto');
