@@ -668,36 +668,11 @@ export class CoworkStore {
   private ensureDefaultConfigEntries(): void {
     const now = Date.now();
     let changed = false;
-    changed = this.purgeLegacyVectorMemoryConfigEntries() || changed;
     changed = this.insertConfigIfMissing('agentEngine', DEFAULT_COWORK_AGENT_ENGINE, now) || changed;
     changed = this.insertConfigIfMissing('scheduledTaskBackend', DEFAULT_COWORK_SCHEDULED_TASK_BACKEND, now) || changed;
     if (changed) {
       this.saveDb();
     }
-  }
-
-  private purgeLegacyVectorMemoryConfigEntries(): boolean {
-    interface CountRow {
-      count: number | string;
-    }
-    const countRow = this.getOne<CountRow>(`
-      SELECT COUNT(*) AS count
-      FROM cowork_config
-      WHERE key LIKE 'mem0%'
-        OR key LIKE 'vectorMemory%'
-        OR key = 'vectorFallbackToSqljs'
-    `);
-    const matched = Number(countRow?.count || 0);
-    if (!Number.isFinite(matched) || matched <= 0) {
-      return false;
-    }
-    this.db.run(`
-      DELETE FROM cowork_config
-      WHERE key LIKE 'mem0%'
-        OR key LIKE 'vectorMemory%'
-        OR key = 'vectorFallbackToSqljs'
-    `);
-    return true;
   }
 
   private insertConfigIfMissing(
