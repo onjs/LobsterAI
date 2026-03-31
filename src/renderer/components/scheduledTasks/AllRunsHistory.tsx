@@ -8,11 +8,31 @@ import { ClockIcon } from '@heroicons/react/24/outline';
 import RunSessionModal from './RunSessionModal';
 import { formatDateTime, formatDuration } from './utils';
 
-const statusConfig: Record<string, { label: string; color: string }> = {
-  success: { label: 'scheduledTasksStatusSuccess', color: 'text-green-500' },
-  error: { label: 'scheduledTasksStatusError', color: 'text-red-500' },
-  skipped: { label: 'scheduledTasksStatusSkipped', color: 'text-yellow-500' },
-  running: { label: 'scheduledTasksStatusRunning', color: 'text-blue-500' },
+const statusConfig: Record<string, { label: string; textColor: string; dotColor: string; badgeBg: string }> = {
+  success: {
+    label: 'scheduledTasksStatusSuccess',
+    textColor: 'text-green-600 dark:text-green-400',
+    dotColor: 'bg-green-500',
+    badgeBg: 'bg-green-500/10',
+  },
+  error: {
+    label: 'scheduledTasksStatusError',
+    textColor: 'text-red-600 dark:text-red-400',
+    dotColor: 'bg-red-500',
+    badgeBg: 'bg-red-500/10',
+  },
+  skipped: {
+    label: 'scheduledTasksStatusSkipped',
+    textColor: 'text-yellow-600 dark:text-yellow-400',
+    dotColor: 'bg-yellow-500',
+    badgeBg: 'bg-yellow-500/10',
+  },
+  running: {
+    label: 'scheduledTasksStatusRunning',
+    textColor: 'text-blue-600 dark:text-blue-400',
+    dotColor: 'bg-blue-500',
+    badgeBg: 'bg-blue-500/10',
+  },
 };
 
 const AllRunsHistory: React.FC = () => {
@@ -45,60 +65,62 @@ const AllRunsHistory: React.FC = () => {
   }
 
   return (
-    <div>
-      {/* Column Headers */}
-      <div className="grid grid-cols-[1fr_1fr_80px] items-center gap-3 px-4 py-2 border-b dark:border-claude-darkBorder/50 border-claude-border/50">
-        <div className="text-xs font-medium dark:text-claude-darkTextSecondary text-claude-textSecondary">
-          {i18nService.t('scheduledTasksHistoryColTitle')}
-        </div>
-        <div className="text-xs font-medium dark:text-claude-darkTextSecondary text-claude-textSecondary">
-          {i18nService.t('scheduledTasksHistoryColTime')}
-        </div>
-        <div className="text-xs font-medium dark:text-claude-darkTextSecondary text-claude-textSecondary">
-          {i18nService.t('scheduledTasksHistoryColStatus')}
-        </div>
-      </div>
-
-      {/* Run rows */}
+    <div className="relative pl-8">
+      <span className="absolute left-[11px] top-0 bottom-0 w-px dark:bg-claude-darkBorder bg-claude-border/80" />
+      <div className="space-y-3">
       {allRuns.map((run) => {
-        const cfg = statusConfig[run.status] || { label: '', color: '' };
-        const hasSession = run.sessionId || run.sessionKey;
+        const cfg = statusConfig[run.status] || {
+          label: '',
+          textColor: 'dark:text-claude-darkTextSecondary text-claude-textSecondary',
+          dotColor: 'bg-claude-border',
+          badgeBg: 'bg-claude-surfaceHover dark:bg-claude-darkSurfaceHover',
+        };
+        const hasSession = Boolean(run.sessionId || run.sessionKey);
+
         return (
-          <div
-            key={run.id}
-            className={`grid grid-cols-[1fr_1fr_80px] items-center gap-3 px-4 py-3 border-b dark:border-claude-darkBorder/50 border-claude-border/50 transition-colors ${
-              hasSession
-                ? 'hover:bg-claude-surfaceHover/50 dark:hover:bg-claude-darkSurfaceHover/50 cursor-pointer'
-                : ''
-            }`}
-            onClick={() => handleViewSession(run)}
-          >
-            {/* Task title */}
-            <div className="text-sm dark:text-claude-darkText text-claude-text truncate">
-              {run.taskName}
-              {run.status === 'running' && (
-                <svg className="inline-block w-3 h-3 ml-1.5 animate-spin text-blue-500" viewBox="0 0 24 24" fill="none">
-                  <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" className="opacity-25" />
-                  <path d="M4 12a8 8 0 018-8" stroke="currentColor" strokeWidth="4" strokeLinecap="round" className="opacity-75" />
-                </svg>
-              )}
-            </div>
+          <div key={run.id} className="relative">
+            <span className={`absolute -left-[24px] top-4 h-2.5 w-2.5 rounded-full ${cfg.dotColor} ${run.status === 'running' ? 'animate-pulse' : ''}`} />
 
-            {/* Run time + duration */}
-            <div className="text-sm dark:text-claude-darkTextSecondary text-claude-textSecondary truncate">
-              {formatDateTime(new Date(run.startedAt))}
-              {run.durationMs !== null && (
-                <span className="ml-1.5 text-xs opacity-70">({formatDuration(run.durationMs)})</span>
-              )}
-            </div>
+            <div className="rounded-xl border dark:border-claude-darkBorder border-claude-border dark:bg-claude-darkSurface/50 bg-claude-surface/50 p-3">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-sm font-medium dark:text-claude-darkText text-claude-text truncate">
+                    {run.taskName}
+                  </div>
+                  <div className="mt-1 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
+                    {formatDateTime(new Date(run.startedAt))}
+                    {run.durationMs !== null && (
+                      <span className="ml-1.5">({formatDuration(run.durationMs)})</span>
+                    )}
+                  </div>
+                </div>
+                <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium ${cfg.badgeBg} ${cfg.textColor}`}>
+                  {i18nService.t(cfg.label)}
+                </span>
+              </div>
 
-            {/* Status */}
-            <div className={`text-sm font-medium ${cfg.color}`}>
-              {i18nService.t(cfg.label)}
+              {run.status === 'error' && run.error && (
+                <div className="mt-2 text-xs text-red-600 dark:text-red-400 line-clamp-2" title={run.error}>
+                  {run.error}
+                </div>
+              )}
+
+              {hasSession && (
+                <div className="mt-2">
+                  <button
+                    type="button"
+                    onClick={() => handleViewSession(run)}
+                    className="text-xs text-claude-accent hover:text-claude-accentHover transition-colors"
+                  >
+                    {i18nService.t('scheduledTasksViewSession')}
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         );
       })}
+      </div>
 
       {/* Load more */}
       {allRuns.length >= 50 && allRuns.length % 50 === 0 && (
