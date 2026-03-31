@@ -9,6 +9,7 @@ import type { CoworkMessage, CoworkSession, CoworkSessionStatus, CoworkExecution
 import {
   OpenClawEngineManager,
   type OpenClawGatewayConnectionInfo,
+  type OpenClawEngineStatus,
 } from '../openclawEngineManager';
 import type {
   CoworkContinueOptions,
@@ -575,6 +576,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
   private lastStoreUpdateTime: Map<string, number> = new Map();
   private pendingStoreUpdateTimer: Map<string, ReturnType<typeof setTimeout>> = new Map();
   private static readonly STORE_UPDATE_THROTTLE_MS = 250;
+  private readonly ensureGatewayRunning?: () => Promise<OpenClawEngineStatus>;
 
   /**
    * Server-side agent timeout in seconds (mirrors agents.defaults.timeoutSeconds in openclaw config).
@@ -584,10 +586,15 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
   agentTimeoutSeconds = OPENCLAW_AGENT_TIMEOUT_SECONDS;
   private static readonly CLIENT_TIMEOUT_GRACE_MS = 30_000;
 
-  constructor(store: CoworkStore, engineManager: OpenClawEngineManager) {
+  constructor(
+    store: CoworkStore,
+    engineManager: OpenClawEngineManager,
+    ensureGatewayRunning?: () => Promise<OpenClawEngineStatus>,
+  ) {
     super();
     this.store = store;
     this.engineManager = engineManager;
+    this.ensureGatewayRunning = ensureGatewayRunning;
   }
 
   setChannelSessionSync(sync: OpenClawChannelSessionSync): void {
@@ -1331,7 +1338,9 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
 
   private async _ensureGatewayClientReadyImpl(): Promise<void> {
     console.log('[ChannelSync] ensureGatewayClientReady: starting engine gateway...');
-    const engineStatus = await this.engineManager.startGateway();
+    const engineStatus = this.ensureGatewayRunning
+      ? await this.ensureGatewayRunning()
+      : await this.engineManager.startGateway();
     console.log('[ChannelSync] ensureGatewayClientReady: engine phase=', engineStatus.phase, 'message=', engineStatus.message);
     if (engineStatus.phase !== 'running') {
       const message = engineStatus.message || 'OpenClaw engine is not running.';

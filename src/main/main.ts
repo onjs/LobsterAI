@@ -1144,7 +1144,11 @@ const getCoworkEngineRouter = () => {
       claudeRuntimeAdapter = new ClaudeRuntimeAdapter(getCoworkRunner());
     }
     if (!openClawRuntimeAdapter) {
-      openClawRuntimeAdapter = new OpenClawRuntimeAdapter(getCoworkStore(), getOpenClawEngineManager());
+      openClawRuntimeAdapter = new OpenClawRuntimeAdapter(
+        getCoworkStore(),
+        getOpenClawEngineManager(),
+        ensureOpenClawRunningForCowork,
+      );
       // Wire up channel session sync for IM conversations via OpenClaw
       try {
         const imManager = getIMGatewayManager();
