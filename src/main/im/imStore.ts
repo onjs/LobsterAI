@@ -40,8 +40,10 @@ import {
 } from './imGatewayMigrations';
 import {
   GatewayDeliveryStatus,
+  GatewayRoute,
+  GatewayRunStatus,
   type GatewayDeliveryStatus as GatewayDeliveryStatusType,
-  type GatewayRunStatus,
+  type GatewayRunStatus as GatewayRunStatusType,
 } from './gateway/constants';
 
 interface StoredConversationReplyRoute {
@@ -64,6 +66,16 @@ export interface IMOutboundDeliveryRecord {
   lastError: string | null;
   createdAt: number;
   updatedAt: number;
+}
+
+export interface IMRecoverableGatewayRunRecord {
+  runId: string;
+  platform: IMPlatform;
+  conversationId: string | null;
+  routeKey: string;
+  coworkSessionId: string;
+  status: GatewayRunStatusType;
+  startedAt: number;
 }
 
 export class IMStore {
@@ -932,6 +944,70 @@ export class IMStore {
     this.saveDb();
   }
 
+  repairSessionRoutesFromLegacyMappings(provider: 'openclaw' | 'yd_cowork'): number {
+    const mappings = this.listSessionMappings();
+    if (!mappings.length) {
+      return 0;
+    }
+    const now = Date.now();
+    let repairedCount = 0;
+    for (const mapping of mappings) {
+      const agentId = mapping.agentId?.trim() || GatewayRoute.DefaultAgentId;
+      const routeKey = [
+        mapping.platform,
+        mapping.imConversationId,
+        GatewayRoute.NoThread,
+        agentId,
+      ].join(GatewayRoute.KeySeparator);
+      const previous = this.getSessionRoute(routeKey);
+      const shouldRepair = !previous
+        || previous.coworkSessionId !== mapping.coworkSessionId
+        || previous.provider !== provider;
+      if (!shouldRepair) {
+        continue;
+      }
+      this.db.run(
+        `INSERT INTO im_session_routes (
+          route_key,
+          platform,
+          conversation_id,
+          thread_id,
+          agent_id,
+          provider,
+          cowork_session_id,
+          last_event_id,
+          created_at,
+          updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(route_key) DO UPDATE SET
+          platform = excluded.platform,
+          conversation_id = excluded.conversation_id,
+          thread_id = excluded.thread_id,
+          agent_id = excluded.agent_id,
+          provider = excluded.provider,
+          cowork_session_id = excluded.cowork_session_id,
+          updated_at = excluded.updated_at`,
+        [
+          routeKey,
+          mapping.platform,
+          mapping.imConversationId,
+          null,
+          agentId,
+          provider,
+          mapping.coworkSessionId,
+          previous?.lastEventId ?? null,
+          previous?.createdAt ?? mapping.createdAt ?? now,
+          now,
+        ],
+      );
+      repairedCount += 1;
+    }
+    if (repairedCount > 0) {
+      this.saveDb();
+    }
+    return repairedCount;
+  }
+
   // ==================== Inbound Event / Run Audit Operations ====================
 
   insertInboundEvent(event: {
@@ -988,7 +1064,7 @@ export class IMStore {
     routeKey: string;
     inboundEventId?: string | null;
     coworkSessionId?: string | null;
-    status: GatewayRunStatus | 'cancelled' | 'timeout';
+    status: GatewayRunStatusType | 'timeout';
     metadataJson?: string;
   }): void {
     const now = Date.now();
@@ -1021,7 +1097,7 @@ export class IMStore {
 
   updateGatewayRun(params: {
     runId: string;
-    status: GatewayRunStatus | 'cancelled' | 'timeout';
+    status: GatewayRunStatusType | 'timeout';
     errorCode?: string | null;
     errorMessage?: string | null;
     finishedAt?: number | null;
@@ -1060,6 +1136,50 @@ export class IMStore {
       ],
     );
     this.saveDb();
+  }
+
+  listRecoverableGatewayRuns(options?: {
+    limit?: number;
+  }): IMRecoverableGatewayRunRecord[] {
+    const limit = options?.limit ?? 50;
+    const result = this.db.exec(
+      `SELECT
+        runs.run_id,
+        runs.platform,
+        COALESCE(routes.conversation_id, mappings.im_conversation_id, NULL) AS conversation_id,
+        runs.route_key,
+        runs.cowork_session_id,
+        runs.status,
+        runs.started_at
+      FROM im_gateway_runs AS runs
+      LEFT JOIN im_session_routes AS routes
+        ON routes.route_key = runs.route_key
+      LEFT JOIN im_session_mappings AS mappings
+        ON mappings.cowork_session_id = runs.cowork_session_id
+        AND mappings.platform = runs.platform
+      WHERE
+        runs.finished_at IS NULL
+        AND runs.status IN (?, ?)
+      ORDER BY runs.started_at ASC
+      LIMIT ?`,
+      [
+        GatewayRunStatus.Queued,
+        GatewayRunStatus.Running,
+        limit,
+      ],
+    );
+    if (!result[0]?.values?.length) {
+      return [];
+    }
+    return result[0].values.map((row) => ({
+      runId: row[0] as string,
+      platform: row[1] as IMPlatform,
+      conversationId: (row[2] as string | null) ?? null,
+      routeKey: row[3] as string,
+      coworkSessionId: row[4] as string,
+      status: row[5] as GatewayRunStatusType,
+      startedAt: row[6] as number,
+    }));
   }
 
   insertOutboundDelivery(params: {

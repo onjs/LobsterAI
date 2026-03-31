@@ -6,6 +6,19 @@ import {
 } from './imGatewayProviderRouter';
 
 describe('imGatewayProviderRouter', () => {
+  test('prefers explicit IM gateway provider env over env engine and configured engine', () => {
+    const resolved = resolveIMGatewayProvider({
+      envProvider: IMGatewayProviderId.YdCowork,
+      envEngine: IMGatewayProviderId.OpenClaw,
+      configuredEngine: IMGatewayProviderId.OpenClaw,
+    });
+
+    expect(resolved).toEqual({
+      providerId: IMGatewayProviderId.YdCowork,
+      source: IMGatewayProviderSource.Env,
+    });
+  });
+
   test('prefers env engine over configured engine', () => {
     const resolved = resolveIMGatewayProvider({
       envEngine: IMGatewayProviderId.OpenClaw,
@@ -38,6 +51,42 @@ describe('imGatewayProviderRouter', () => {
     expect(resolved).toEqual({
       providerId: IMGatewayProviderId.YdCowork,
       source: IMGatewayProviderSource.Env,
+    });
+  });
+
+  test('maps yd_local alias from explicit provider env', () => {
+    const resolved = resolveIMGatewayProvider({
+      envProvider: 'yd_local',
+    });
+
+    expect(resolved).toEqual({
+      providerId: IMGatewayProviderId.YdCowork,
+      source: IMGatewayProviderSource.Env,
+    });
+  });
+
+  test('treats explicit provider auto as deferred and keeps env engine priority', () => {
+    const resolved = resolveIMGatewayProvider({
+      envProvider: 'auto',
+      envEngine: IMGatewayProviderId.OpenClaw,
+      configuredEngine: IMGatewayProviderId.YdCowork,
+    });
+
+    expect(resolved).toEqual({
+      providerId: IMGatewayProviderId.OpenClaw,
+      source: IMGatewayProviderSource.Env,
+    });
+  });
+
+  test('treats env engine auto as deferred and falls back to configured engine', () => {
+    const resolved = resolveIMGatewayProvider({
+      envEngine: 'auto',
+      configuredEngine: IMGatewayProviderId.OpenClaw,
+    });
+
+    expect(resolved).toEqual({
+      providerId: IMGatewayProviderId.OpenClaw,
+      source: IMGatewayProviderSource.Config,
     });
   });
 

@@ -64,6 +64,7 @@ describe('imGatewayMigrations', () => {
 
     expect(resolved.phase).toBe(ImGatewayMigrationPhase.Phase1);
     expect(db.runs.some((sql) => sql.includes('CREATE TABLE IF NOT EXISTS im_gateway_runtime'))).toBe(true);
+    expect(db.runs.some((sql) => sql.includes('CREATE UNIQUE INDEX IF NOT EXISTS idx_im_inbound_events_dedup'))).toBe(true);
     expect(db.runs.some((sql) => sql.includes('CREATE TABLE IF NOT EXISTS im_session_routes'))).toBe(false);
     expect(saveDb).toHaveBeenCalledOnce();
   });
@@ -80,6 +81,9 @@ describe('imGatewayMigrations', () => {
 
     expect(resolved.phase).toBe(ImGatewayMigrationPhase.Phase2);
     expect(db.runs.some((sql) => sql.includes('CREATE TABLE IF NOT EXISTS im_session_routes'))).toBe(true);
+    expect(db.runs.some((sql) => sql.includes('CREATE INDEX IF NOT EXISTS idx_im_session_routes_lookup'))).toBe(true);
+    expect(db.runs.some((sql) => sql.includes('CREATE INDEX IF NOT EXISTS idx_im_gateway_runs_status_started'))).toBe(true);
+    expect(db.runs.some((sql) => sql.includes('CREATE INDEX IF NOT EXISTS idx_im_gateway_runs_route_started'))).toBe(true);
     expect(db.runs.some((sql) => sql.includes('INSERT OR IGNORE INTO im_session_routes'))).toBe(true);
     expect(db.runs.some((sql) => sql.includes('CREATE TABLE IF NOT EXISTS im_outbound_deliveries'))).toBe(false);
     expect(saveDb).toHaveBeenCalledOnce();
@@ -97,6 +101,7 @@ describe('imGatewayMigrations', () => {
 
     expect(resolved.phase).toBe(ImGatewayMigrationPhase.Phase3);
     expect(db.runs.some((sql) => sql.includes('CREATE TABLE IF NOT EXISTS im_outbound_deliveries'))).toBe(true);
+    expect(db.runs.some((sql) => sql.includes('CREATE INDEX IF NOT EXISTS idx_im_outbound_deliveries_status_retry'))).toBe(true);
     expect(db.runs.some((sql) => sql.includes('CREATE TABLE IF NOT EXISTS im_channel_registry_cache'))).toBe(true);
     expect(saveDb).toHaveBeenCalledOnce();
   });

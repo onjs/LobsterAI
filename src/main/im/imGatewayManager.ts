@@ -67,6 +67,8 @@ const INBOUND_ACTIVITY_WARN_AFTER_MS = 2 * 60 * 1000;
 const OUTBOUND_RECOVERY_INTERVAL_MS = 15_000;
 const OUTBOUND_RECOVERY_BATCH_SIZE = 20;
 const OUTBOUND_RECOVERY_STALE_FAILED_MS = 10_000;
+const RUN_RECOVERY_BATCH_SIZE = 50;
+const RUN_RECOVERY_ERROR_MESSAGE = 'Run interrupted by process restart';
 
 type GatewayClientLike = {
   request: <T = Record<string, unknown>>(
@@ -197,8 +199,15 @@ export class IMGatewayManager extends EventEmitter {
     provider: IManagedGatewayProvider;
     source: IMGatewayProviderSource;
   } {
+    const envProvider = process.env[IMGatewayProviderEnvKey.GatewayProvider]
+      ?? process.env[IMGatewayProviderEnvKey.GatewayProviderPrefixed]
+      ?? null;
+    const envEngine = process.env[IMGatewayProviderEnvKey.CoworkAgentEngine]
+      ?? process.env[IMGatewayProviderEnvKey.CoworkAgentEnginePrefixed]
+      ?? null;
     const selection = resolveIMGatewayProvider({
-      envEngine: process.env[IMGatewayProviderEnvKey.CoworkAgentEngine],
+      envProvider,
+      envEngine,
       configuredEngine: this.resolveConfiguredAgentEngine(),
     });
     return {
@@ -600,11 +609,68 @@ export class IMGatewayManager extends EventEmitter {
     }
   }
 
-  private startOutboundRecoveryLoop(): void {
+  private recoverInterruptedGatewayRuns(): number {
+    const runs = this.imStore.listRecoverableGatewayRuns({
+      limit: RUN_RECOVERY_BATCH_SIZE,
+    });
+    if (!runs.length) {
+      return 0;
+    }
+    const finishedAt = Date.now();
+    for (const run of runs) {
+      this.imStore.updateGatewayRun({
+        runId: run.runId,
+        status: GatewayRunStatus.Failed,
+        errorMessage: RUN_RECOVERY_ERROR_MESSAGE,
+        finishedAt,
+        routeKey: run.routeKey,
+        coworkSessionId: run.coworkSessionId,
+      });
+      if (run.conversationId) {
+        this.emit('gatewayRunState', {
+          runId: run.runId,
+          status: GatewayRunStatus.Failed,
+          platform: run.platform,
+          conversationId: run.conversationId,
+          errorMessage: RUN_RECOVERY_ERROR_MESSAGE,
+          updatedAt: finishedAt,
+        });
+      }
+      console.warn(
+        `[IMGatewayManager] recovered interrupted run as failed (provider=${this.gatewayProvider.id} platform=${run.platform} routeKey=${run.routeKey} runId=${run.runId} sessionId=${run.coworkSessionId})`,
+      );
+    }
+    return runs.length;
+  }
+
+  private repairSessionRoutesFromLegacyMappings(): number {
+    const repairedCount = this.imStore.repairSessionRoutesFromLegacyMappings(this.gatewayProvider.id);
+    if (repairedCount > 0) {
+      console.log(
+        `[IMGatewayManager] repaired ${repairedCount} session routes from legacy mappings (provider=${this.gatewayProvider.id})`,
+      );
+    }
+    return repairedCount;
+  }
+
+  private async runStartupRecoveryFlow(): Promise<void> {
+    const recoveredRuns = this.recoverInterruptedGatewayRuns();
+    if (recoveredRuns > 0) {
+      console.warn(
+        `[IMGatewayManager] marked ${recoveredRuns} interrupted runs as failed during startup recovery`,
+      );
+    }
+
     const resetCount = this.imStore.resetSendingOutboundDeliveries();
     if (resetCount > 0) {
-      console.warn(`[IMGatewayManager] reset ${resetCount} stuck outbound deliveries from sending to failed`);
+      console.warn('[IMGatewayManager] reset stuck outbound deliveries from sending to failed before recovery');
     }
+
+    await this.recoverPendingOutboundDeliveries();
+    this.repairSessionRoutesFromLegacyMappings();
+  }
+
+  private startOutboundRecoveryLoop(): void {
     if (this.outboundRecoveryTimer) {
       clearInterval(this.outboundRecoveryTimer);
     }
@@ -613,8 +679,8 @@ export class IMGatewayManager extends EventEmitter {
         console.error('[IMGatewayManager] outbound delivery recovery loop failed:', error);
       });
     }, OUTBOUND_RECOVERY_INTERVAL_MS);
-    void this.recoverPendingOutboundDeliveries().catch((error) => {
-      console.error('[IMGatewayManager] initial outbound delivery recovery failed:', error);
+    void this.runStartupRecoveryFlow().catch((error) => {
+      console.error('[IMGatewayManager] startup recovery flow failed:', error);
     });
   }
 
