@@ -585,6 +585,12 @@ interface FeishuOpenClawConfig {
   appId: string;
   appSecret: string;
   domain: 'feishu' | 'lark' | string;
+  connectionMode?: 'websocket' | 'webhook';
+  webhookPath?: string;
+  webhookPort?: number;
+  webhookHost?: string;
+  verificationToken?: string;
+  encryptKey?: string;
   dmPolicy: 'pairing' | 'allowlist' | 'open' | 'disabled';
   allowFrom: string[];
   groupPolicy: 'allowlist' | 'open' | 'disabled';

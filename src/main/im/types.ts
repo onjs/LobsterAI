@@ -42,6 +42,12 @@ export interface FeishuOpenClawConfig {
   appId: string;
   appSecret: string;
   domain: 'feishu' | 'lark' | string;
+  connectionMode?: 'websocket' | 'webhook';
+  webhookPath?: string;
+  webhookPort?: number;
+  webhookHost?: string;
+  verificationToken?: string;
+  encryptKey?: string;
   dmPolicy: 'pairing' | 'allowlist' | 'open' | 'disabled';
   allowFrom: string[];
   groupPolicy: 'allowlist' | 'open' | 'disabled';
@@ -483,6 +489,12 @@ export const DEFAULT_FEISHU_OPENCLAW_CONFIG: FeishuOpenClawConfig = {
   appId: '',
   appSecret: '',
   domain: 'feishu',
+  connectionMode: 'websocket',
+  webhookPath: '/feishu/event',
+  webhookPort: 3110,
+  webhookHost: '127.0.0.1',
+  verificationToken: '',
+  encryptKey: '',
   dmPolicy: 'open',
   allowFrom: [],
   groupPolicy: 'allowlist',

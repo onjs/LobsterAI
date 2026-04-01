@@ -9,6 +9,7 @@ import * as path from 'path';
 import { t } from '../i18n';
 import { NimGateway } from './nimGateway';
 import { XiaomifengGateway } from './xiaomifengGateway';
+import { YdFeishuGateway } from './ydFeishuGateway';
 import { IMChatHandler } from './imChatHandler';
 import { IMCoworkHandler } from './imCoworkHandler';
 import { IMStore, type IMOutboundDeliveryRecord } from './imStore';
@@ -51,6 +52,7 @@ import {
   resolveIMGatewayProvider,
 } from './imGatewayProviderRouter';
 import { InboundBus, OutboundBus } from './gateway';
+import { WebhookHub } from './gateway/webhookHub';
 import type {
   GatewayInboundEnvelope,
   GatewayInboundResult,
@@ -126,6 +128,7 @@ export interface IMGatewayManagerOptions {
 export class IMGatewayManager extends EventEmitter {
   private nimGateway: NimGateway;
   private xiaomifengGateway: XiaomifengGateway;
+  private feishuGateway: YdFeishuGateway;
   private imStore: IMStore;
   private chatHandler: IMChatHandler | null = null;
   private coworkHandler: IMCoworkHandler | null = null;
@@ -157,6 +160,7 @@ export class IMGatewayManager extends EventEmitter {
   private outboundBus = new OutboundBus();
   private outboundRecoveryTimer: NodeJS.Timeout | null = null;
   private outboundRecoveryRunning = false;
+  private webhookHub = new WebhookHub();
 
   // DingTalk direct HTTP API token cache
   private dingTalkAccessToken: string | null = null;
@@ -168,6 +172,7 @@ export class IMGatewayManager extends EventEmitter {
     this.imStore = new IMStore(db, saveDb);
     this.nimGateway = new NimGateway();
     this.xiaomifengGateway = new XiaomifengGateway();
+    this.feishuGateway = new YdFeishuGateway(this.webhookHub);
 
     // Store Cowork dependencies if provided
     if (options?.coworkRuntime && options?.coworkStore) {
@@ -251,6 +256,10 @@ export class IMGatewayManager extends EventEmitter {
       ensureOpenClawGatewayConnected: this.ensureOpenClawGatewayConnected ?? undefined,
       isOpenClawIntegrationEnabled: this.isOpenClawIntegrationEnabled ?? undefined,
     };
+  }
+
+  private shouldUseNativeFeishuGateway(provider: IManagedGatewayProvider): boolean {
+    return provider.id === IMGatewayProviderId.YdCowork;
   }
 
   private setupGatewayBuses(): void {
@@ -757,6 +766,24 @@ export class IMGatewayManager extends EventEmitter {
 
     // NIM runs via OpenClaw; no direct gateway events to forward
 
+    // Feishu native gateway events (yd_cowork provider)
+    this.feishuGateway.on('status', () => {
+      this.emit('statusChange', this.getStatus());
+    });
+    this.feishuGateway.on('connected', () => {
+      this.emit('statusChange', this.getStatus());
+    });
+    this.feishuGateway.on('disconnected', () => {
+      this.emit('statusChange', this.getStatus());
+    });
+    this.feishuGateway.on('error', (error) => {
+      this.emit('error', { platform: 'feishu', error });
+      this.emit('statusChange', this.getStatus());
+    });
+    this.feishuGateway.on('message', (message: IMMessage) => {
+      this.emit('message', message);
+    });
+
     // Xiaomifeng events
     this.xiaomifengGateway.on('status', () => {
       this.emit('statusChange', this.getStatus());
@@ -794,6 +821,12 @@ export class IMGatewayManager extends EventEmitter {
     // DingTalk runs via OpenClaw; no direct reconnect needed
 
     // NIM runs via OpenClaw; no direct reconnect needed
+
+    const provider = this.getGatewayProvider();
+    if (this.shouldUseNativeFeishuGateway(provider) && !this.feishuGateway.isConnected()) {
+      console.log('[IMGatewayManager] Reconnecting Feishu...');
+      this.feishuGateway.reconnectIfNeeded();
+    }
 
     if (this.xiaomifengGateway && !this.xiaomifengGateway.isConnected()) {
       console.log('[IMGatewayManager] Reconnecting Xiaomifeng...');
@@ -929,6 +962,7 @@ export class IMGatewayManager extends EventEmitter {
     };
 
     this.nimGateway.setMessageCallback(messageHandler);
+    this.feishuGateway.setMessageCallback(messageHandler);
     this.xiaomifengGateway.setMessageCallback(messageHandler);
   }
 
@@ -1043,7 +1077,32 @@ export class IMGatewayManager extends EventEmitter {
 
     // DingTalk now runs via OpenClaw; config sync is handled by IPC handler
 
-    // Feishu now runs via OpenClaw; config sync is handled by IPC handler
+    // Hot-update Feishu config for yd_cowork native gateway.
+    if (options?.syncGateway && config.feishu) {
+      const provider = this.getGatewayProvider();
+      if (this.shouldUseNativeFeishuGateway(provider)) {
+        const oldFeishu = previousConfig.feishu;
+        const newFeishu = { ...oldFeishu, ...config.feishu };
+        const credentialsChanged = newFeishu.appId !== oldFeishu.appId
+          || newFeishu.appSecret !== oldFeishu.appSecret
+          || newFeishu.domain !== oldFeishu.domain;
+        const shouldBeActive = Boolean(newFeishu.enabled && newFeishu.appId && newFeishu.appSecret);
+
+        if (!shouldBeActive && this.feishuGateway.isRunning()) {
+          void this.stopGateway('feishu').catch((err) => {
+            console.error('[IMGatewayManager] Failed to stop native Feishu after config change:', err.message);
+          });
+        } else if (shouldBeActive && credentialsChanged) {
+          void this.restartGateway('feishu').catch((err) => {
+            console.error('[IMGatewayManager] Failed to restart native Feishu after config change:', err.message);
+          });
+        } else if (shouldBeActive && !this.feishuGateway.isRunning()) {
+          void this.startGateway('feishu').catch((err) => {
+            console.error('[IMGatewayManager] Failed to start native Feishu after config change:', err.message);
+          });
+        }
+      }
+    }
 
 
     // Hot-update Xiaomifeng config: restart if credential fields changed.
@@ -1094,6 +1153,8 @@ export class IMGatewayManager extends EventEmitter {
   // ==================== Status ====================
   getStatus(): IMGatewayStatus {
     const config = this.getConfig();
+    const provider = this.getGatewayProvider();
+    const useNativeFeishuGateway = this.shouldUseNativeFeishuGateway(provider);
     // Telegram runs via OpenClaw; reflect enabled+configured state as connected
     const tgConfig = config.telegram;
     const telegramStatus = {
@@ -1124,16 +1185,16 @@ export class IMGatewayManager extends EventEmitter {
       lastInboundAt: null as number | null,
       lastOutboundAt: null as number | null,
     };
-    // Feishu runs via OpenClaw; reflect enabled+configured state as connected
-    const fsConfig = config.feishu;
-    const feishuStatus = {
-      connected: Boolean(fsConfig?.enabled && fsConfig.appId && fsConfig.appSecret),
-      startedAt: null as string | null,
-      botOpenId: null as string | null,
-      error: null as string | null,
-      lastInboundAt: null as number | null,
-      lastOutboundAt: null as number | null,
-    };
+    const feishuStatus = useNativeFeishuGateway
+      ? this.feishuGateway.getStatus()
+      : {
+          connected: Boolean(config.feishu?.enabled && config.feishu.appId && config.feishu.appSecret),
+          startedAt: null as string | null,
+          botOpenId: null as string | null,
+          error: null as string | null,
+          lastInboundAt: null as number | null,
+          lastOutboundAt: null as number | null,
+        };
     return {
       dingtalk: dingtalkStatus,
       feishu: feishuStatus,
@@ -1197,8 +1258,8 @@ export class IMGatewayManager extends EventEmitter {
       return this.testDiscordOpenClawConnectivity(configOverride);
     }
 
-    // Feishu always uses OpenClaw mode
-    if (platform === 'feishu') {
+    // Feishu uses OpenClaw mode only when provider is openclaw.
+    if (platform === 'feishu' && this.getGatewayProvider().id === IMGatewayProviderId.OpenClaw) {
       return this.testFeishuOpenClawConnectivity(configOverride);
     }
 
@@ -1384,6 +1445,16 @@ export class IMGatewayManager extends EventEmitter {
     this.updateChatHandler();
 
     const provider = this.getGatewayProvider();
+    if (platform === 'feishu') {
+      if (this.shouldUseNativeFeishuGateway(provider)) {
+        await this.feishuGateway.start(config.feishu);
+        return;
+      }
+      if (this.feishuGateway.isRunning()) {
+        await this.feishuGateway.stop();
+      }
+    }
+
     const managed = await provider.startManagedPlatform(
       platform,
       this.getGatewayProviderRuntimeDeps(),
@@ -1406,6 +1477,11 @@ export class IMGatewayManager extends EventEmitter {
 
   async stopGateway(platform: IMPlatform): Promise<void> {
     const provider = this.getGatewayProvider();
+    if (platform === 'feishu' && this.shouldUseNativeFeishuGateway(provider)) {
+      await this.feishuGateway.stop();
+      return;
+    }
+
     const managed = await provider.stopManagedPlatform(
       platform,
       this.getGatewayProviderRuntimeDeps(),
@@ -1451,6 +1527,17 @@ export class IMGatewayManager extends EventEmitter {
       }
     }
 
+    if (this.shouldUseNativeFeishuGateway(provider)
+      && config.feishu.enabled
+      && config.feishu.appId
+      && config.feishu.appSecret) {
+      try {
+        await this.startGateway('feishu');
+      } catch (error: any) {
+        console.error(`[IMGatewayManager] Failed to start native Feishu gateway: ${error.message}`);
+      }
+    }
+
     // --- Managed platforms: collect and batch ---
 
     const managedPlatformsToStart: IMPlatform[] = [];
@@ -1458,7 +1545,10 @@ export class IMGatewayManager extends EventEmitter {
     if (config.dingtalk.enabled && config.dingtalk.clientId && config.dingtalk.clientSecret) {
       managedPlatformsToStart.push('dingtalk');
     }
-    if (config.feishu.enabled && config.feishu.appId && config.feishu.appSecret) {
+    if (!this.shouldUseNativeFeishuGateway(provider)
+      && config.feishu.enabled
+      && config.feishu.appId
+      && config.feishu.appSecret) {
       managedPlatformsToStart.push('feishu');
     }
     if (config.telegram?.enabled && config.telegram.botToken) {
@@ -1513,15 +1603,25 @@ export class IMGatewayManager extends EventEmitter {
       this.outboundRecoveryTimer = null;
     }
     await Promise.all([
+      this.feishuGateway.stop(),
       this.xiaomifengGateway.stop(),
     ]);
+    await this.webhookHub.stopAll();
   }
 
   isAnyConnected(): boolean {
-    return this.xiaomifengGateway.isConnected();
+    return this.feishuGateway.isConnected() || this.xiaomifengGateway.isConnected();
   }
 
   isConnected(platform: IMPlatform): boolean {
+    if (platform === 'feishu') {
+      const provider = this.getGatewayProvider();
+      if (this.shouldUseNativeFeishuGateway(provider)) {
+        return this.feishuGateway.isConnected();
+      }
+      const config = this.getConfig();
+      return Boolean(config.feishu?.enabled && config.feishu.appId && config.feishu.appSecret);
+    }
     if (platform === 'dingtalk') {
       // DingTalk runs via OpenClaw; consider it connected when enabled and configured
       const config = this.getConfig();
@@ -1574,6 +1674,10 @@ export class IMGatewayManager extends EventEmitter {
     }
 
     try {
+      if (platform === 'feishu' && this.shouldUseNativeFeishuGateway(this.getGatewayProvider())) {
+        return this.feishuGateway.sendNotification(text);
+      }
+
       if (platform === 'xiaomifeng') {
         await this.xiaomifengGateway.sendNotification(text);
         return true;
@@ -1594,6 +1698,11 @@ export class IMGatewayManager extends EventEmitter {
     }
 
     try {
+      if (platform === 'feishu' && this.shouldUseNativeFeishuGateway(this.getGatewayProvider())) {
+        await this.feishuGateway.sendNotification(text);
+        return true;
+      }
+
       if (platform === 'xiaomifeng') {
         await this.xiaomifengGateway.sendNotificationWithMedia(text);
         return true;
@@ -2358,6 +2467,12 @@ export class IMGatewayManager extends EventEmitter {
   async sendConversationReply(platform: IMPlatform, conversationId: string, text: string): Promise<boolean> {
     try {
       switch (platform) {
+        case 'feishu':
+          if (this.shouldUseNativeFeishuGateway(this.getGatewayProvider())) {
+            await this.feishuGateway.sendConversationNotification(conversationId, text);
+            return true;
+          }
+          return this.sendNotificationWithMedia(platform, text);
         case 'xiaomifeng':
           await this.xiaomifengGateway.sendConversationNotification(conversationId, text);
           return true;
