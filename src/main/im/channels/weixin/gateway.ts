@@ -53,8 +53,12 @@ const WeixinChatType = {
 } as const;
 
 const WeixinMessageState = {
-  Typing: 1,
   Finish: 2,
+} as const;
+
+const WeixinTypingStatus = {
+  Start: 1,
+  Stop: 2,
 } as const;
 
 const WeixinItemType = {
@@ -160,6 +164,19 @@ interface WeixinGetUpdatesResponse {
 }
 
 interface WeixinSendMessageResponse {
+  ret?: number;
+  errcode?: number;
+  errmsg?: string;
+}
+
+interface WeixinGetConfigResponse {
+  ret?: number;
+  errcode?: number;
+  errmsg?: string;
+  typing_ticket?: string;
+}
+
+interface WeixinSendTypingResponse {
   ret?: number;
   errcode?: number;
   errmsg?: string;
@@ -394,16 +411,28 @@ export class YdWeixinGateway extends EventEmitter {
       throw new Error('Weixin outbound text is empty.');
     }
 
-    await this.sendTypingStateBestEffort(normalizedConversationId, contextToken);
+    await this.sendTypingStateBestEffort(
+      normalizedConversationId,
+      contextToken,
+      WeixinTypingStatus.Start,
+    );
 
-    if (outboundText) {
-      for (const chunk of this.chunkText(outboundText, WeixinGatewayDefaults.TextChunkLimit)) {
-        await this.sendTextMessage(normalizedConversationId, contextToken, chunk);
+    try {
+      if (outboundText) {
+        for (const chunk of this.chunkText(outboundText, WeixinGatewayDefaults.TextChunkLimit)) {
+          await this.sendTextMessage(normalizedConversationId, contextToken, chunk);
+        }
       }
-    }
 
-    for (const marker of mediaMarkers) {
-      await this.sendMediaMarkerMessage(normalizedConversationId, contextToken, marker);
+      for (const marker of mediaMarkers) {
+        await this.sendMediaMarkerMessage(normalizedConversationId, contextToken, marker);
+      }
+    } finally {
+      await this.sendTypingStateBestEffort(
+        normalizedConversationId,
+        contextToken,
+        WeixinTypingStatus.Stop,
+      );
     }
 
     this.lastConversationId = normalizedConversationId;
@@ -535,14 +564,92 @@ export class YdWeixinGateway extends EventEmitter {
     this.assertSendMessageResponse(response as WeixinSendMessageResponse);
   }
 
+  private async fetchTypingTicket(
+    toUserId: string,
+    contextToken: string,
+  ): Promise<string | null> {
+    if (!this.credential) {
+      throw new Error('Weixin credential is missing.');
+    }
+
+    const response = await this.fetchWithTimeout(this.credential.baseUrl, '/ilink/bot/getconfig', {
+      ilink_user_id: toUserId,
+      context_token: contextToken,
+      base_info: {
+        channel_version: '1.0.0',
+      },
+    }, {
+      token: this.credential.token,
+      timeoutMs: WeixinGatewayDefaults.ApiTimeoutMs,
+    });
+
+    const payload = response as WeixinGetConfigResponse;
+    this.assertSendTypingResponse(payload, 'getconfig');
+    const typingTicket = payload.typing_ticket?.trim() || '';
+    if (!typingTicket) {
+      return null;
+    }
+    return typingTicket;
+  }
+
+  private async sendTypingState(
+    toUserId: string,
+    typingTicket: string,
+    status: number,
+  ): Promise<void> {
+    if (!this.credential) {
+      throw new Error('Weixin credential is missing.');
+    }
+
+    const response = await this.fetchWithTimeout(this.credential.baseUrl, '/ilink/bot/sendtyping', {
+      ilink_user_id: toUserId,
+      typing_ticket: typingTicket,
+      status,
+      base_info: {
+        channel_version: '1.0.0',
+      },
+    }, {
+      token: this.credential.token,
+      timeoutMs: WeixinGatewayDefaults.ApiTimeoutMs,
+    });
+    this.assertSendTypingResponse(response as WeixinSendTypingResponse, 'sendtyping');
+  }
+
   private async sendTypingStateBestEffort(
     toUserId: string,
     contextToken: string,
+    status: number,
   ): Promise<void> {
     try {
-      await this.sendMessageItems(toUserId, contextToken, [], WeixinMessageState.Typing);
+      const typingTicket = await this.fetchTypingTicket(toUserId, contextToken);
+      if (!typingTicket) {
+        console.debug('[YdWeixinGateway] getconfig returned no typing ticket, skipping typing update');
+        return;
+      }
+      await this.sendTypingState(toUserId, typingTicket, status);
     } catch (error) {
-      console.debug('[YdWeixinGateway] Failed to send typing state, continuing reply flow', error);
+      console.debug('[YdWeixinGateway] Failed to send typing state; continuing reply flow:', error);
+    }
+  }
+
+  private assertSendTypingResponse(
+    payload: WeixinGetConfigResponse | WeixinSendTypingResponse,
+    endpoint: string,
+  ): void {
+    const errorCode = payload.errcode ?? payload.ret ?? 0;
+    if (errorCode !== 0) {
+      if (errorCode === WeixinGatewayDefaults.SessionExpiredCode) {
+        throw new WeixinGatewayError(
+          WeixinGatewayErrorCode.SessionExpired,
+          'Weixin session expired. Please login again.',
+          payload.errmsg,
+        );
+      }
+      throw new WeixinGatewayError(
+        WeixinGatewayErrorCode.ApiError,
+        `Weixin ${endpoint} failed: ${payload.errmsg || errorCode}`,
+        payload.errmsg,
+      );
     }
   }
 

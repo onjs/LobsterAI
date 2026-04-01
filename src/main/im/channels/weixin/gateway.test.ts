@@ -33,8 +33,26 @@ describe('YdWeixinGateway outbound media', () => {
 
     const sendPayloads: any[] = [];
     const uploadPayloads: any[] = [];
+    const getConfigPayloads: any[] = [];
+    const sendTypingPayloads: any[] = [];
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = typeof input === 'string' ? input : input.toString();
+
+      if (url === 'https://weixin.example.com/ilink/bot/getconfig') {
+        getConfigPayloads.push(JSON.parse(String(init?.body ?? '{}')));
+        return new Response(JSON.stringify({ typing_ticket: 'typing-ticket-1' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      if (url === 'https://weixin.example.com/ilink/bot/sendtyping') {
+        sendTypingPayloads.push(JSON.parse(String(init?.body ?? '{}')));
+        return new Response('{}', {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
 
       if (url === 'https://weixin.example.com/ilink/bot/sendmessage') {
         sendPayloads.push(JSON.parse(String(init?.body ?? '{}')));
@@ -65,14 +83,18 @@ describe('YdWeixinGateway outbound media', () => {
     const gateway = createReadyGateway();
     await gateway.sendConversationNotification('user-1', `hello world\n![img](${imagePath})`);
 
-    expect(fetchMock).toHaveBeenCalledTimes(5);
+    expect(fetchMock).toHaveBeenCalledTimes(8);
     expect(uploadPayloads).toHaveLength(1);
     expect(uploadPayloads[0]?.media_type).toBe(1);
-    expect(sendPayloads).toHaveLength(3);
-    expect(sendPayloads[0]?.msg?.message_state).toBe(1);
-    expect(sendPayloads[0]?.msg?.item_list ?? []).toHaveLength(0);
-    expect(sendPayloads[1]?.msg?.item_list?.[0]?.type).toBe(1);
-    expect(sendPayloads[2]?.msg?.item_list?.[0]?.type).toBe(2);
+    expect(sendPayloads).toHaveLength(2);
+    expect(sendPayloads[0]?.msg?.item_list?.[0]?.type).toBe(1);
+    expect(sendPayloads[1]?.msg?.item_list?.[0]?.type).toBe(2);
+    expect(getConfigPayloads).toHaveLength(2);
+    expect(getConfigPayloads[0]?.ilink_user_id).toBe('user-1');
+    expect(getConfigPayloads[0]?.context_token).toBe('ctx-token-1');
+    expect(sendTypingPayloads).toHaveLength(2);
+    expect(sendTypingPayloads[0]?.status).toBe(1);
+    expect(sendTypingPayloads[1]?.status).toBe(2);
 
     await fs.rm(tempDir, { recursive: true, force: true });
   });
@@ -84,8 +106,26 @@ describe('YdWeixinGateway outbound media', () => {
 
     const sendPayloads: any[] = [];
     const uploadPayloads: any[] = [];
+    const getConfigPayloads: any[] = [];
+    const sendTypingPayloads: any[] = [];
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = typeof input === 'string' ? input : input.toString();
+
+      if (url === 'https://weixin.example.com/ilink/bot/getconfig') {
+        getConfigPayloads.push(JSON.parse(String(init?.body ?? '{}')));
+        return new Response(JSON.stringify({ typing_ticket: 'typing-ticket-voice' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      if (url === 'https://weixin.example.com/ilink/bot/sendtyping') {
+        sendTypingPayloads.push(JSON.parse(String(init?.body ?? '{}')));
+        return new Response('{}', {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
 
       if (url === 'https://weixin.example.com/ilink/bot/sendmessage') {
         sendPayloads.push(JSON.parse(String(init?.body ?? '{}')));
@@ -119,12 +159,14 @@ describe('YdWeixinGateway outbound media', () => {
       `[DINGTALK_AUDIO]{"path":"${audioPath}"}[/DINGTALK_AUDIO]`,
     );
 
-    expect(sendPayloads).toHaveLength(2);
-    expect(sendPayloads[0]?.msg?.message_state).toBe(1);
-    expect(sendPayloads[0]?.msg?.item_list ?? []).toHaveLength(0);
+    expect(sendPayloads).toHaveLength(1);
     expect(uploadPayloads).toHaveLength(1);
     expect(uploadPayloads[0]?.media_type).toBe(4);
-    expect(sendPayloads[1]?.msg?.item_list?.[0]?.type).toBe(3);
+    expect(sendPayloads[0]?.msg?.item_list?.[0]?.type).toBe(3);
+    expect(getConfigPayloads).toHaveLength(2);
+    expect(sendTypingPayloads).toHaveLength(2);
+    expect(sendTypingPayloads[0]?.status).toBe(1);
+    expect(sendTypingPayloads[1]?.status).toBe(2);
 
     await fs.rm(tempDir, { recursive: true, force: true });
   });
@@ -141,7 +183,7 @@ describe('YdWeixinGateway outbound media', () => {
         '[DINGTALK_FILE]{"path":"http://127.0.0.1/test.txt"}[/DINGTALK_FILE]',
       ),
     ).rejects.toThrow(/private\/internal IP/i);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   test('rejects ipv6-mapped private remote media URL', async () => {
@@ -156,7 +198,7 @@ describe('YdWeixinGateway outbound media', () => {
         '[DINGTALK_FILE]{"path":"http://[::ffff:10.0.0.1]/test.txt"}[/DINGTALK_FILE]',
       ),
     ).rejects.toThrow(/private\/internal IP/i);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   test('rejects oversized remote media download by content-length', async () => {
