@@ -75,7 +75,7 @@ describe('YdFeishuGateway', () => {
     expect(normalized?.chatType).toBe('group');
   });
 
-  test('rejects private-network remote media URL', async () => {
+  test('rejects remote media URL', async () => {
     const gateway = createConfiguredGateway();
     const sendTextLark = vi.fn().mockResolvedValue(undefined);
     const sendMediaLark = vi.fn().mockResolvedValue(undefined);
@@ -89,11 +89,11 @@ describe('YdFeishuGateway', () => {
         'chat-1',
         '[DINGTALK_FILE]{"path":"http://127.0.0.1/test.pdf"}[/DINGTALK_FILE]',
       ),
-    ).rejects.toThrow(/private\/internal IP/i);
+    ).rejects.toThrow(/remote URL is not allowed/i);
     expect(sendMediaLark).not.toHaveBeenCalled();
   });
 
-  test('accepts public remote media URL', async () => {
+  test('rejects public remote media URL', async () => {
     const gateway = createConfiguredGateway();
     const sendTextLark = vi.fn().mockResolvedValue(undefined);
     const sendMediaLark = vi.fn().mockResolvedValue(undefined);
@@ -102,11 +102,13 @@ describe('YdFeishuGateway', () => {
       sendMediaLark,
     });
 
-    await gateway.sendConversationNotification(
-      'chat-1',
-      '[DINGTALK_FILE]{"path":"https://8.8.8.8/test.pdf"}[/DINGTALK_FILE]',
-    );
-    expect(sendMediaLark).toHaveBeenCalledTimes(1);
+    await expect(
+      gateway.sendConversationNotification(
+        'chat-1',
+        '[DINGTALK_FILE]{"path":"https://8.8.8.8/test.pdf"}[/DINGTALK_FILE]',
+      ),
+    ).rejects.toThrow(/remote URL is not allowed/i);
+    expect(sendMediaLark).not.toHaveBeenCalled();
   });
 
   test('rejects relative local media path', async () => {
