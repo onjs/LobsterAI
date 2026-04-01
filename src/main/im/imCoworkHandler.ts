@@ -51,6 +51,28 @@ const IM_ALLOW_RESPONSE_RE = /^(允许|同意|yes|y)$/i;
 const IM_DENY_RESPONSE_RE = /^(拒绝|不同意|no|n)$/i;
 const IM_ALLOW_OPTION_LABEL = '允许本次操作';
 
+export function selectRunMessagesForReply(
+  sessionMessages: CoworkMessage[],
+  runMessages: CoworkMessage[],
+): CoworkMessage[] {
+  const runMessageIds = new Set(
+    runMessages
+      .map((message) => message.id)
+      .filter((id) => typeof id === 'string' && id.trim().length > 0),
+  );
+
+  if (runMessageIds.size === 0) {
+    return runMessages;
+  }
+
+  const reconciled = sessionMessages.filter((message) => runMessageIds.has(message.id));
+  if (reconciled.length > 0) {
+    return reconciled;
+  }
+
+  return runMessages;
+}
+
 export interface IMCoworkHandlerOptions {
   coworkRuntime: CoworkRuntime;
   coworkStore: CoworkStore;
@@ -952,12 +974,12 @@ export class IMCoworkHandler extends EventEmitter {
       return;
     }
 
-    // Use reconciled messages from the store (authoritative after reconcileWithHistory)
-    // instead of accumulator messages which may be stale streaming snapshots.
-    // Fall back to accumulator messages if the store has none (e.g. timeout path).
+    // Reconcile this run against persisted messages by message ID, but keep the
+    // reply strictly scoped to this run. This avoids leaking prior turns into the
+    // current IM reply while still preferring store-canonical content.
     const session = this.coworkStore.getSession(sessionId);
-    const storeMessages = session?.messages ?? [];
-    const messages = storeMessages.length > 0 ? storeMessages : accumulator.messages;
+    const sessionMessages = session?.messages ?? [];
+    const messages = selectRunMessagesForReply(sessionMessages, accumulator.messages);
 
     // For cron-triggered background deliveries (scheduled task executions),
     // skip the reminder guard — the assistant text IS the scheduled reminder
@@ -972,7 +994,7 @@ export class IMCoworkHandler extends EventEmitter {
       replyLength: replyText.length,
       reply: replyText,
       backgroundDelivery: accumulator.backgroundDelivery ?? null,
-      usedStoreMessages: storeMessages.length > 0,
+      usedSessionReconciliation: sessionMessages.length > 0,
     }, null, 2));
 
     this.cleanupAccumulator(sessionId);

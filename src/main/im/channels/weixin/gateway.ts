@@ -80,6 +80,18 @@ const WeixinGatewayDefaults = {
   RemoteMediaDir: 'lobsterai-weixin-media',
 } as const;
 
+const WeixinInboundMessageDefaults = {
+  HexPayloadMinLength: 128,
+} as const;
+
+const WeixinInboundPlaceholder = {
+  Image: '[image]',
+  Voice: '[voice]',
+  File: '[file]',
+  Video: '[video]',
+  Binary: '[binary payload omitted]',
+} as const;
+
 interface WeixinMessageItem {
   type?: number;
   text_item?: {
@@ -1165,21 +1177,76 @@ export class YdWeixinGateway extends EventEmitter {
     const parts = items.map((item) => {
       switch (item.type) {
         case WeixinItemType.Text:
-          return item.text_item?.text || '';
+          return this.normalizeInboundTextContent(item.text_item?.text || '');
         case WeixinItemType.Image:
-          return item.image_item?.url || '[image]';
+          return this.normalizeInboundImageContent(item);
         case WeixinItemType.Voice:
-          return item.voice_item?.text || '[voice]';
+          return this.normalizeInboundVoiceContent(item);
         case WeixinItemType.File:
-          return item.file_item?.file_name || '[file]';
+          return this.normalizeInboundFileContent(item);
         case WeixinItemType.Video:
-          return '[video]';
+          return WeixinInboundPlaceholder.Video;
         default:
           return '';
       }
     }).filter(Boolean);
 
     return parts.join('\n').trim() || '[empty]';
+  }
+
+  private normalizeInboundTextContent(text: string): string {
+    const normalized = text.trim();
+    if (!normalized) {
+      return '';
+    }
+    if (this.isLikelyHexPayload(normalized)) {
+      return WeixinInboundPlaceholder.Binary;
+    }
+    return normalized;
+  }
+
+  private normalizeInboundImageContent(item: WeixinMessageItem): string {
+    const imageUrl = item.image_item?.url?.trim() || '';
+    if (imageUrl && this.isDisplayableRemoteUrl(imageUrl) && !this.isLikelyHexPayload(imageUrl)) {
+      return `${WeixinInboundPlaceholder.Image} ${imageUrl}`;
+    }
+    return WeixinInboundPlaceholder.Image;
+  }
+
+  private normalizeInboundVoiceContent(item: WeixinMessageItem): string {
+    const transcript = this.normalizeInboundTextContent(item.voice_item?.text || '');
+    if (transcript && transcript !== WeixinInboundPlaceholder.Binary) {
+      return transcript;
+    }
+    return WeixinInboundPlaceholder.Voice;
+  }
+
+  private normalizeInboundFileContent(item: WeixinMessageItem): string {
+    const fileName = this.normalizeInboundTextContent(item.file_item?.file_name || '');
+    if (fileName && fileName !== WeixinInboundPlaceholder.Binary) {
+      return fileName;
+    }
+    return WeixinInboundPlaceholder.File;
+  }
+
+  private isLikelyHexPayload(value: string): boolean {
+    const compact = value.replace(/\s+/g, '');
+    if (!compact || compact.length < WeixinInboundMessageDefaults.HexPayloadMinLength) {
+      return false;
+    }
+    if (compact.length % 2 !== 0) {
+      return false;
+    }
+    return /^[0-9a-f]+$/i.test(compact);
+  }
+
+  private isDisplayableRemoteUrl(value: string): boolean {
+    try {
+      const parsed = new URL(value);
+      return parsed.protocol === 'https:' || parsed.protocol === 'http:';
+    } catch {
+      return false;
+    }
   }
 
   private isInboundAllowed(

@@ -218,4 +218,73 @@ describe('YdWeixinGateway outbound media', () => {
 
     expect(received).toHaveLength(1);
   });
+
+  test('normalizes hex-like inbound text payload', async () => {
+    const gateway = new YdWeixinGateway();
+    (gateway as any).config = {
+      enabled: true,
+      accountId: 'wx-account',
+      dmPolicy: 'open',
+      allowFrom: [],
+      groupPolicy: 'open',
+      groupAllowFrom: [],
+      debug: false,
+    };
+    (gateway as any).credential = {
+      accountId: 'wx-account',
+      baseUrl: 'https://weixin.example.com',
+      token: 'token',
+      userId: 'bot-user',
+    };
+
+    const received: any[] = [];
+    gateway.on('message', (message) => received.push(message));
+
+    const hexPayload = 'ab'.repeat(90);
+    await (gateway as any).handleRawMessage({
+      message_id: 'm-hex',
+      message_type: 1,
+      from_user_id: 'user-hex',
+      context_token: 'ctx-hex',
+      create_time_ms: Date.now(),
+      item_list: [{ type: 1, text_item: { text: hexPayload } }],
+    });
+
+    expect(received).toHaveLength(1);
+    expect(received[0]?.content).toBe('[binary payload omitted]');
+  });
+
+  test('normalizes inbound image item with non-url payload', async () => {
+    const gateway = new YdWeixinGateway();
+    (gateway as any).config = {
+      enabled: true,
+      accountId: 'wx-account',
+      dmPolicy: 'open',
+      allowFrom: [],
+      groupPolicy: 'open',
+      groupAllowFrom: [],
+      debug: false,
+    };
+    (gateway as any).credential = {
+      accountId: 'wx-account',
+      baseUrl: 'https://weixin.example.com',
+      token: 'token',
+      userId: 'bot-user',
+    };
+
+    const received: any[] = [];
+    gateway.on('message', (message) => received.push(message));
+
+    await (gateway as any).handleRawMessage({
+      message_id: 'm-image',
+      message_type: 1,
+      from_user_id: 'user-image',
+      context_token: 'ctx-image',
+      create_time_ms: Date.now(),
+      item_list: [{ type: 2, image_item: { url: 'ab'.repeat(64) } }],
+    });
+
+    expect(received).toHaveLength(1);
+    expect(received[0]?.content).toBe('[image]');
+  });
 });
