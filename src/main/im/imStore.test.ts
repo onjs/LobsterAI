@@ -4,6 +4,11 @@ import initSqlJs, { type Database, type SqlJsStatic } from 'sql.js';
 import { beforeAll, describe, expect, test, vi } from 'vitest';
 import { GatewayRoute, GatewayRunStatus } from './gateway/constants';
 import { IMStore } from './imStore';
+import {
+  WeixinContextTokenStatus,
+  WeixinPendingOutboundReason,
+  WeixinPendingOutboundStatus,
+} from './types';
 
 let SQL: SqlJsStatic;
 
@@ -143,5 +148,64 @@ describe('imStore', () => {
 
     store.setWeixinConfig({ enabled: true, accountId: 'wx-account' });
     expect(store.isConfigured()).toBe(true);
+  });
+
+  test('stores weixin context token and marks stale/success lifecycle', () => {
+    const { store } = createStore();
+    const active = store.upsertWeixinContextToken({
+      accountId: 'wx-account',
+      conversationId: 'user-1',
+      contextToken: 'ctx-token-1',
+    });
+    expect(active).not.toBeNull();
+    expect(active?.status).toBe(WeixinContextTokenStatus.Active);
+
+    const stale = store.markWeixinContextTokenStale({
+      accountId: 'wx-account',
+      conversationId: 'user-1',
+      errorMessage: 'expired',
+    });
+    expect(stale).not.toBeNull();
+    expect(stale?.status).toBe(WeixinContextTokenStatus.Stale);
+    expect(stale?.lastErrorMessage).toBe('expired');
+
+    store.markWeixinContextTokenSendSuccess('wx-account', 'user-1');
+    const recovered = store.getWeixinContextToken('wx-account', 'user-1');
+    expect(recovered?.status).toBe(WeixinContextTokenStatus.Active);
+    expect(recovered?.lastSuccessAt).not.toBeNull();
+  });
+
+  test('queues and flushes weixin pending outbound records', () => {
+    const { store } = createStore();
+    const now = Date.now();
+    const queued = store.enqueueWeixinPendingOutbound({
+      id: 'wxq-1',
+      accountId: 'wx-account',
+      conversationId: 'user-1',
+      text: 'hello',
+      reason: WeixinPendingOutboundReason.MissingContextToken,
+      expireAt: now + 60_000,
+    });
+    expect(queued).not.toBeNull();
+    expect(queued?.status).toBe(WeixinPendingOutboundStatus.Pending);
+
+    const listed = store.listWeixinPendingOutbound('wx-account', 'user-1');
+    expect(listed).toHaveLength(1);
+    expect(listed[0].id).toBe('wxq-1');
+
+    store.markWeixinPendingOutboundSent('wxq-1');
+    const listedAfterSent = store.listWeixinPendingOutbound('wx-account', 'user-1');
+    expect(listedAfterSent).toHaveLength(0);
+
+    store.enqueueWeixinPendingOutbound({
+      id: 'wxq-2',
+      accountId: 'wx-account',
+      conversationId: 'user-1',
+      text: 'expired',
+      reason: WeixinPendingOutboundReason.SessionExpired,
+      expireAt: now - 1_000,
+    });
+    const expiredCount = store.expireWeixinPendingOutbound(now);
+    expect(expiredCount).toBe(1);
   });
 });

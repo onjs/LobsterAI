@@ -303,6 +303,56 @@ export interface WeixinStoredCredential {
   updatedAt: number;
 }
 
+export const WeixinContextTokenStatus = {
+  Active: 'active',
+  Missing: 'missing',
+  Stale: 'stale',
+} as const;
+
+export type WeixinContextTokenStatus = typeof WeixinContextTokenStatus[keyof typeof WeixinContextTokenStatus];
+
+export interface WeixinContextTokenRecord {
+  accountId: string;
+  conversationId: string;
+  contextToken: string;
+  status: WeixinContextTokenStatus;
+  updatedAt: number;
+  lastSuccessAt: number | null;
+  lastErrorAt: number | null;
+  lastErrorMessage: string | null;
+}
+
+export const WeixinPendingOutboundStatus = {
+  Pending: 'pending',
+  Sent: 'sent',
+  Failed: 'failed',
+  Expired: 'expired',
+} as const;
+
+export type WeixinPendingOutboundStatus = typeof WeixinPendingOutboundStatus[keyof typeof WeixinPendingOutboundStatus];
+
+export const WeixinPendingOutboundReason = {
+  MissingContextToken: 'missing_context_token',
+  SessionExpired: 'session_expired',
+} as const;
+
+export type WeixinPendingOutboundReason = typeof WeixinPendingOutboundReason[keyof typeof WeixinPendingOutboundReason];
+
+export interface WeixinPendingOutboundRecord {
+  id: string;
+  accountId: string;
+  conversationId: string;
+  text: string;
+  reason: WeixinPendingOutboundReason;
+  status: WeixinPendingOutboundStatus;
+  createdAt: number;
+  expireAt: number;
+  sentAt: number | null;
+  attempts: number;
+  lastErrorMessage: string | null;
+  updatedAt: number;
+}
+
 export interface WeixinGatewayStatus {
   connected: boolean;
   startedAt: number | null;

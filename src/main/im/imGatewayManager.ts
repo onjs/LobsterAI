@@ -10,7 +10,11 @@ import { t } from '../i18n';
 import { NimGateway } from './nimGateway';
 import { XiaomifengGateway } from './xiaomifengGateway';
 import { YdFeishuGateway } from './channels/feishu';
-import { YdWeixinGateway } from './channels/weixin';
+import {
+  YdWeixinGateway,
+  WeixinGatewayError,
+  WeixinGatewayErrorCode,
+} from './channels/weixin';
 import {
   YdWeixinAuth,
   WeixinAuthErrorCodes,
@@ -40,6 +44,7 @@ import {
   IMConnectivityCheck,
   IMConnectivityTestResult,
   IMConnectivityVerdict,
+  WeixinPendingOutboundReason,
 } from './types';
 import type { Database } from 'sql.js';
 import type { CoworkRuntime } from '../libs/agentEngine/types';
@@ -77,6 +82,8 @@ const OUTBOUND_RECOVERY_BATCH_SIZE = 20;
 const OUTBOUND_RECOVERY_STALE_FAILED_MS = 10_000;
 const RUN_RECOVERY_BATCH_SIZE = 50;
 const RUN_RECOVERY_ERROR_MESSAGE = 'Run interrupted by process restart';
+const WEIXIN_PENDING_OUTBOUND_TTL_MS = 6 * 60 * 60 * 1000;
+const WEIXIN_PENDING_FLUSH_LIMIT = 20;
 
 type GatewayClientLike = {
   request: <T = Record<string, unknown>>(
@@ -291,6 +298,137 @@ export class IMGatewayManager extends EventEmitter {
       accountId: credential.accountId,
       userId: credential.userId,
     };
+  }
+
+  private resolveActiveWeixinAccountId(): string | null {
+    const accountId = this.getConfig().weixin.accountId?.trim() || '';
+    return accountId || null;
+  }
+
+  private hydrateWeixinContextTokens(accountId: string): string[] {
+    const conversationIds: string[] = [];
+    const tokenRecords = this.imStore.listWeixinContextTokens(accountId);
+    for (const record of tokenRecords) {
+      this.weixinGateway.setConversationContextToken(record.conversationId, record.contextToken);
+      conversationIds.push(record.conversationId);
+    }
+    return conversationIds;
+  }
+
+  private queueWeixinPendingOutbound(params: {
+    accountId: string;
+    conversationId: string;
+    text: string;
+    reason: WeixinPendingOutboundReason;
+  }): boolean {
+    const normalizedConversationId = params.conversationId.trim();
+    const normalizedText = params.text.trim();
+    if (!normalizedConversationId || !normalizedText) {
+      return false;
+    }
+
+    const now = Date.now();
+    const deliveryId = `wx:${params.accountId}:${normalizedConversationId}:${now}:${Math.random().toString(36).slice(2, 10)}`;
+    const queued = this.imStore.enqueueWeixinPendingOutbound({
+      id: deliveryId,
+      accountId: params.accountId,
+      conversationId: normalizedConversationId,
+      text: normalizedText,
+      reason: params.reason,
+      expireAt: now + WEIXIN_PENDING_OUTBOUND_TTL_MS,
+    });
+    if (queued) {
+      console.log(`[IMGatewayManager] queued Weixin outbound delivery due to ${params.reason}: ${normalizedConversationId}`);
+      return true;
+    }
+    return false;
+  }
+
+  private async flushWeixinPendingOutbound(accountId: string, conversationId: string): Promise<void> {
+    const normalizedConversationId = conversationId.trim();
+    if (!normalizedConversationId) {
+      return;
+    }
+
+    const expired = this.imStore.expireWeixinPendingOutbound();
+    if (expired > 0) {
+      console.log(`[IMGatewayManager] expired ${expired} stale Weixin pending outbound deliveries`);
+    }
+
+    const pending = this.imStore.listWeixinPendingOutbound(
+      accountId,
+      normalizedConversationId,
+      WEIXIN_PENDING_FLUSH_LIMIT,
+    );
+    if (!pending.length) {
+      return;
+    }
+
+    for (const record of pending) {
+      try {
+        await this.weixinGateway.sendConversationNotification(record.conversationId, record.text);
+        this.imStore.markWeixinPendingOutboundSent(record.id);
+        this.imStore.markWeixinContextTokenSendSuccess(accountId, record.conversationId);
+      } catch (error) {
+        if (error instanceof WeixinGatewayError && error.code === WeixinGatewayErrorCode.MissingContextToken) {
+          // Keep record in pending status and wait for next inbound message.
+          return;
+        }
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        if (error instanceof WeixinGatewayError && error.code === WeixinGatewayErrorCode.SessionExpired) {
+          this.imStore.markWeixinContextTokenStale({
+            accountId,
+            conversationId: record.conversationId,
+            errorMessage,
+          });
+          return;
+        }
+        this.imStore.markWeixinPendingOutboundFailed(record.id, errorMessage);
+      }
+    }
+  }
+
+  private async sendNativeWeixinReply(conversationId: string, text: string): Promise<boolean> {
+    const accountId = this.resolveActiveWeixinAccountId();
+    if (!accountId) {
+      return false;
+    }
+
+    try {
+      await this.weixinGateway.sendConversationNotification(conversationId, text);
+      this.imStore.markWeixinContextTokenSendSuccess(accountId, conversationId);
+      return true;
+    } catch (error) {
+      if (error instanceof WeixinGatewayError) {
+        if (error.code === WeixinGatewayErrorCode.MissingContextToken) {
+          this.imStore.markWeixinContextTokenStale({
+            accountId,
+            conversationId,
+            errorMessage: error.message,
+          });
+          return this.queueWeixinPendingOutbound({
+            accountId,
+            conversationId,
+            text,
+            reason: WeixinPendingOutboundReason.MissingContextToken,
+          });
+        }
+        if (error.code === WeixinGatewayErrorCode.SessionExpired) {
+          this.imStore.markWeixinContextTokenStale({
+            accountId,
+            conversationId,
+            errorMessage: error.message,
+          });
+          return this.queueWeixinPendingOutbound({
+            accountId,
+            conversationId,
+            text,
+            reason: WeixinPendingOutboundReason.SessionExpired,
+          });
+        }
+      }
+      throw error;
+    }
   }
 
   getGatewayProviderId(): IMGatewayProviderId {
@@ -835,6 +973,25 @@ export class IMGatewayManager extends EventEmitter {
     });
     this.weixinGateway.on('message', (message: IMMessage) => {
       this.emit('message', message);
+    });
+    this.weixinGateway.on('contextToken', (payload: {
+      accountId: string;
+      conversationId: string;
+      contextToken: string;
+      updatedAt: number;
+    }) => {
+      const accountId = payload.accountId?.trim() || this.resolveActiveWeixinAccountId();
+      if (!accountId) {
+        return;
+      }
+      this.imStore.upsertWeixinContextToken({
+        accountId,
+        conversationId: payload.conversationId,
+        contextToken: payload.contextToken,
+      });
+      void this.flushWeixinPendingOutbound(accountId, payload.conversationId).catch((error) => {
+        console.warn('[IMGatewayManager] failed to flush Weixin pending outbound queue:', error);
+      });
     });
 
     // Xiaomifeng events
@@ -1549,6 +1706,14 @@ export class IMGatewayManager extends EventEmitter {
         const credential = this.resolveWeixinCredential(config.weixin.accountId);
         this.weixinGateway.setCredential(credential);
         await this.weixinGateway.start(config.weixin, credential);
+        if (config.weixin.accountId.trim()) {
+          const conversationIds = this.hydrateWeixinContextTokens(config.weixin.accountId);
+          for (const conversationId of conversationIds) {
+            void this.flushWeixinPendingOutbound(config.weixin.accountId, conversationId).catch((error) => {
+              console.warn('[IMGatewayManager] failed to flush Weixin queue during startup:', error);
+            });
+          }
+        }
         this.restoreNotificationTarget(platform);
         return;
       }
@@ -1798,7 +1963,11 @@ export class IMGatewayManager extends EventEmitter {
         return this.feishuGateway.sendNotification(text);
       }
       if (platform === 'weixin' && this.shouldUseNativeWeixinGateway(this.getGatewayProvider())) {
-        return this.weixinGateway.sendNotification(text);
+        const target = this.weixinGateway.getNotificationTarget();
+        if (!target?.conversationId) {
+          return false;
+        }
+        return this.sendNativeWeixinReply(target.conversationId, text);
       }
 
       if (platform === 'xiaomifeng') {
@@ -1826,8 +1995,11 @@ export class IMGatewayManager extends EventEmitter {
         return true;
       }
       if (platform === 'weixin' && this.shouldUseNativeWeixinGateway(this.getGatewayProvider())) {
-        await this.weixinGateway.sendNotification(text);
-        return true;
+        const target = this.weixinGateway.getNotificationTarget();
+        if (!target?.conversationId) {
+          return false;
+        }
+        return this.sendNativeWeixinReply(target.conversationId, text);
       }
 
       if (platform === 'xiaomifeng') {
@@ -2741,8 +2913,7 @@ export class IMGatewayManager extends EventEmitter {
           return this.sendNotificationWithMedia(platform, text);
         case 'weixin':
           if (this.shouldUseNativeWeixinGateway(this.getGatewayProvider())) {
-            await this.weixinGateway.sendConversationNotification(conversationId, text);
-            return true;
+            return this.sendNativeWeixinReply(conversationId, text);
           }
           return this.sendNotificationWithMedia(platform, text);
         case 'xiaomifeng':

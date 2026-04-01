@@ -17,6 +17,11 @@ import {
   PopoOpenClawConfig,
   WeixinOpenClawConfig,
   WeixinStoredCredential,
+  WeixinContextTokenRecord,
+  WeixinContextTokenStatus,
+  WeixinPendingOutboundRecord,
+  WeixinPendingOutboundReason,
+  WeixinPendingOutboundStatus,
   IMSettings,
   IMPlatform,
   IMSessionMapping,
@@ -108,6 +113,37 @@ export class IMStore {
         created_at INTEGER NOT NULL,
         last_active_at INTEGER NOT NULL,
         PRIMARY KEY (im_conversation_id, platform)
+      );
+    `);
+
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS weixin_context_tokens (
+        account_id TEXT NOT NULL,
+        conversation_id TEXT NOT NULL,
+        context_token TEXT NOT NULL,
+        status TEXT NOT NULL,
+        updated_at INTEGER NOT NULL,
+        last_success_at INTEGER,
+        last_error_at INTEGER,
+        last_error_message TEXT,
+        PRIMARY KEY (account_id, conversation_id)
+      );
+    `);
+
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS weixin_pending_outbound (
+        id TEXT PRIMARY KEY,
+        account_id TEXT NOT NULL,
+        conversation_id TEXT NOT NULL,
+        text TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        status TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        expire_at INTEGER NOT NULL,
+        sent_at INTEGER,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        last_error_message TEXT,
+        updated_at INTEGER NOT NULL
       );
     `);
 
@@ -620,6 +656,331 @@ export class IMStore {
     };
     this.setConfigValue(`weixinCredential:${normalizedAccountId}`, record);
     return record;
+  }
+
+  getWeixinContextToken(accountId: string, conversationId: string): WeixinContextTokenRecord | null {
+    const normalizedAccountId = accountId.trim();
+    const normalizedConversationId = conversationId.trim();
+    if (!normalizedAccountId || !normalizedConversationId) return null;
+
+    const result = this.db.exec(
+      `SELECT account_id, conversation_id, context_token, status, updated_at, last_success_at, last_error_at, last_error_message
+       FROM weixin_context_tokens
+       WHERE account_id = ? AND conversation_id = ?
+       LIMIT 1`,
+      [normalizedAccountId, normalizedConversationId],
+    );
+    if (!result[0]?.values[0]) return null;
+    const row = result[0].values[0];
+    return {
+      accountId: row[0] as string,
+      conversationId: row[1] as string,
+      contextToken: row[2] as string,
+      status: row[3] as WeixinContextTokenStatus,
+      updatedAt: row[4] as number,
+      lastSuccessAt: (row[5] as number | null) ?? null,
+      lastErrorAt: (row[6] as number | null) ?? null,
+      lastErrorMessage: (row[7] as string | null) ?? null,
+    };
+  }
+
+  listWeixinContextTokens(accountId: string): WeixinContextTokenRecord[] {
+    const normalizedAccountId = accountId.trim();
+    if (!normalizedAccountId) return [];
+
+    const result = this.db.exec(
+      `SELECT account_id, conversation_id, context_token, status, updated_at, last_success_at, last_error_at, last_error_message
+       FROM weixin_context_tokens
+       WHERE account_id = ?
+       ORDER BY updated_at DESC`,
+      [normalizedAccountId],
+    );
+    if (!result[0]?.values) return [];
+
+    return result[0].values.map((row) => ({
+      accountId: row[0] as string,
+      conversationId: row[1] as string,
+      contextToken: row[2] as string,
+      status: row[3] as WeixinContextTokenStatus,
+      updatedAt: row[4] as number,
+      lastSuccessAt: (row[5] as number | null) ?? null,
+      lastErrorAt: (row[6] as number | null) ?? null,
+      lastErrorMessage: (row[7] as string | null) ?? null,
+    }));
+  }
+
+  upsertWeixinContextToken(params: {
+    accountId: string;
+    conversationId: string;
+    contextToken: string;
+    status?: WeixinContextTokenStatus;
+  }): WeixinContextTokenRecord | null {
+    const normalizedAccountId = params.accountId.trim();
+    const normalizedConversationId = params.conversationId.trim();
+    const normalizedContextToken = params.contextToken.trim();
+    if (!normalizedAccountId || !normalizedConversationId || !normalizedContextToken) {
+      return null;
+    }
+
+    const now = Date.now();
+    const status = params.status ?? WeixinContextTokenStatus.Active;
+    const previous = this.getWeixinContextToken(normalizedAccountId, normalizedConversationId);
+    this.db.run(
+      `INSERT INTO weixin_context_tokens (
+        account_id,
+        conversation_id,
+        context_token,
+        status,
+        updated_at,
+        last_success_at,
+        last_error_at,
+        last_error_message
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(account_id, conversation_id) DO UPDATE SET
+        context_token = excluded.context_token,
+        status = excluded.status,
+        updated_at = excluded.updated_at,
+        last_success_at = COALESCE(weixin_context_tokens.last_success_at, excluded.last_success_at),
+        last_error_at = excluded.last_error_at,
+        last_error_message = excluded.last_error_message`,
+      [
+        normalizedAccountId,
+        normalizedConversationId,
+        normalizedContextToken,
+        status,
+        now,
+        previous?.lastSuccessAt ?? null,
+        status === WeixinContextTokenStatus.Active ? null : now,
+        status === WeixinContextTokenStatus.Active ? null : previous?.lastErrorMessage ?? null,
+      ],
+    );
+    this.saveDb();
+    return this.getWeixinContextToken(normalizedAccountId, normalizedConversationId);
+  }
+
+  markWeixinContextTokenStale(params: {
+    accountId: string;
+    conversationId: string;
+    errorMessage?: string;
+  }): WeixinContextTokenRecord | null {
+    const normalizedAccountId = params.accountId.trim();
+    const normalizedConversationId = params.conversationId.trim();
+    if (!normalizedAccountId || !normalizedConversationId) return null;
+
+    const current = this.getWeixinContextToken(normalizedAccountId, normalizedConversationId);
+    if (!current) return null;
+
+    const now = Date.now();
+    this.db.run(
+      `UPDATE weixin_context_tokens
+       SET status = ?, updated_at = ?, last_error_at = ?, last_error_message = ?
+       WHERE account_id = ? AND conversation_id = ?`,
+      [
+        WeixinContextTokenStatus.Stale,
+        now,
+        now,
+        params.errorMessage?.trim() || null,
+        normalizedAccountId,
+        normalizedConversationId,
+      ],
+    );
+    this.saveDb();
+    return this.getWeixinContextToken(normalizedAccountId, normalizedConversationId);
+  }
+
+  markWeixinContextTokenSendSuccess(accountId: string, conversationId: string): void {
+    const normalizedAccountId = accountId.trim();
+    const normalizedConversationId = conversationId.trim();
+    if (!normalizedAccountId || !normalizedConversationId) return;
+
+    const now = Date.now();
+    this.db.run(
+      `UPDATE weixin_context_tokens
+       SET status = ?, updated_at = ?, last_success_at = ?, last_error_at = NULL, last_error_message = NULL
+       WHERE account_id = ? AND conversation_id = ?`,
+      [
+        WeixinContextTokenStatus.Active,
+        now,
+        now,
+        normalizedAccountId,
+        normalizedConversationId,
+      ],
+    );
+    this.saveDb();
+  }
+
+  enqueueWeixinPendingOutbound(params: {
+    id: string;
+    accountId: string;
+    conversationId: string;
+    text: string;
+    reason: WeixinPendingOutboundReason;
+    expireAt: number;
+  }): WeixinPendingOutboundRecord | null {
+    const id = params.id.trim();
+    const accountId = params.accountId.trim();
+    const conversationId = params.conversationId.trim();
+    const text = params.text.trim();
+    if (!id || !accountId || !conversationId || !text) {
+      return null;
+    }
+
+    const now = Date.now();
+    this.db.run(
+      `INSERT OR REPLACE INTO weixin_pending_outbound (
+        id,
+        account_id,
+        conversation_id,
+        text,
+        reason,
+        status,
+        created_at,
+        expire_at,
+        sent_at,
+        attempts,
+        last_error_message,
+        updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        accountId,
+        conversationId,
+        text,
+        params.reason,
+        WeixinPendingOutboundStatus.Pending,
+        now,
+        params.expireAt,
+        null,
+        0,
+        null,
+        now,
+      ],
+    );
+    this.saveDb();
+    return this.getWeixinPendingOutboundById(id);
+  }
+
+  private getWeixinPendingOutboundById(id: string): WeixinPendingOutboundRecord | null {
+    const result = this.db.exec(
+      `SELECT id, account_id, conversation_id, text, reason, status, created_at, expire_at, sent_at, attempts, last_error_message, updated_at
+       FROM weixin_pending_outbound
+       WHERE id = ?
+       LIMIT 1`,
+      [id],
+    );
+    if (!result[0]?.values[0]) return null;
+    const row = result[0].values[0];
+    return {
+      id: row[0] as string,
+      accountId: row[1] as string,
+      conversationId: row[2] as string,
+      text: row[3] as string,
+      reason: row[4] as WeixinPendingOutboundReason,
+      status: row[5] as WeixinPendingOutboundStatus,
+      createdAt: row[6] as number,
+      expireAt: row[7] as number,
+      sentAt: (row[8] as number | null) ?? null,
+      attempts: (row[9] as number) ?? 0,
+      lastErrorMessage: (row[10] as string | null) ?? null,
+      updatedAt: row[11] as number,
+    };
+  }
+
+  listWeixinPendingOutbound(accountId: string, conversationId: string, limit = 20): WeixinPendingOutboundRecord[] {
+    const normalizedAccountId = accountId.trim();
+    const normalizedConversationId = conversationId.trim();
+    if (!normalizedAccountId || !normalizedConversationId) return [];
+
+    const safeLimit = Math.max(1, Math.min(limit, 200));
+    const result = this.db.exec(
+      `SELECT id, account_id, conversation_id, text, reason, status, created_at, expire_at, sent_at, attempts, last_error_message, updated_at
+       FROM weixin_pending_outbound
+       WHERE account_id = ?
+         AND conversation_id = ?
+         AND status = ?
+         AND expire_at > ?
+       ORDER BY created_at ASC
+       LIMIT ?`,
+      [
+        normalizedAccountId,
+        normalizedConversationId,
+        WeixinPendingOutboundStatus.Pending,
+        Date.now(),
+        safeLimit,
+      ],
+    );
+    if (!result[0]?.values) return [];
+
+    return result[0].values.map((row) => ({
+      id: row[0] as string,
+      accountId: row[1] as string,
+      conversationId: row[2] as string,
+      text: row[3] as string,
+      reason: row[4] as WeixinPendingOutboundReason,
+      status: row[5] as WeixinPendingOutboundStatus,
+      createdAt: row[6] as number,
+      expireAt: row[7] as number,
+      sentAt: (row[8] as number | null) ?? null,
+      attempts: (row[9] as number) ?? 0,
+      lastErrorMessage: (row[10] as string | null) ?? null,
+      updatedAt: row[11] as number,
+    }));
+  }
+
+  markWeixinPendingOutboundSent(id: string): void {
+    const normalizedId = id.trim();
+    if (!normalizedId) return;
+    const now = Date.now();
+    this.db.run(
+      `UPDATE weixin_pending_outbound
+       SET status = ?, sent_at = ?, attempts = attempts + 1, last_error_message = NULL, updated_at = ?
+       WHERE id = ?`,
+      [
+        WeixinPendingOutboundStatus.Sent,
+        now,
+        now,
+        normalizedId,
+      ],
+    );
+    this.saveDb();
+  }
+
+  markWeixinPendingOutboundFailed(id: string, errorMessage: string): void {
+    const normalizedId = id.trim();
+    if (!normalizedId) return;
+    const now = Date.now();
+    this.db.run(
+      `UPDATE weixin_pending_outbound
+       SET status = ?, attempts = attempts + 1, last_error_message = ?, updated_at = ?
+       WHERE id = ?`,
+      [
+        WeixinPendingOutboundStatus.Failed,
+        errorMessage.trim() || null,
+        now,
+        normalizedId,
+      ],
+    );
+    this.saveDb();
+  }
+
+  expireWeixinPendingOutbound(now = Date.now()): number {
+    this.db.run(
+      `UPDATE weixin_pending_outbound
+       SET status = ?, updated_at = ?
+       WHERE status = ?
+         AND expire_at <= ?`,
+      [
+        WeixinPendingOutboundStatus.Expired,
+        now,
+        WeixinPendingOutboundStatus.Pending,
+        now,
+      ],
+    );
+    const affected = this.db.getRowsModified();
+    if (affected > 0) {
+      this.saveDb();
+    }
+    return affected;
   }
 
   // ==================== IM Settings ====================

@@ -9,6 +9,26 @@ import {
 import { parseMediaMarkers, stripMediaMarkers } from '../../dingtalkMediaParser';
 import type { WeixinQrCredential } from './auth';
 
+export const WeixinGatewayErrorCode = {
+  MissingContextToken: 'missing_context_token',
+  SessionExpired: 'session_expired',
+  ApiError: 'api_error',
+} as const;
+
+export type WeixinGatewayErrorCode = typeof WeixinGatewayErrorCode[keyof typeof WeixinGatewayErrorCode];
+
+export class WeixinGatewayError extends Error {
+  readonly code: WeixinGatewayErrorCode;
+  readonly details?: string;
+
+  constructor(code: WeixinGatewayErrorCode, message: string, details?: string) {
+    super(message);
+    this.name = 'WeixinGatewayError';
+    this.code = code;
+    this.details = details;
+  }
+}
+
 const WeixinPolicy = {
   Open: 'open',
   Pairing: 'pairing',
@@ -78,6 +98,12 @@ interface WeixinGetUpdatesResponse {
   longpolling_timeout_ms?: number;
 }
 
+interface WeixinSendMessageResponse {
+  ret?: number;
+  errcode?: number;
+  errmsg?: string;
+}
+
 export class YdWeixinGateway extends EventEmitter {
   private status: WeixinGatewayStatus = { ...DEFAULT_WEIXIN_STATUS };
   private config: WeixinOpenClawConfig | null = null;
@@ -114,6 +140,15 @@ export class YdWeixinGateway extends EventEmitter {
     callback: (message: IMMessage, replyFn: (text: string) => Promise<void>) => Promise<void>,
   ): void {
     this.onMessageCallback = callback;
+  }
+
+  setConversationContextToken(conversationId: string, contextToken: string): void {
+    const normalizedConversationId = conversationId.trim();
+    const normalizedContextToken = contextToken.trim();
+    if (!normalizedConversationId || !normalizedContextToken) {
+      return;
+    }
+    this.contextTokens.set(normalizedConversationId, normalizedContextToken);
   }
 
   getNotificationTarget(): { conversationId: string } | null {
@@ -243,7 +278,10 @@ export class YdWeixinGateway extends EventEmitter {
 
     const contextToken = this.contextTokens.get(normalizedConversationId)?.trim();
     if (!contextToken) {
-      throw new Error('Weixin context token is missing for this conversation. Wait for an inbound message first.');
+      throw new WeixinGatewayError(
+        WeixinGatewayErrorCode.MissingContextToken,
+        'Weixin context token is missing for this conversation. Wait for an inbound message first.',
+      );
     }
 
     const mediaMarkers = parseMediaMarkers(text);
@@ -351,7 +389,7 @@ export class YdWeixinGateway extends EventEmitter {
       throw new Error('Weixin credential is missing.');
     }
 
-    await this.fetchWithTimeout(this.credential.baseUrl, '/ilink/bot/sendmessage', {
+    const response = await this.fetchWithTimeout(this.credential.baseUrl, '/ilink/bot/sendmessage', {
       msg: {
         from_user_id: '',
         to_user_id: toUserId,
@@ -373,6 +411,23 @@ export class YdWeixinGateway extends EventEmitter {
       token: this.credential.token,
       timeoutMs: WeixinGatewayDefaults.ApiTimeoutMs,
     });
+
+    const payload = response as WeixinSendMessageResponse;
+    const errorCode = payload.errcode ?? payload.ret ?? 0;
+    if (errorCode !== 0) {
+      if (errorCode === WeixinGatewayDefaults.SessionExpiredCode) {
+        throw new WeixinGatewayError(
+          WeixinGatewayErrorCode.SessionExpired,
+          'Weixin session expired. Please login again.',
+          payload.errmsg,
+        );
+      }
+      throw new WeixinGatewayError(
+        WeixinGatewayErrorCode.ApiError,
+        `Weixin sendmessage failed: ${payload.errmsg || errorCode}`,
+        payload.errmsg,
+      );
+    }
   }
 
   private async handleRawMessage(raw: WeixinRawMessage): Promise<void> {
@@ -382,6 +437,12 @@ export class YdWeixinGateway extends EventEmitter {
     }
 
     this.contextTokens.set(normalized.conversationId, normalized.contextToken);
+    this.emit('contextToken', {
+      accountId: this.credential?.accountId ?? '',
+      conversationId: normalized.conversationId,
+      contextToken: normalized.contextToken,
+      updatedAt: Date.now(),
+    });
     this.lastConversationId = normalized.conversationId;
     this.status = {
       ...this.status,
