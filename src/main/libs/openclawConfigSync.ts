@@ -599,6 +599,13 @@ export class OpenClawConfigSync {
     const hasAskUserPlugin = isBundledPluginAvailable('ask-user-question');
 
     const dingTalkConfig = this.getDingTalkConfig();
+
+    // Detect if any provider uses Qwen/Aliyun DashScope URLs — OpenClaw auto-injects
+    // qwen-portal-auth plugin for these, so we must declare it to prevent config diff loops.
+    const hasQwenProvider = Object.values(allProvidersMap).some((p) => {
+      const url = (p as { baseUrl?: string }).baseUrl || '';
+      return url.includes('dashscope.aliyuncs.com') || url.includes('aliyuncs.com/compatible-mode');
+    });
     // DingTalk runs through OpenClaw plugin but still needs the gateway HTTP endpoint (chatCompletions)
     const hasDingTalkOpenClaw = !!(dingTalkConfig?.enabled && dingTalkConfig.clientId);
 
@@ -709,6 +716,11 @@ export class OpenClawConfigSync {
             : {}),
           ...(hasAskUserPlugin
             ? { 'ask-user-question': { enabled: true } }
+            : {}),
+          // OpenClaw auto-injects qwen-portal-auth for Qwen/DashScope URLs; declare it
+          // explicitly so configSync doesn't remove it and trigger restart loops.
+          ...(hasQwenProvider
+            ? { 'qwen-portal-auth': { enabled: true } }
             : {}),
         };
 
