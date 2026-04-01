@@ -4,7 +4,10 @@
  */
 
 import { EventEmitter } from 'events';
+import { promises as dnsPromises } from 'dns';
+import * as fs from 'fs/promises';
 import type { IncomingMessage, ServerResponse } from 'http';
+import * as net from 'net';
 import * as os from 'os';
 import * as path from 'path';
 import {
@@ -218,13 +221,12 @@ export class YdFeishuGateway extends EventEmitter {
     }
 
     for (const marker of mediaMarkers) {
-      const mediaPath = this.normalizeMediaPath(marker.path);
-      const mediaRoots = this.resolveMediaRoots(mediaPath);
+      const prepared = await this.prepareOutboundMedia(marker.path);
       await deliver.sendMediaLark({
         cfg,
         to: conversationId,
-        mediaUrl: mediaPath,
-        mediaLocalRoots: mediaRoots,
+        mediaUrl: prepared.mediaUrl,
+        mediaLocalRoots: prepared.mediaLocalRoots,
       });
     }
 
@@ -505,7 +507,8 @@ export class YdFeishuGateway extends EventEmitter {
       return true;
     }
     if (!this.status.botOpenId) {
-      return true;
+      console.warn('[YdFeishuGateway] requireMention is enabled but botOpenId is unavailable, dropping group message');
+      return false;
     }
     const mentions = Array.isArray(message?.mentions) ? message.mentions : [];
     return mentions.some((item: any) => item?.id?.open_id === this.status.botOpenId);
@@ -600,14 +603,36 @@ export class YdFeishuGateway extends EventEmitter {
     return input;
   }
 
-  private resolveMediaRoots(mediaPath: string): string[] {
-    if (!mediaPath) {
-      return [];
+  private async prepareOutboundMedia(inputPath: string): Promise<{
+    mediaUrl: string;
+    mediaLocalRoots: string[];
+  }> {
+    const normalizedPath = this.normalizeMediaPath(inputPath).trim();
+    if (!normalizedPath) {
+      throw new Error('Feishu media path is empty');
     }
-    if (/^https?:\/\//i.test(mediaPath)) {
-      return [];
+
+    if (/^https?:\/\//i.test(normalizedPath)) {
+      const safeUrl = await this.assertSafeRemoteMediaUrl(normalizedPath);
+      return {
+        mediaUrl: safeUrl.toString(),
+        mediaLocalRoots: [],
+      };
     }
-    let normalizedPath = mediaPath;
+
+    const filePath = this.resolveLocalMediaAbsolutePath(normalizedPath);
+    const stat = await fs.stat(filePath);
+    if (!stat.isFile()) {
+      throw new Error('Feishu media path must point to a file');
+    }
+    return {
+      mediaUrl: filePath,
+      mediaLocalRoots: [path.dirname(filePath)],
+    };
+  }
+
+  private resolveLocalMediaAbsolutePath(rawPath: string): string {
+    let normalizedPath = rawPath;
     if (normalizedPath.startsWith('file://')) {
       try {
         normalizedPath = decodeURIComponent(normalizedPath.replace(/^file:\/\//, ''));
@@ -615,9 +640,117 @@ export class YdFeishuGateway extends EventEmitter {
         normalizedPath = normalizedPath.replace(/^file:\/\//, '');
       }
     }
-    const absolutePath = path.isAbsolute(normalizedPath)
-      ? normalizedPath
-      : path.resolve(normalizedPath);
-    return [path.dirname(absolutePath)];
+    if (!path.isAbsolute(normalizedPath)) {
+      throw new Error('Feishu media local path must be absolute');
+    }
+    return normalizedPath;
   }
+
+  private async assertSafeRemoteMediaUrl(rawUrl: string): Promise<URL> {
+    let parsed: URL;
+    try {
+      parsed = new URL(rawUrl);
+    } catch {
+      throw new Error('Invalid remote media URL');
+    }
+
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      throw new Error('Only HTTP(S) remote media URLs are allowed');
+    }
+
+    const host = parsed.hostname.trim().toLowerCase();
+    const hostForIpCheck = this.normalizeUrlHostname(host);
+    if (!host) {
+      throw new Error('Remote media URL hostname is empty');
+    }
+    if (hostForIpCheck === 'localhost' || hostForIpCheck.endsWith('.localhost')) {
+      throw new Error('Remote media URL points to localhost, which is not allowed');
+    }
+
+    const ipVersion = net.isIP(hostForIpCheck);
+    if (ipVersion && this.isPrivateOrInternalIp(hostForIpCheck)) {
+      throw new Error('Remote media URL points to a private/internal IP, which is not allowed');
+    }
+
+    if (!ipVersion) {
+      const addresses = await dnsPromises.lookup(hostForIpCheck, { all: true, verbatim: true });
+      if (!addresses.length) {
+        throw new Error('Remote media URL hostname cannot be resolved');
+      }
+      for (const address of addresses) {
+        if (this.isPrivateOrInternalIp(address.address)) {
+          throw new Error('Remote media URL resolves to a private/internal IP, which is not allowed');
+        }
+      }
+    }
+
+    return parsed;
+  }
+
+  private normalizeUrlHostname(hostname: string): string {
+    if (hostname.startsWith('[') && hostname.endsWith(']')) {
+      return hostname.slice(1, -1);
+    }
+    return hostname;
+  }
+
+  private extractMappedIpv4FromIpv6(ipv6: string): string | null {
+    if (!ipv6.startsWith('::ffff:')) {
+      return null;
+    }
+    const mapped = ipv6.slice('::ffff:'.length);
+    if (net.isIP(mapped) === 4) {
+      return mapped;
+    }
+    const parts = mapped.split(':');
+    if (parts.length === 2 && /^[0-9a-f]{1,4}$/i.test(parts[0]) && /^[0-9a-f]{1,4}$/i.test(parts[1])) {
+      const high = Number.parseInt(parts[0], 16);
+      const low = Number.parseInt(parts[1], 16);
+      if (Number.isNaN(high) || Number.isNaN(low)) {
+        return null;
+      }
+      return [
+        (high >> 8) & 0xff,
+        high & 0xff,
+        (low >> 8) & 0xff,
+        low & 0xff,
+      ].join('.');
+    }
+    return null;
+  }
+
+  private isPrivateOrInternalIp(ip: string): boolean {
+    if (ip.includes('%')) {
+      return true;
+    }
+    const normalized = ip.toLowerCase();
+    const mappedIpv4 = this.extractMappedIpv4FromIpv6(normalized);
+    if (mappedIpv4) {
+      return this.isPrivateOrInternalIp(mappedIpv4);
+    }
+
+    const version = net.isIP(normalized);
+    if (version === 4) {
+      const parts = normalized.split('.').map((part) => Number(part));
+      if (parts.length !== 4 || parts.some((part) => Number.isNaN(part) || part < 0 || part > 255)) {
+        return true;
+      }
+      const [a, b] = parts;
+      if (a === 10 || a === 127 || a === 0) return true;
+      if (a === 169 && b === 254) return true;
+      if (a === 172 && b >= 16 && b <= 31) return true;
+      if (a === 192 && b === 168) return true;
+      if (a >= 224) return true;
+      return false;
+    }
+    if (version === 6) {
+      if (normalized === '::1' || normalized === '::') return true;
+      if (normalized.startsWith('fc') || normalized.startsWith('fd')) return true;
+      if (normalized.startsWith('fe8') || normalized.startsWith('fe9') || normalized.startsWith('fea') || normalized.startsWith('feb')) return true;
+      if (normalized.startsWith('ff')) return true;
+      return false;
+    }
+    return true;
+  }
+
 }

@@ -5,6 +5,7 @@
  */
 
 import { EventEmitter } from 'events';
+import { randomUUID } from 'crypto';
 import * as path from 'path';
 import { t } from '../i18n';
 import { NimGateway } from './nimGateway';
@@ -84,6 +85,14 @@ const RUN_RECOVERY_BATCH_SIZE = 50;
 const RUN_RECOVERY_ERROR_MESSAGE = 'Run interrupted by process restart';
 const WEIXIN_PENDING_OUTBOUND_TTL_MS = 6 * 60 * 60 * 1000;
 const WEIXIN_PENDING_FLUSH_LIMIT = 20;
+
+const ConversationReplyStatus = {
+  Sent: 'sent',
+  Deferred: 'deferred',
+  Failed: 'failed',
+} as const;
+
+type ConversationReplyStatus = typeof ConversationReplyStatus[keyof typeof ConversationReplyStatus];
 
 type GatewayClientLike = {
   request: <T = Record<string, unknown>>(
@@ -328,7 +337,7 @@ export class IMGatewayManager extends EventEmitter {
     }
 
     const now = Date.now();
-    const deliveryId = `wx:${params.accountId}:${normalizedConversationId}:${now}:${Math.random().toString(36).slice(2, 10)}`;
+    const deliveryId = `wx:${params.accountId}:${normalizedConversationId}:${now}:${randomUUID()}`;
     const queued = this.imStore.enqueueWeixinPendingOutbound({
       id: deliveryId,
       accountId: params.accountId,
@@ -388,16 +397,19 @@ export class IMGatewayManager extends EventEmitter {
     }
   }
 
-  private async sendNativeWeixinReply(conversationId: string, text: string): Promise<boolean> {
+  private async sendNativeWeixinReplyWithStatus(
+    conversationId: string,
+    text: string,
+  ): Promise<ConversationReplyStatus> {
     const accountId = this.resolveActiveWeixinAccountId();
     if (!accountId) {
-      return false;
+      return ConversationReplyStatus.Failed;
     }
 
     try {
       await this.weixinGateway.sendConversationNotification(conversationId, text);
       this.imStore.markWeixinContextTokenSendSuccess(accountId, conversationId);
-      return true;
+      return ConversationReplyStatus.Sent;
     } catch (error) {
       if (error instanceof WeixinGatewayError) {
         if (error.code === WeixinGatewayErrorCode.MissingContextToken) {
@@ -406,12 +418,19 @@ export class IMGatewayManager extends EventEmitter {
             conversationId,
             errorMessage: error.message,
           });
-          return this.queueWeixinPendingOutbound({
+          const queued = this.queueWeixinPendingOutbound({
             accountId,
             conversationId,
             text,
             reason: WeixinPendingOutboundReason.MissingContextToken,
           });
+          if (queued) {
+            console.warn(
+              `[IMGatewayManager] deferred Weixin outbound reply because context token is missing: ${conversationId}`,
+            );
+            return ConversationReplyStatus.Deferred;
+          }
+          return ConversationReplyStatus.Failed;
         }
         if (error.code === WeixinGatewayErrorCode.SessionExpired) {
           this.imStore.markWeixinContextTokenStale({
@@ -419,16 +438,28 @@ export class IMGatewayManager extends EventEmitter {
             conversationId,
             errorMessage: error.message,
           });
-          return this.queueWeixinPendingOutbound({
+          const queued = this.queueWeixinPendingOutbound({
             accountId,
             conversationId,
             text,
             reason: WeixinPendingOutboundReason.SessionExpired,
           });
+          if (queued) {
+            console.warn(
+              `[IMGatewayManager] deferred Weixin outbound reply because session expired: ${conversationId}`,
+            );
+            return ConversationReplyStatus.Deferred;
+          }
+          return ConversationReplyStatus.Failed;
         }
       }
       throw error;
     }
+  }
+
+  private async sendNativeWeixinReply(conversationId: string, text: string): Promise<boolean> {
+    const status = await this.sendNativeWeixinReplyWithStatus(conversationId, text);
+    return status !== ConversationReplyStatus.Failed;
   }
 
   getGatewayProviderId(): IMGatewayProviderId {
@@ -813,8 +844,12 @@ export class IMGatewayManager extends EventEmitter {
       payloadJson: record.payloadJson,
       text: payload.text,
       deliver: async (text: string) => {
-        const sent = await this.sendConversationReply(record.platform, record.conversationId, text);
-        if (!sent) {
+        const status = await this.sendConversationReplyWithStatus(
+          record.platform,
+          record.conversationId,
+          text,
+        );
+        if (status === ConversationReplyStatus.Failed) {
           throw new Error('Recovered outbound delivery failed');
         }
       },
@@ -822,6 +857,65 @@ export class IMGatewayManager extends EventEmitter {
       startAttempt,
       insertIfMissing: false,
     });
+  }
+
+  private async sendConversationReplyWithStatus(
+    platform: IMPlatform,
+    conversationId: string,
+    text: string,
+  ): Promise<ConversationReplyStatus> {
+    try {
+      switch (platform) {
+        case 'feishu':
+          if (this.shouldUseNativeFeishuGateway(this.getGatewayProvider())) {
+            await this.feishuGateway.sendConversationNotification(conversationId, text);
+            return ConversationReplyStatus.Sent;
+          }
+          return (await this.sendNotificationWithMedia(platform, text))
+            ? ConversationReplyStatus.Sent
+            : ConversationReplyStatus.Failed;
+        case 'weixin':
+          if (this.shouldUseNativeWeixinGateway(this.getGatewayProvider())) {
+            return this.sendNativeWeixinReplyWithStatus(conversationId, text);
+          }
+          return (await this.sendNotificationWithMedia(platform, text))
+            ? ConversationReplyStatus.Sent
+            : ConversationReplyStatus.Failed;
+        case 'xiaomifeng':
+          await this.xiaomifengGateway.sendConversationNotification(conversationId, text);
+          return ConversationReplyStatus.Sent;
+        case 'nim':
+          await this.nimGateway.sendConversationNotification(conversationId, text);
+          return ConversationReplyStatus.Sent;
+        case 'dingtalk': {
+          const resolvedTarget = await this.resolveDingTalkConversationReplyTarget(conversationId)
+            ?? this.parseDingTalkConversationTarget(conversationId);
+          if (!resolvedTarget) {
+            console.warn(`[IMGatewayManager] Failed to resolve DingTalk reply target for ${conversationId}`);
+            return ConversationReplyStatus.Failed;
+          }
+          if (!resolvedTarget.target.startsWith('user:')) {
+            console.warn(`[IMGatewayManager] Unsupported DingTalk target for direct reply: ${resolvedTarget.target}`);
+            return ConversationReplyStatus.Failed;
+          }
+          const userId = resolvedTarget.target.slice('user:'.length).trim();
+          if (!userId) {
+            console.warn(`[IMGatewayManager] Empty DingTalk userId resolved from target: ${resolvedTarget.target}`);
+            return ConversationReplyStatus.Failed;
+          }
+          return (await this.sendDingTalkDirectHttp(userId, text))
+            ? ConversationReplyStatus.Sent
+            : ConversationReplyStatus.Failed;
+        }
+        default:
+          return (await this.sendNotificationWithMedia(platform, text))
+            ? ConversationReplyStatus.Sent
+            : ConversationReplyStatus.Failed;
+      }
+    } catch (error) {
+      console.error(`[IMGatewayManager] Failed to send conversation reply for ${platform}:${conversationId}:`, error);
+      return ConversationReplyStatus.Failed;
+    }
   }
 
   private async recoverPendingOutboundDeliveries(): Promise<void> {
@@ -2903,50 +2997,8 @@ export class IMGatewayManager extends EventEmitter {
 
 
   async sendConversationReply(platform: IMPlatform, conversationId: string, text: string): Promise<boolean> {
-    try {
-      switch (platform) {
-        case 'feishu':
-          if (this.shouldUseNativeFeishuGateway(this.getGatewayProvider())) {
-            await this.feishuGateway.sendConversationNotification(conversationId, text);
-            return true;
-          }
-          return this.sendNotificationWithMedia(platform, text);
-        case 'weixin':
-          if (this.shouldUseNativeWeixinGateway(this.getGatewayProvider())) {
-            return this.sendNativeWeixinReply(conversationId, text);
-          }
-          return this.sendNotificationWithMedia(platform, text);
-        case 'xiaomifeng':
-          await this.xiaomifengGateway.sendConversationNotification(conversationId, text);
-          return true;
-        case 'nim':
-          await this.nimGateway.sendConversationNotification(conversationId, text);
-          return true;
-        case 'dingtalk': {
-          const resolvedTarget = await this.resolveDingTalkConversationReplyTarget(conversationId)
-            ?? this.parseDingTalkConversationTarget(conversationId);
-          if (!resolvedTarget) {
-            console.warn(`[IMGatewayManager] Failed to resolve DingTalk reply target for ${conversationId}`);
-            return false;
-          }
-          if (!resolvedTarget.target.startsWith('user:')) {
-            console.warn(`[IMGatewayManager] Unsupported DingTalk target for direct reply: ${resolvedTarget.target}`);
-            return false;
-          }
-          const userId = resolvedTarget.target.slice('user:'.length).trim();
-          if (!userId) {
-            console.warn(`[IMGatewayManager] Empty DingTalk userId resolved from target: ${resolvedTarget.target}`);
-            return false;
-          }
-          return this.sendDingTalkDirectHttp(userId, text);
-        }
-        default:
-          return this.sendNotificationWithMedia(platform, text);
-      }
-    } catch (error) {
-      console.error(`[IMGatewayManager] Failed to send conversation reply for ${platform}:${conversationId}:`, error);
-      return false;
-    }
+    const status = await this.sendConversationReplyWithStatus(platform, conversationId, text);
+    return status !== ConversationReplyStatus.Failed;
   }
 
   // ─── DingTalk direct HTTP API ──────────────────────────────────────────────

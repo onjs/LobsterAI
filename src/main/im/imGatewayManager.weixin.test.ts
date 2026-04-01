@@ -100,4 +100,26 @@ describe('IMGatewayManager Weixin context token lifecycle', () => {
     expect(token?.lastSuccessAt).not.toBeNull();
     expect(sendSpy).toHaveBeenCalledTimes(2);
   });
+
+  test('keeps identical queued outbound deliveries as separate records', async () => {
+    const { manager } = createManager();
+    const store = manager.getIMStore();
+    const weixinGateway = (manager as any).weixinGateway;
+    vi.spyOn(weixinGateway, 'sendConversationNotification').mockRejectedValue(
+      new WeixinGatewayError(
+        WeixinGatewayErrorCode.MissingContextToken,
+        'missing context token',
+      ),
+    );
+
+    const first = await manager.sendConversationReply('weixin', 'user-3', 'same text');
+    const second = await manager.sendConversationReply('weixin', 'user-3', 'same text');
+    expect(first).toBe(true);
+    expect(second).toBe(true);
+
+    const pending = store.listWeixinPendingOutbound('wx-account', 'user-3');
+    expect(pending).toHaveLength(2);
+    expect(pending.every((item) => item.text === 'same text')).toBe(true);
+    expect(pending.every((item) => item.status === WeixinPendingOutboundStatus.Pending)).toBe(true);
+  });
 });

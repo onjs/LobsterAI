@@ -1,6 +1,8 @@
 import { createCipheriv, createHash, randomBytes, randomUUID } from 'crypto';
+import { promises as dnsPromises } from 'dns';
 import { EventEmitter } from 'events';
 import fs from 'fs/promises';
+import net from 'net';
 import os from 'os';
 import path from 'path';
 import {
@@ -45,6 +47,11 @@ const WeixinMessageType = {
   Bot: 2,
 } as const;
 
+const WeixinChatType = {
+  Direct: 'direct',
+  Group: 'group',
+} as const;
+
 const WeixinMessageState = {
   Finish: 2,
 } as const;
@@ -67,6 +74,8 @@ const WeixinGatewayDefaults = {
   CdnUploadMaxRetries: 3,
   SessionExpiredCode: -14,
   TextChunkLimit: 2_000,
+  RemoteMediaDownloadTimeoutMs: 15_000,
+  RemoteMediaMaxBytes: 30 * 1024 * 1024,
   CdnBaseUrl: 'https://novac2c.cdn.weixin.qq.com/c2c',
   RemoteMediaDir: 'lobsterai-weixin-media',
 } as const;
@@ -117,6 +126,11 @@ interface WeixinRawMessage {
   message_id?: number | string;
   from_user_id?: string;
   to_user_id?: string;
+  chat_type?: string | number;
+  conversation_id?: string;
+  group_id?: string;
+  room_id?: string;
+  chat_id?: string;
   context_token?: string;
   message_type?: number;
   create_time_ms?: number;
@@ -695,18 +709,183 @@ export class YdWeixinGateway extends EventEmitter {
   }
 
   private async downloadRemoteMediaToTemp(url: string): Promise<string> {
-    const response = await fetch(url);
+    const safeUrl = await this.assertSafeRemoteMediaUrl(url);
+    const timeoutController = new AbortController();
+    const timeout = setTimeout(
+      () => timeoutController.abort(),
+      WeixinGatewayDefaults.RemoteMediaDownloadTimeoutMs,
+    );
+
+    let response: Response;
+    try {
+      response = await fetch(safeUrl.toString(), {
+        signal: timeoutController.signal,
+        redirect: 'error',
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
+
     if (!response.ok) {
       throw new Error(`Weixin media download failed: HTTP ${response.status}`);
     }
-    const buffer = Buffer.from(await response.arrayBuffer());
-    const pathname = new URL(url).pathname;
+
+    const contentLengthHeader = response.headers.get('content-length');
+    if (contentLengthHeader) {
+      const contentLength = Number(contentLengthHeader);
+      if (
+        Number.isFinite(contentLength)
+        && contentLength > WeixinGatewayDefaults.RemoteMediaMaxBytes
+      ) {
+        throw new Error('Weixin media download exceeds max allowed size.');
+      }
+    }
+
+    const buffer = await this.readResponseBodyWithLimit(
+      response,
+      WeixinGatewayDefaults.RemoteMediaMaxBytes,
+    );
+    const pathname = safeUrl.pathname;
     const extension = path.extname(pathname) || '.bin';
     const tempDir = path.join(os.tmpdir(), WeixinGatewayDefaults.RemoteMediaDir);
     await fs.mkdir(tempDir, { recursive: true });
     const tempFilePath = path.join(tempDir, `${Date.now()}-${randomUUID()}${extension}`);
     await fs.writeFile(tempFilePath, buffer);
     return tempFilePath;
+  }
+
+  private async readResponseBodyWithLimit(response: Response, maxBytes: number): Promise<Buffer> {
+    if (!response.body) {
+      return Buffer.alloc(0);
+    }
+
+    const reader = response.body.getReader();
+    const chunks: Buffer[] = [];
+    let totalBytes = 0;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      if (!value) {
+        continue;
+      }
+      const chunk = Buffer.from(value);
+      totalBytes += chunk.length;
+      if (totalBytes > maxBytes) {
+        throw new Error('Weixin media download exceeds max allowed size.');
+      }
+      chunks.push(chunk);
+    }
+
+    return Buffer.concat(chunks, totalBytes);
+  }
+
+  private async assertSafeRemoteMediaUrl(rawUrl: string): Promise<URL> {
+    let parsed: URL;
+    try {
+      parsed = new URL(rawUrl);
+    } catch {
+      throw new Error('Invalid remote media URL.');
+    }
+
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      throw new Error('Only HTTP(S) remote media URLs are allowed.');
+    }
+
+    const host = parsed.hostname.trim().toLowerCase();
+    const hostForIpCheck = this.normalizeUrlHostname(host);
+    if (!host) {
+      throw new Error('Remote media URL hostname is empty.');
+    }
+    if (hostForIpCheck === 'localhost' || hostForIpCheck.endsWith('.localhost')) {
+      throw new Error('Remote media URL points to localhost, which is not allowed.');
+    }
+
+    const ipVersion = net.isIP(hostForIpCheck);
+    if (ipVersion && this.isPrivateOrInternalIp(hostForIpCheck)) {
+      throw new Error('Remote media URL points to a private/internal IP, which is not allowed.');
+    }
+
+    if (!ipVersion) {
+      const addresses = await dnsPromises.lookup(hostForIpCheck, { all: true, verbatim: true });
+      if (!addresses.length) {
+        throw new Error('Remote media URL hostname cannot be resolved.');
+      }
+      for (const address of addresses) {
+        if (this.isPrivateOrInternalIp(address.address)) {
+          throw new Error('Remote media URL resolves to a private/internal IP, which is not allowed.');
+        }
+      }
+    }
+
+    return parsed;
+  }
+
+  private normalizeUrlHostname(hostname: string): string {
+    if (hostname.startsWith('[') && hostname.endsWith(']')) {
+      return hostname.slice(1, -1);
+    }
+    return hostname;
+  }
+
+  private extractMappedIpv4FromIpv6(ipv6: string): string | null {
+    if (!ipv6.startsWith('::ffff:')) {
+      return null;
+    }
+    const mapped = ipv6.slice('::ffff:'.length);
+    if (net.isIP(mapped) === 4) {
+      return mapped;
+    }
+    const parts = mapped.split(':');
+    if (parts.length === 2 && /^[0-9a-f]{1,4}$/i.test(parts[0]) && /^[0-9a-f]{1,4}$/i.test(parts[1])) {
+      const high = Number.parseInt(parts[0], 16);
+      const low = Number.parseInt(parts[1], 16);
+      if (Number.isNaN(high) || Number.isNaN(low)) {
+        return null;
+      }
+      return [
+        (high >> 8) & 0xff,
+        high & 0xff,
+        (low >> 8) & 0xff,
+        low & 0xff,
+      ].join('.');
+    }
+    return null;
+  }
+
+  private isPrivateOrInternalIp(ip: string): boolean {
+    if (ip.includes('%')) {
+      return true;
+    }
+    const normalized = ip.toLowerCase();
+    const mappedIpv4 = this.extractMappedIpv4FromIpv6(normalized);
+    if (mappedIpv4) {
+      return this.isPrivateOrInternalIp(mappedIpv4);
+    }
+    const version = net.isIP(normalized);
+    if (version === 4) {
+      const parts = normalized.split('.').map((part) => Number(part));
+      if (parts.length !== 4 || parts.some((part) => Number.isNaN(part) || part < 0 || part > 255)) {
+        return true;
+      }
+      const [a, b] = parts;
+      if (a === 10 || a === 127 || a === 0) return true;
+      if (a === 169 && b === 254) return true;
+      if (a === 172 && b >= 16 && b <= 31) return true;
+      if (a === 192 && b === 168) return true;
+      if (a >= 224) return true;
+      return false;
+    }
+    if (version === 6) {
+      if (normalized === '::1' || normalized === '::') return true;
+      if (normalized.startsWith('fc') || normalized.startsWith('fd')) return true;
+      if (normalized.startsWith('fe8') || normalized.startsWith('fe9') || normalized.startsWith('fea') || normalized.startsWith('feb')) return true;
+      if (normalized.startsWith('ff')) return true;
+      return false;
+    }
+    return true;
   }
 
   private async uploadMediaToCdn(params: {
@@ -852,7 +1031,7 @@ export class YdWeixinGateway extends EventEmitter {
       conversationId: normalized.conversationId,
       senderId: normalized.senderId,
       content: normalized.content,
-      chatType: 'direct',
+      chatType: normalized.chatType,
       timestamp: normalized.timestamp,
     };
 
@@ -873,6 +1052,7 @@ export class YdWeixinGateway extends EventEmitter {
     messageId: string;
     conversationId: string;
     senderId: string;
+    chatType: IMMessage['chatType'];
     content: string;
     timestamp: number;
     contextToken: string;
@@ -887,7 +1067,13 @@ export class YdWeixinGateway extends EventEmitter {
       return null;
     }
 
-    if (!this.isInboundAllowed(senderId)) {
+    const chatType = this.resolveInboundChatType(raw);
+    const conversationId = this.resolveInboundConversationId(raw, senderId, chatType);
+    if (!conversationId) {
+      return null;
+    }
+
+    if (!this.isInboundAllowed(senderId, chatType, conversationId)) {
       return null;
     }
 
@@ -905,12 +1091,74 @@ export class YdWeixinGateway extends EventEmitter {
 
     return {
       messageId,
-      conversationId: senderId,
+      conversationId,
       senderId,
+      chatType,
       content,
       timestamp,
       contextToken,
     };
+  }
+
+  private resolveInboundChatType(raw: WeixinRawMessage): IMMessage['chatType'] {
+    const rawChatType = raw.chat_type;
+    if (typeof rawChatType === 'string') {
+      const normalized = rawChatType.trim().toLowerCase();
+      if (normalized.includes('group') || normalized.includes('chatroom') || normalized.includes('room')) {
+        return WeixinChatType.Group;
+      }
+      if (normalized.includes('direct') || normalized.includes('single') || normalized.includes('private')) {
+        return WeixinChatType.Direct;
+      }
+    }
+
+    const groupCandidates = [
+      raw.group_id,
+      raw.room_id,
+      raw.chat_id,
+      this.isChatroomIdentifier(raw.to_user_id) ? raw.to_user_id : '',
+      this.isChatroomIdentifier(raw.conversation_id) ? raw.conversation_id : '',
+      this.isChatroomIdentifier(raw.from_user_id) ? raw.from_user_id : '',
+    ];
+    if (groupCandidates.some((value) => (value || '').trim())) {
+      return WeixinChatType.Group;
+    }
+
+    return WeixinChatType.Direct;
+  }
+
+  private resolveInboundConversationId(
+    raw: WeixinRawMessage,
+    senderId: string,
+    chatType: IMMessage['chatType'],
+  ): string {
+    if (chatType === WeixinChatType.Group) {
+      const candidates = [
+        raw.group_id,
+        raw.room_id,
+        raw.chat_id,
+        this.isChatroomIdentifier(raw.conversation_id) ? raw.conversation_id : '',
+        this.isChatroomIdentifier(raw.to_user_id) ? raw.to_user_id : '',
+        this.isChatroomIdentifier(raw.from_user_id) ? raw.from_user_id : '',
+      ];
+      for (const candidate of candidates) {
+        const normalized = candidate?.trim() || '';
+        if (normalized) {
+          return normalized;
+        }
+      }
+      return '';
+    }
+
+    return senderId;
+  }
+
+  private isChatroomIdentifier(value: string | undefined): boolean {
+    const normalized = value?.trim() || '';
+    if (!normalized) {
+      return false;
+    }
+    return normalized.endsWith('@chatroom') || normalized.startsWith('chatroom_');
   }
 
   private extractMessageContent(items: WeixinMessageItem[]): string {
@@ -934,9 +1182,25 @@ export class YdWeixinGateway extends EventEmitter {
     return parts.join('\n').trim() || '[empty]';
   }
 
-  private isInboundAllowed(senderId: string): boolean {
+  private isInboundAllowed(
+    senderId: string,
+    chatType: IMMessage['chatType'],
+    conversationId: string,
+  ): boolean {
     if (!this.config) {
       return false;
+    }
+
+    if (chatType === WeixinChatType.Group) {
+      if (this.config.groupPolicy === WeixinPolicy.Disabled) {
+        return false;
+      }
+
+      if (this.config.groupPolicy === WeixinPolicy.Allowlist) {
+        return this.config.groupAllowFrom.includes(conversationId);
+      }
+
+      return true;
     }
 
     if (this.config.dmPolicy === WeixinPolicy.Disabled) {
@@ -945,11 +1209,6 @@ export class YdWeixinGateway extends EventEmitter {
 
     if (this.config.dmPolicy === WeixinPolicy.Allowlist) {
       return this.config.allowFrom.includes(senderId);
-    }
-
-    if (this.config.dmPolicy === WeixinPolicy.Pairing) {
-      // Pairing authorization is enforced at IMCowork handler layer.
-      return true;
     }
 
     return true;

@@ -41,7 +41,7 @@ export function buildIMMediaInstruction(_imSettings: IMSettings): string {
 
 - 图片: jpg, jpeg, png, gif, webp, bmp
 - 音频: mp3, wav, aac, m4a, ogg, amr
-- 视频: mp4, mov, avi, mkv, webm
+- 视频: mp4, mov, m4v, webm
 - 文件: pdf, doc/docx, xls/xlsx, ppt/pptx, zip, txt, json, csv, md 等
 
 ### 使用规则
