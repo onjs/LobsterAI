@@ -846,6 +846,21 @@ const resolveScheduledTaskBackend = (): Exclude<STBackendType, 'auto'> => {
   return resolveScheduledTaskBackendFromConfig(config);
 };
 
+const resolveEffectiveCoworkConfig = (
+  config: ReturnType<CoworkStore['getConfig']>,
+): ReturnType<CoworkStore['getConfig']> => {
+  const effectiveAgentEngine = normalizeCoworkAgentEngine(config.agentEngine);
+  const effectiveScheduledTaskBackend = resolveScheduledTaskBackendFromConfig({
+    agentEngine: effectiveAgentEngine,
+    scheduledTaskBackend: config.scheduledTaskBackend,
+  });
+  return {
+    ...config,
+    agentEngine: effectiveAgentEngine,
+    scheduledTaskBackend: effectiveScheduledTaskBackend,
+  };
+};
+
 const isOpenClawGatewayLive = (): boolean => {
   const phase = getOpenClawEngineManager().getStatus().phase;
   return phase === 'starting' || phase === 'running';
@@ -3066,7 +3081,7 @@ if (!gotTheLock) {
 
   ipcMain.handle('cowork:session:remoteManaged', async (_event, sessionId: string) => {
     try {
-      const currentEngine = getCoworkStore().getConfig().agentEngine;
+      const currentEngine = resolveCoworkAgentEngine();
       if (currentEngine !== 'openclaw') {
         return { success: true, remoteManaged: false };
       }
@@ -3320,7 +3335,7 @@ if (!gotTheLock) {
 
   ipcMain.handle('cowork:config:get', async () => {
     try {
-      const config = getCoworkStore().getConfig();
+      const config = resolveEffectiveCoworkConfig(getCoworkStore().getConfig());
       return { success: true, config };
     } catch (error) {
       return {
@@ -3504,13 +3519,16 @@ if (!gotTheLock) {
         config.executionMode && String(config.executionMode) === 'container'
           ? 'local'
           : config.executionMode;
-      const normalizedAgentEngine = config.agentEngine === 'yd_cowork'
+      const requestedAgentEngine = config.agentEngine === 'yd_cowork'
         ? 'yd_cowork'
         : config.agentEngine === 'openclaw'
           ? 'openclaw'
           : undefined;
+      const normalizedAgentEngine = requestedAgentEngine
+        ? normalizeCoworkAgentEngine(requestedAgentEngine)
+        : undefined;
       const normalizedScheduledTaskBackend = config.scheduledTaskBackend === STBackend.OpenClaw
-        ? STBackend.OpenClaw
+        ? (isOpenClawRuntimeAllowedByBuildProfile() ? STBackend.OpenClaw : STBackend.YdCowork)
         : config.scheduledTaskBackend === STBackend.YdCowork
           ? STBackend.YdCowork
           : config.scheduledTaskBackend === STBackend.Auto
@@ -3551,7 +3569,8 @@ if (!gotTheLock) {
       const previousConfig = getCoworkStore().getConfig();
       const previousScheduledTaskBackend = resolveScheduledTaskBackendFromConfig(previousConfig);
       const previousWorkingDir = previousConfig.workingDirectory;
-      const nextAgentEngine = normalizedAgentEngine ?? previousConfig.agentEngine;
+      const previousAgentEngine = normalizeCoworkAgentEngine(previousConfig.agentEngine);
+      const nextAgentEngine = normalizeCoworkAgentEngine(normalizedAgentEngine ?? previousConfig.agentEngine);
       const shouldManageOpenClawWorkspace = nextAgentEngine === 'openclaw';
       getCoworkStore().setConfig(normalizedConfig);
       if (normalizedConfig.workingDirectory !== undefined && normalizedConfig.workingDirectory !== previousWorkingDir) {
@@ -3581,11 +3600,11 @@ if (!gotTheLock) {
           console.warn('[Main] Failed to start scheduled task polling after backend switch:', error);
         }
       }
-      if (normalizedAgentEngine !== undefined && normalizedAgentEngine !== previousConfig.agentEngine) {
+      if (normalizedAgentEngine !== undefined && normalizedAgentEngine !== previousAgentEngine) {
         getCoworkEngineRouter().handleEngineConfigChanged(normalizedAgentEngine);
       }
       const switchedToOpenClaw = normalizedAgentEngine === 'openclaw'
-        && previousConfig.agentEngine !== 'openclaw';
+        && previousAgentEngine !== 'openclaw';
 
       const shouldSyncOpenClawConfig = normalizedExecutionMode !== undefined
         || normalizedAgentEngine !== undefined
@@ -3597,7 +3616,7 @@ if (!gotTheLock) {
           reason: 'cowork-config-change',
           restartGatewayIfRunning: true,
         });
-        if (!syncResult.success && nextConfig.agentEngine === 'openclaw') {
+        if (!syncResult.success && nextAgentEngine === 'openclaw') {
           return {
             success: false,
             code: ENGINE_NOT_READY_CODE,
