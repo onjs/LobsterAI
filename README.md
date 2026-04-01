@@ -80,6 +80,9 @@ npm run electron:dev:openclaw
 
 # Subsequent runs: skips build if the pinned version hasn't changed
 npm run electron:dev:openclaw
+
+# Force yd_cowork-only gateway profile (no OpenClaw integration path)
+npm run electron:dev:yd-only
 ```
 
 By default, OpenClaw source is cloned/managed at `../openclaw` (relative to this repo). Override with:
@@ -438,6 +441,7 @@ LobsterAI pins its OpenClaw dependency to a specific release version, declared i
 | `OPENCLAW_SRC` | Path to OpenClaw source directory | `../openclaw` |
 | `OPENCLAW_FORCE_BUILD` | Set to `1` to force rebuild even if version matches | — |
 | `OPENCLAW_SKIP_ENSURE` | Set to `1` to skip automatic version checkout | — |
+| `IM_GATEWAY_BUILD_PROFILE` | Gateway integration profile: `full`, `yd-only`, `openclaw-only` | `full` |
 
 ## Development Guidelines
 
