@@ -44,6 +44,12 @@ function createManager(): { manager: IMGatewayManager; db: Database } {
 }
 
 describe('IMGatewayManager Weixin context token lifecycle', () => {
+  test('does not request OpenClaw schema when provider is yd_cowork', async () => {
+    const { manager } = createManager();
+    const schema = await manager.getOpenClawConfigSchema();
+    expect(schema).toBeNull();
+  });
+
   test('queues outbound reply when context token is missing', async () => {
     const { manager } = createManager();
     const weixinGateway = (manager as any).weixinGateway;

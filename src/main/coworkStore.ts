@@ -46,10 +46,6 @@ const MEMORY_ASSISTANT_STYLE_TEXT_RE = /^(?:使用|use)\s+[A-Za-z0-9._-]+\s*(?:�
 const CONVERSATION_SEARCH_SEMANTIC_MIN_SCORE = 0.2;
 const CONVERSATION_SEARCH_MAX_SCAN_ROWS = 800;
 const COWORK_AGENT_ENGINE_ENV_KEYS = ['COWORK_AGENT_ENGINE', 'LOBSTERAI_COWORK_AGENT_ENGINE'] as const;
-const COWORK_SCHEDULED_TASK_BACKEND_ENV_KEYS = [
-  'COWORK_SCHEDULED_TASK_BACKEND',
-  'LOBSTERAI_COWORK_SCHEDULED_TASK_BACKEND',
-] as const;
 const ENV_LINE_RE = /^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/;
 
 let cachedRootDotEnv: Record<string, string> | null = null;
@@ -1158,7 +1154,6 @@ export class CoworkStore {
     const workingDirRow = this.getOne<ConfigRow>('SELECT value FROM cowork_config WHERE key = ?', ['workingDirectory']);
     const executionModeRow = this.getOne<ConfigRow>('SELECT value FROM cowork_config WHERE key = ?', ['executionMode']);
     const agentEngineRow = this.getOne<ConfigRow>('SELECT value FROM cowork_config WHERE key = ?', ['agentEngine']);
-    const scheduledTaskBackendRow = this.getOne<ConfigRow>('SELECT value FROM cowork_config WHERE key = ?', ['scheduledTaskBackend']);
     const memoryEnabledRow = this.getOne<ConfigRow>('SELECT value FROM cowork_config WHERE key = ?', ['memoryEnabled']);
     const memoryImplicitUpdateEnabledRow = this.getOne<ConfigRow>('SELECT value FROM cowork_config WHERE key = ?', ['memoryImplicitUpdateEnabled']);
     const memoryLlmJudgeEnabledRow = this.getOne<ConfigRow>('SELECT value FROM cowork_config WHERE key = ?', ['memoryLlmJudgeEnabled']);
@@ -1168,19 +1163,18 @@ export class CoworkStore {
     const normalizedExecutionMode =
       executionModeRow?.value === 'container' ? 'sandbox' : (executionModeRow?.value as CoworkExecutionMode);
     const envAgentEngine = readConfigEnvValue(COWORK_AGENT_ENGINE_ENV_KEYS);
-    const envScheduledTaskBackend = readConfigEnvValue(COWORK_SCHEDULED_TASK_BACKEND_ENV_KEYS);
 
     const normalizedAgentEngine = normalizeCoworkAgentEngineValue(envAgentEngine ?? agentEngineRow?.value);
-    const normalizedScheduledTaskBackend = normalizeScheduledTaskBackendValue(
-      envScheduledTaskBackend ?? scheduledTaskBackendRow?.value
-    );
 
     return {
       workingDirectory: workingDirRow?.value || getDefaultWorkingDirectory(),
       systemPrompt: getDefaultSystemPrompt(),
       executionMode: normalizedExecutionMode || ('local' as CoworkExecutionMode),
       agentEngine: normalizedAgentEngine,
-      scheduledTaskBackend: normalizedScheduledTaskBackend,
+      // Scheduled task backend is coupled to agentEngine in main process routing.
+      // Keep this field stable for renderer compatibility, but do not expose an
+      // independent value here.
+      scheduledTaskBackend: ScheduledTaskBackendValue.Auto,
       memoryEnabled: parseBooleanConfig(memoryEnabledRow?.value, DEFAULT_MEMORY_ENABLED),
       memoryImplicitUpdateEnabled: parseBooleanConfig(
         memoryImplicitUpdateEnabledRow?.value,
@@ -1229,16 +1223,8 @@ export class CoworkStore {
       `, [normalizedAgentEngine, now]);
     }
 
-    if (config.scheduledTaskBackend !== undefined) {
-      const normalizedScheduledTaskBackend = normalizeScheduledTaskBackendValue(config.scheduledTaskBackend);
-      this.db.run(`
-        INSERT INTO cowork_config (key, value, updated_at)
-        VALUES ('scheduledTaskBackend', ?, ?)
-        ON CONFLICT(key) DO UPDATE SET
-          value = excluded.value,
-          updated_at = excluded.updated_at
-      `, [normalizedScheduledTaskBackend, now]);
-    }
+    // scheduledTaskBackend is intentionally ignored: agentEngine is the single
+    // source of truth for runtime routing.
 
     if (config.memoryEnabled !== undefined) {
       this.db.run(`

@@ -19,7 +19,7 @@ describe('imGatewayProviders', () => {
     expect(ensureOpenClawGatewayConnected).toHaveBeenCalledOnce();
   });
 
-  test('yd_cowork provider skips auto-start but keeps manual compatibility fallback', async () => {
+  test('yd_cowork provider skips auto-start and managed platform fallback', async () => {
     const provider = createIMGatewayProvider(IMGatewayProviderId.YdCowork);
     const syncOpenClawConfig = vi.fn(async () => undefined);
     const ensureOpenClawGatewayConnected = vi.fn(async () => undefined);
@@ -37,27 +37,9 @@ describe('imGatewayProviders', () => {
       syncOpenClawConfig,
       ensureOpenClawGatewayConnected,
     });
-    expect(handled).toBe(true);
-    expect(syncOpenClawConfig).toHaveBeenCalledOnce();
-    expect(ensureOpenClawGatewayConnected).toHaveBeenCalledOnce();
-  });
-
-  test('yd_cowork provider disables openclaw fallback when integration is blocked', async () => {
-    const provider = createIMGatewayProvider(IMGatewayProviderId.YdCowork);
-    const syncOpenClawConfig = vi.fn(async () => undefined);
-    const ensureOpenClawGatewayConnected = vi.fn(async () => undefined);
-    const isOpenClawIntegrationEnabled = vi.fn(() => false);
-
-    const handled = await provider.startManagedPlatform('feishu', {
-      syncOpenClawConfig,
-      ensureOpenClawGatewayConnected,
-      isOpenClawIntegrationEnabled,
-    });
-
     expect(handled).toBe(false);
     expect(syncOpenClawConfig).not.toHaveBeenCalled();
     expect(ensureOpenClawGatewayConnected).not.toHaveBeenCalled();
-    expect(isOpenClawIntegrationEnabled).toHaveBeenCalled();
   });
 
   test('openclaw provider respects integration gate', async () => {

@@ -241,9 +241,6 @@ export class IMGatewayManager extends EventEmitter {
     provider: IManagedGatewayProvider;
     source: IMGatewayProviderSource;
   } {
-    const envProvider = process.env[IMGatewayProviderEnvKey.GatewayProvider]
-      ?? process.env[IMGatewayProviderEnvKey.GatewayProviderPrefixed]
-      ?? null;
     const envEngine = process.env[IMGatewayProviderEnvKey.CoworkAgentEngine]
       ?? process.env[IMGatewayProviderEnvKey.CoworkAgentEnginePrefixed]
       ?? null;
@@ -251,7 +248,6 @@ export class IMGatewayManager extends EventEmitter {
       ?? process.env[IMGatewayProviderEnvKey.BuildProfilePrefixed]
       ?? null;
     const selection = resolveIMGatewayProvider({
-      envProvider,
       envEngine,
       envBuildProfile,
       configuredEngine: this.resolveConfiguredAgentEngine(),
@@ -3382,6 +3378,9 @@ export class IMGatewayManager extends EventEmitter {
    * Returns { schema, uiHints } or null if the gateway is unavailable.
    */
   async getOpenClawConfigSchema(): Promise<{ schema: Record<string, unknown>; uiHints: Record<string, Record<string, unknown>> } | null> {
+    if (this.getGatewayProvider().id !== IMGatewayProviderId.OpenClaw) {
+      return null;
+    }
     try {
       return await this.requestOpenClawGateway<{ schema: Record<string, unknown>; uiHints: Record<string, Record<string, unknown>> }>('config.schema', {});
     } catch (err: any) {

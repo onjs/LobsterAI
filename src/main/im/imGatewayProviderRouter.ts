@@ -99,7 +99,6 @@ const forceProviderByBuildProfile = (
 };
 
 export const resolveIMGatewayProvider = (options?: {
-  envProvider?: string | null;
   envEngine?: string | null;
   configuredEngine?: CoworkAgentEngine | null;
   envBuildProfile?: string | null;
@@ -126,14 +125,8 @@ export const resolveIMGatewayProvider = (options?: {
     return { providerId, source };
   };
 
-  const envProvider = normalizeProviderInstruction(options?.envProvider);
-  if (envProvider && envProvider !== IMGatewayProviderAlias.Auto) {
-    return withBuildProfile(
-      envProvider,
-      IMGatewayProviderSource.Env,
-    );
-  }
-
+  // COWORK_AGENT_ENGINE is the global runtime switch and must take precedence
+  // over IM-specific provider overrides.
   const envEngineProvider = normalizeProviderInstruction(options?.envEngine);
   if (envEngineProvider && envEngineProvider !== IMGatewayProviderAlias.Auto) {
     return withBuildProfile(

@@ -130,42 +130,30 @@ class YdCoworkGatewayProvider implements IManagedGatewayProvider {
 
   async startManagedPlatform(
     platform: IMPlatform,
-    deps: IMGatewayProviderRuntimeDeps,
+    _deps: IMGatewayProviderRuntimeDeps,
   ): Promise<boolean> {
     if (!this.supportsManagedPlatform(platform)) {
       return false;
     }
 
-    if (!(deps.isOpenClawIntegrationEnabled?.() ?? true)) {
-      console.log(
-        `[IMGatewayProvider] yd_cowork fallback skipped for ${platform} start because OpenClaw integration is disabled`,
-      );
-      return false;
-    }
     console.log(
-      `[IMGatewayProvider] yd_cowork compatibility fallback delegates ${platform} start to OpenClaw gateway`,
+      `[IMGatewayProvider] yd_cowork provider does not support managed platform ${platform}`,
     );
-    return this.openClawCompatibilityProvider.startManagedPlatform(platform, deps);
+    return false;
   }
 
   async stopManagedPlatform(
     platform: IMPlatform,
-    deps: IMGatewayProviderRuntimeDeps,
+    _deps: IMGatewayProviderRuntimeDeps,
   ): Promise<boolean> {
     if (!this.supportsManagedPlatform(platform)) {
       return false;
     }
 
-    if (!(deps.isOpenClawIntegrationEnabled?.() ?? true)) {
-      console.log(
-        `[IMGatewayProvider] yd_cowork fallback skipped for ${platform} stop because OpenClaw integration is disabled`,
-      );
-      return false;
-    }
     console.log(
-      `[IMGatewayProvider] yd_cowork compatibility fallback delegates ${platform} stop to OpenClaw gateway`,
+      `[IMGatewayProvider] yd_cowork provider does not support managed platform ${platform}`,
     );
-    return this.openClawCompatibilityProvider.stopManagedPlatform(platform, deps);
+    return false;
   }
 
   async startAllManagedPlatforms(

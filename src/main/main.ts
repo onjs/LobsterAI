@@ -780,13 +780,8 @@ const resolveCoworkCapabilities = (): {
 } => {
   const buildProfile = resolveIMGatewayBuildProfileFromEnv();
   const agentEngines = resolveAllowedCoworkAgentEnginesByBuildProfile();
+  // Scheduled task backend is coupled to COWORK_AGENT_ENGINE.
   const scheduledTaskBackends: STBackendType[] = [STBackend.Auto];
-  if (agentEngines.includes('yd_cowork')) {
-    scheduledTaskBackends.push(STBackend.YdCowork);
-  }
-  if (agentEngines.includes('openclaw')) {
-    scheduledTaskBackends.push(STBackend.OpenClaw);
-  }
   return {
     buildProfile,
     openClawRuntimeAllowed: agentEngines.includes('openclaw'),
@@ -797,7 +792,7 @@ const resolveCoworkCapabilities = (): {
 };
 
 const isOpenClawIntegrationEnabled = (): boolean => (
-  isOpenClawRuntimeAllowedByBuildProfile()
+  isOpenClawRuntimeAllowedByBuildProfile() && resolveCoworkAgentEngine() === 'openclaw'
 );
 
 const normalizeCoworkAgentEngine = (
@@ -895,20 +890,18 @@ const resolveCoworkAgentEngine = (): CoworkAgentEngine => {
 const resolveScheduledTaskBackendFromConfig = (
   config: Pick<ReturnType<CoworkStore['getConfig']>, 'scheduledTaskBackend' | 'agentEngine'>,
 ): Exclude<STBackendType, 'auto'> => {
-  const configured = config.scheduledTaskBackend;
-  const fallbackBackend = normalizeCoworkAgentEngine(config.agentEngine) === 'openclaw'
+  const normalizedEngine = normalizeCoworkAgentEngine(config.agentEngine);
+  const coupledBackend = normalizedEngine === 'openclaw'
     ? STBackend.OpenClaw
     : STBackend.YdCowork;
-  if (configured === STBackend.OpenClaw || configured === STBackend.YdCowork) {
-    if (configured === STBackend.OpenClaw && !isOpenClawRuntimeAllowedByBuildProfile()) {
-      return fallbackBackend;
-    }
-    if (configured === STBackend.YdCowork && !isYdCoworkRuntimeAllowedByBuildProfile()) {
-      return fallbackBackend;
-    }
-    return configured;
+
+  if (coupledBackend === STBackend.OpenClaw && !isOpenClawRuntimeAllowedByBuildProfile()) {
+    return STBackend.YdCowork;
   }
-  return fallbackBackend;
+  if (coupledBackend === STBackend.YdCowork && !isYdCoworkRuntimeAllowedByBuildProfile()) {
+    return STBackend.OpenClaw;
+  }
+  return coupledBackend;
 };
 
 const resolveScheduledTaskBackend = (): Exclude<STBackendType, 'auto'> => {
@@ -3609,18 +3602,6 @@ if (!gotTheLock) {
       const normalizedAgentEngine = requestedAgentEngine
         ? normalizeCoworkAgentEngine(requestedAgentEngine)
         : undefined;
-      const fallbackScheduledTaskBackend = normalizeCoworkAgentEngine(
-        normalizedAgentEngine ?? getCoworkStore().getConfig().agentEngine,
-      ) === 'openclaw'
-        ? STBackend.OpenClaw
-        : STBackend.YdCowork;
-      const normalizedScheduledTaskBackend = config.scheduledTaskBackend === STBackend.OpenClaw
-        ? (isOpenClawRuntimeAllowedByBuildProfile() ? STBackend.OpenClaw : fallbackScheduledTaskBackend)
-        : config.scheduledTaskBackend === STBackend.YdCowork
-          ? (isYdCoworkRuntimeAllowedByBuildProfile() ? STBackend.YdCowork : fallbackScheduledTaskBackend)
-          : config.scheduledTaskBackend === STBackend.Auto
-            ? STBackend.Auto
-            : undefined;
       const normalizedMemoryEnabled = typeof config.memoryEnabled === 'boolean'
         ? config.memoryEnabled
         : undefined;
@@ -3646,7 +3627,8 @@ if (!gotTheLock) {
         ...config,
         executionMode: normalizedExecutionMode,
         agentEngine: normalizedAgentEngine,
-        scheduledTaskBackend: normalizedScheduledTaskBackend,
+        // Coupled mode: backend follows agentEngine; ignore standalone backend config.
+        scheduledTaskBackend: undefined,
         memoryEnabled: normalizedMemoryEnabled,
         memoryImplicitUpdateEnabled: normalizedMemoryImplicitUpdateEnabled,
         memoryLlmJudgeEnabled: normalizedMemoryLlmJudgeEnabled,
@@ -4253,6 +4235,9 @@ if (!gotTheLock) {
   });
   const handleIMConfigSchemaRequest = async () => {
     try {
+      if (!isOpenClawIntegrationEnabled()) {
+        return { success: true, result: null };
+      }
       const result = await getIMGatewayManager().getOpenClawConfigSchema();
       return { success: true, result };
     } catch (error) {
@@ -4270,7 +4255,7 @@ if (!gotTheLock) {
   ipcMain.handle('im:pairing:list', async (_event, platform: string) => {
     try {
       if (!isOpenClawIntegrationEnabled()) {
-        return { success: false, requests: [], allowFrom: [], error: 'OpenClaw integration is disabled by build profile' };
+        return { success: false, requests: [], allowFrom: [], error: 'OpenClaw integration is disabled by current cowork engine or build profile' };
       }
       const stateDir = getOpenClawEngineManager().getStateDir();
       const requests = listPairingRequests(platform, stateDir);
@@ -4289,7 +4274,7 @@ if (!gotTheLock) {
   ipcMain.handle('im:pairing:approve', async (_event, platform: string, code: string) => {
     try {
       if (!isOpenClawIntegrationEnabled()) {
-        return { success: false, error: 'OpenClaw integration is disabled by build profile' };
+        return { success: false, error: 'OpenClaw integration is disabled by current cowork engine or build profile' };
       }
       const stateDir = getOpenClawEngineManager().getStateDir();
       const approved = approvePairingCode(platform, code, stateDir);
@@ -4314,7 +4299,7 @@ if (!gotTheLock) {
   ipcMain.handle('im:pairing:reject', async (_event, platform: string, code: string) => {
     try {
       if (!isOpenClawIntegrationEnabled()) {
-        return { success: false, error: 'OpenClaw integration is disabled by build profile' };
+        return { success: false, error: 'OpenClaw integration is disabled by current cowork engine or build profile' };
       }
       const stateDir = getOpenClawEngineManager().getStateDir();
       const rejected = rejectPairingRequest(platform, code, stateDir);
