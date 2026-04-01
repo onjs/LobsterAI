@@ -16,6 +16,7 @@ import {
   WecomOpenClawConfig,
   PopoOpenClawConfig,
   WeixinOpenClawConfig,
+  WeixinStoredCredential,
   IMSettings,
   IMPlatform,
   IMSessionMapping,
@@ -597,6 +598,30 @@ export class IMStore {
     this.setConfigValue('weixin', { ...current, ...config });
   }
 
+  getWeixinCredential(accountId: string): WeixinStoredCredential | null {
+    const normalizedAccountId = accountId.trim();
+    if (!normalizedAccountId) return null;
+    return this.getConfigValue<WeixinStoredCredential>(`weixinCredential:${normalizedAccountId}`) ?? null;
+  }
+
+  setWeixinCredential(accountId: string, credential: {
+    token: string;
+    baseUrl: string;
+    userId: string;
+  }): WeixinStoredCredential {
+    const normalizedAccountId = accountId.trim();
+    const normalizedBaseUrl = credential.baseUrl.trim().replace(/\/+$/, '');
+    const record: WeixinStoredCredential = {
+      accountId: normalizedAccountId,
+      token: credential.token.trim(),
+      baseUrl: normalizedBaseUrl,
+      userId: credential.userId.trim(),
+      updatedAt: Date.now(),
+    };
+    this.setConfigValue(`weixinCredential:${normalizedAccountId}`, record);
+    return record;
+  }
+
   // ==================== IM Settings ====================
 
   getIMSettings(): IMSettings {
@@ -632,7 +657,8 @@ export class IMStore {
     const hasXiaomifeng = !!(config.xiaomifeng?.clientId && config.xiaomifeng?.secret);
     const hasQQ = !!(config.qq?.appId && config.qq?.appSecret);
     const hasWecom = !!(config.wecom?.botId && config.wecom?.secret);
-    return hasDingTalk || hasFeishu || hasTelegram || hasDiscord || hasNim || hasXiaomifeng || hasQQ || hasWecom;
+    const hasWeixin = !!config.weixin?.accountId;
+    return hasDingTalk || hasFeishu || hasTelegram || hasDiscord || hasNim || hasXiaomifeng || hasQQ || hasWecom || hasWeixin;
   }
 
   // ==================== Notification Target Persistence ====================

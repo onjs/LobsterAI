@@ -119,4 +119,29 @@ describe('imStore', () => {
     const fallbackRun = recoverable.find((item) => item.runId === 'run-fallback');
     expect(fallbackRun?.conversationId).toBe('conv-3');
   });
+
+  test('stores and retrieves weixin credential by account id', () => {
+    const { store } = createStore();
+    const saved = store.setWeixinCredential(' account-1 ', {
+      token: ' token-1 ',
+      baseUrl: 'https://ilinkai.weixin.qq.com/',
+      userId: ' user-1 ',
+    });
+
+    expect(saved.accountId).toBe('account-1');
+    expect(saved.token).toBe('token-1');
+    expect(saved.baseUrl).toBe('https://ilinkai.weixin.qq.com');
+    expect(saved.userId).toBe('user-1');
+
+    const loaded = store.getWeixinCredential('account-1');
+    expect(loaded).toEqual(saved);
+  });
+
+  test('treats weixin account id as configured channel', () => {
+    const { store } = createStore();
+    expect(store.isConfigured()).toBe(false);
+
+    store.setWeixinConfig({ enabled: true, accountId: 'wx-account' });
+    expect(store.isConfigured()).toBe(true);
+  });
 });

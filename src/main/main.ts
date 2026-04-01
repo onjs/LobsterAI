@@ -52,6 +52,7 @@ import { IMGatewayManager, IMPlatform, IMGatewayConfig } from './im';
 import {
   IMGatewayBuildProfile,
   IMGatewayProviderEnvKey,
+  IMGatewayProviderId,
   resolveIMGatewayBuildProfile,
 } from './im/imGatewayProviderRouter';
 import { CoworkIpcChannel } from './coworkIpcChannels';
@@ -4211,7 +4212,11 @@ if (!gotTheLock) {
   ipcMain.handle('im:weixin:qr-login-wait', async (_event, accountId?: string) => {
     try {
       const result = await getIMGatewayManager().weixinQrLoginWait(accountId);
-      if (result.connected && isOpenClawIntegrationEnabled()) {
+      if (
+        result.connected
+        && isOpenClawIntegrationEnabled()
+        && getIMGatewayManager().getGatewayProviderId() === IMGatewayProviderId.OpenClaw
+      ) {
         // Restart gateway so the plugin picks up the new token and starts
         // a fresh monitor loop (the old one may be stuck in a session pause).
         console.log('[IMGatewayManager] Weixin login succeeded, restarting OpenClaw gateway');

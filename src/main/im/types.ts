@@ -295,6 +295,14 @@ export interface WeixinOpenClawConfig {
   debug: boolean;
 }
 
+export interface WeixinStoredCredential {
+  accountId: string;
+  token: string;
+  baseUrl: string;
+  userId: string;
+  updatedAt: number;
+}
+
 export interface WeixinGatewayStatus {
   connected: boolean;
   startedAt: number | null;

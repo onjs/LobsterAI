@@ -7,6 +7,8 @@ export * from './types';
 export { IMStore } from './imStore';
 export { NimGateway } from './nimGateway';
 export { YdFeishuGateway } from './ydFeishuGateway';
+export { YdWeixinGateway } from './ydWeixinGateway';
+export { YdWeixinAuth, WeixinAuthErrorCodes, WeixinAuthDefaultsConfig } from './ydWeixinAuth';
 export { IMChatHandler } from './imChatHandler';
 export { IMCoworkHandler, type IMCoworkHandlerOptions } from './imCoworkHandler';
 export { IMGatewayManager, type IMGatewayManagerOptions } from './imGatewayManager';

@@ -10,6 +10,12 @@ import { t } from '../i18n';
 import { NimGateway } from './nimGateway';
 import { XiaomifengGateway } from './xiaomifengGateway';
 import { YdFeishuGateway } from './ydFeishuGateway';
+import { YdWeixinGateway } from './ydWeixinGateway';
+import {
+  YdWeixinAuth,
+  WeixinAuthErrorCodes,
+  WeixinAuthDefaultsConfig,
+} from './ydWeixinAuth';
 import { IMChatHandler } from './imChatHandler';
 import { IMCoworkHandler } from './imCoworkHandler';
 import { IMStore, type IMOutboundDeliveryRecord } from './imStore';
@@ -129,6 +135,8 @@ export class IMGatewayManager extends EventEmitter {
   private nimGateway: NimGateway;
   private xiaomifengGateway: XiaomifengGateway;
   private feishuGateway: YdFeishuGateway;
+  private weixinGateway: YdWeixinGateway;
+  private weixinAuth = new YdWeixinAuth();
   private imStore: IMStore;
   private chatHandler: IMChatHandler | null = null;
   private coworkHandler: IMCoworkHandler | null = null;
@@ -173,6 +181,7 @@ export class IMGatewayManager extends EventEmitter {
     this.nimGateway = new NimGateway();
     this.xiaomifengGateway = new XiaomifengGateway();
     this.feishuGateway = new YdFeishuGateway(this.webhookHub);
+    this.weixinGateway = new YdWeixinGateway();
 
     // Store Cowork dependencies if provided
     if (options?.coworkRuntime && options?.coworkStore) {
@@ -260,6 +269,32 @@ export class IMGatewayManager extends EventEmitter {
 
   private shouldUseNativeFeishuGateway(provider: IManagedGatewayProvider): boolean {
     return provider.id === IMGatewayProviderId.YdCowork;
+  }
+
+  private shouldUseNativeWeixinGateway(provider: IManagedGatewayProvider): boolean {
+    return provider.id === IMGatewayProviderId.YdCowork;
+  }
+
+  private resolveWeixinCredential(accountId: string): {
+    token: string;
+    baseUrl: string;
+    accountId: string;
+    userId: string;
+  } | null {
+    const normalizedAccountId = accountId.trim();
+    if (!normalizedAccountId) return null;
+    const credential = this.imStore.getWeixinCredential(normalizedAccountId);
+    if (!credential) return null;
+    return {
+      token: credential.token,
+      baseUrl: credential.baseUrl,
+      accountId: credential.accountId,
+      userId: credential.userId,
+    };
+  }
+
+  getGatewayProviderId(): IMGatewayProviderId {
+    return this.getGatewayProvider().id;
   }
 
   private setupGatewayBuses(): void {
@@ -784,6 +819,24 @@ export class IMGatewayManager extends EventEmitter {
       this.emit('message', message);
     });
 
+    // Weixin native gateway events (yd_cowork provider)
+    this.weixinGateway.on('status', () => {
+      this.emit('statusChange', this.getStatus());
+    });
+    this.weixinGateway.on('connected', () => {
+      this.emit('statusChange', this.getStatus());
+    });
+    this.weixinGateway.on('disconnected', () => {
+      this.emit('statusChange', this.getStatus());
+    });
+    this.weixinGateway.on('error', (error) => {
+      this.emit('error', { platform: 'weixin', error });
+      this.emit('statusChange', this.getStatus());
+    });
+    this.weixinGateway.on('message', (message: IMMessage) => {
+      this.emit('message', message);
+    });
+
     // Xiaomifeng events
     this.xiaomifengGateway.on('status', () => {
       this.emit('statusChange', this.getStatus());
@@ -837,7 +890,10 @@ export class IMGatewayManager extends EventEmitter {
 
     // WeCom runs via OpenClaw; no direct reconnection needed
 
-    // Weixin runs via OpenClaw; no direct reconnection needed
+    if (this.shouldUseNativeWeixinGateway(provider) && !this.weixinGateway.isConnected()) {
+      console.log('[IMGatewayManager] Reconnecting Weixin...');
+      this.weixinGateway.reconnectIfNeeded();
+    }
 
     // POPO runs via OpenClaw; no direct reconnection needed
   }
@@ -963,6 +1019,7 @@ export class IMGatewayManager extends EventEmitter {
 
     this.nimGateway.setMessageCallback(messageHandler);
     this.feishuGateway.setMessageCallback(messageHandler);
+    this.weixinGateway.setMessageCallback(messageHandler);
     this.xiaomifengGateway.setMessageCallback(messageHandler);
   }
 
@@ -975,8 +1032,10 @@ export class IMGatewayManager extends EventEmitter {
       if (platform === 'nim') {
         target = this.nimGateway.getNotificationTarget();
       }
+      if (platform === 'weixin' && this.shouldUseNativeWeixinGateway(this.getGatewayProvider())) {
+        target = this.weixinGateway.getNotificationTarget();
+      }
       // WeCom runs via OpenClaw; notification target not managed locally
-      // Weixin runs via OpenClaw; notification target not managed locally
       // POPO runs via OpenClaw; notification target not managed locally
       if (target != null) {
         this.imStore.setNotificationTarget(platform, target);
@@ -997,8 +1056,10 @@ export class IMGatewayManager extends EventEmitter {
       if (platform === 'nim') {
         this.nimGateway.setNotificationTarget(target);
       }
+      if (platform === 'weixin' && this.shouldUseNativeWeixinGateway(this.getGatewayProvider())) {
+        this.weixinGateway.setNotificationTarget(target);
+      }
       // WeCom runs via OpenClaw; notification target not managed locally
-      // Weixin runs via OpenClaw; notification target not managed locally
       // POPO runs via OpenClaw; notification target not managed locally
       console.log(`[IMGatewayManager] Restored notification target for ${platform}`);
     } catch (err: any) {
@@ -1137,7 +1198,29 @@ export class IMGatewayManager extends EventEmitter {
 
     // WeCom runs via OpenClaw; config changes are synced via OpenClawConfigSync
 
-    // Weixin runs via OpenClaw; config changes are synced via OpenClawConfigSync
+    if (options?.syncGateway && config.weixin) {
+      const provider = this.getGatewayProvider();
+      if (this.shouldUseNativeWeixinGateway(provider)) {
+        const oldWeixin = previousConfig.weixin;
+        const newWeixin = { ...oldWeixin, ...config.weixin };
+        const accountChanged = newWeixin.accountId !== oldWeixin.accountId;
+        const shouldBeActive = Boolean(newWeixin.enabled && newWeixin.accountId);
+
+        if (!shouldBeActive && this.weixinGateway.isRunning()) {
+          void this.stopGateway('weixin').catch((err) => {
+            console.error('[IMGatewayManager] Failed to stop native Weixin after config change:', err.message);
+          });
+        } else if (shouldBeActive && accountChanged) {
+          void this.restartGateway('weixin').catch((err) => {
+            console.error('[IMGatewayManager] Failed to restart native Weixin after config change:', err.message);
+          });
+        } else if (shouldBeActive && !this.weixinGateway.isRunning()) {
+          void this.startGateway('weixin').catch((err) => {
+            console.error('[IMGatewayManager] Failed to start native Weixin after config change:', err.message);
+          });
+        }
+      }
+    }
 
     // POPO runs via OpenClaw; config changes are synced via OpenClawConfigSync
 
@@ -1155,6 +1238,7 @@ export class IMGatewayManager extends EventEmitter {
     const config = this.getConfig();
     const provider = this.getGatewayProvider();
     const useNativeFeishuGateway = this.shouldUseNativeFeishuGateway(provider);
+    const useNativeWeixinGateway = this.shouldUseNativeWeixinGateway(provider);
     // Telegram runs via OpenClaw; reflect enabled+configured state as connected
     const tgConfig = config.telegram;
     const telegramStatus = {
@@ -1227,13 +1311,15 @@ export class IMGatewayManager extends EventEmitter {
         lastInboundAt: null as number | null,
         lastOutboundAt: null as number | null,
       },
-      weixin: {
-        connected: Boolean(config.weixin?.enabled && config.weixin?.accountId),
-        startedAt: null as number | null,
-        lastError: null as string | null,
-        lastInboundAt: null as number | null,
-        lastOutboundAt: null as number | null,
-      },
+      weixin: useNativeWeixinGateway
+        ? this.weixinGateway.getStatus()
+        : {
+            connected: Boolean(config.weixin?.enabled && config.weixin?.accountId),
+            startedAt: null as number | null,
+            lastError: null as string | null,
+            lastInboundAt: null as number | null,
+            lastOutboundAt: null as number | null,
+          },
       popo: {
         connected: Boolean(config.popo?.enabled && config.popo.appKey && config.popo.appSecret && config.popo.aesKey && (config.popo.connectionMode === 'websocket' || config.popo.token)),
         startedAt: null as number | null,
@@ -1277,14 +1363,18 @@ export class IMGatewayManager extends EventEmitter {
       return this.testWecomOpenClawConnectivity(configOverride);
     }
 
-    // Weixin always uses OpenClaw mode
-    if (platform === 'weixin') {
+    // Weixin uses OpenClaw mode only when provider is openclaw.
+    if (platform === 'weixin' && this.getGatewayProvider().id === IMGatewayProviderId.OpenClaw) {
       return this.testWeixinOpenClawConnectivity(configOverride);
     }
 
     // POPO always uses OpenClaw mode
     if (platform === 'popo') {
       return this.testPopoOpenClawConnectivity(configOverride);
+    }
+
+    if (platform === 'weixin') {
+      return this.testWeixinYdConnectivity(configOverride);
     }
 
     const config = this.buildMergedConfig(configOverride);
@@ -1454,6 +1544,18 @@ export class IMGatewayManager extends EventEmitter {
         await this.feishuGateway.stop();
       }
     }
+    if (platform === 'weixin') {
+      if (this.shouldUseNativeWeixinGateway(provider)) {
+        const credential = this.resolveWeixinCredential(config.weixin.accountId);
+        this.weixinGateway.setCredential(credential);
+        await this.weixinGateway.start(config.weixin, credential);
+        this.restoreNotificationTarget(platform);
+        return;
+      }
+      if (this.weixinGateway.isRunning()) {
+        await this.weixinGateway.stop();
+      }
+    }
 
     const managed = await provider.startManagedPlatform(
       platform,
@@ -1479,6 +1581,10 @@ export class IMGatewayManager extends EventEmitter {
     const provider = this.getGatewayProvider();
     if (platform === 'feishu' && this.shouldUseNativeFeishuGateway(provider)) {
       await this.feishuGateway.stop();
+      return;
+    }
+    if (platform === 'weixin' && this.shouldUseNativeWeixinGateway(provider)) {
+      await this.weixinGateway.stop();
       return;
     }
 
@@ -1538,6 +1644,16 @@ export class IMGatewayManager extends EventEmitter {
       }
     }
 
+    if (this.shouldUseNativeWeixinGateway(provider)
+      && config.weixin.enabled
+      && config.weixin.accountId) {
+      try {
+        await this.startGateway('weixin');
+      } catch (error: any) {
+        console.error(`[IMGatewayManager] Failed to start native Weixin gateway: ${error.message}`);
+      }
+    }
+
     // --- Managed platforms: collect and batch ---
 
     const managedPlatformsToStart: IMPlatform[] = [];
@@ -1563,7 +1679,7 @@ export class IMGatewayManager extends EventEmitter {
     if (config.wecom?.enabled && config.wecom?.botId && config.wecom?.secret) {
       managedPlatformsToStart.push('wecom');
     }
-    if (config.weixin?.enabled) {
+    if (!this.shouldUseNativeWeixinGateway(provider) && config.weixin?.enabled) {
       managedPlatformsToStart.push('weixin');
     }
     if (config.popo?.enabled && config.popo?.appKey && config.popo?.appSecret && config.popo?.aesKey && (config.popo.connectionMode === 'websocket' || config.popo.token)) {
@@ -1604,13 +1720,14 @@ export class IMGatewayManager extends EventEmitter {
     }
     await Promise.all([
       this.feishuGateway.stop(),
+      this.weixinGateway.stop(),
       this.xiaomifengGateway.stop(),
     ]);
     await this.webhookHub.stopAll();
   }
 
   isAnyConnected(): boolean {
-    return this.feishuGateway.isConnected() || this.xiaomifengGateway.isConnected();
+    return this.feishuGateway.isConnected() || this.weixinGateway.isConnected() || this.xiaomifengGateway.isConnected();
   }
 
   isConnected(platform: IMPlatform): boolean {
@@ -1656,6 +1773,9 @@ export class IMGatewayManager extends EventEmitter {
       return Boolean(config.wecom?.enabled && config.wecom.botId && config.wecom.secret);
     }
     if (platform === 'weixin') {
+      if (this.shouldUseNativeWeixinGateway(this.getGatewayProvider())) {
+        return this.weixinGateway.isConnected();
+      }
       const config = this.getConfig();
       return Boolean(config.weixin?.enabled && config.weixin?.accountId);
     }
@@ -1676,6 +1796,9 @@ export class IMGatewayManager extends EventEmitter {
     try {
       if (platform === 'feishu' && this.shouldUseNativeFeishuGateway(this.getGatewayProvider())) {
         return this.feishuGateway.sendNotification(text);
+      }
+      if (platform === 'weixin' && this.shouldUseNativeWeixinGateway(this.getGatewayProvider())) {
+        return this.weixinGateway.sendNotification(text);
       }
 
       if (platform === 'xiaomifeng') {
@@ -1700,6 +1823,10 @@ export class IMGatewayManager extends EventEmitter {
     try {
       if (platform === 'feishu' && this.shouldUseNativeFeishuGateway(this.getGatewayProvider())) {
         await this.feishuGateway.sendNotification(text);
+        return true;
+      }
+      if (platform === 'weixin' && this.shouldUseNativeWeixinGateway(this.getGatewayProvider())) {
+        await this.weixinGateway.sendNotification(text);
         return true;
       }
 
@@ -2075,6 +2202,69 @@ export class IMGatewayManager extends EventEmitter {
     return { platform, testedAt, verdict, checks };
   }
 
+  private async testWeixinYdConnectivity(
+    configOverride?: Partial<IMGatewayConfig>
+  ): Promise<IMConnectivityTestResult> {
+    const checks: IMConnectivityCheck[] = [];
+    const testedAt = Date.now();
+    const platform: IMPlatform = 'weixin';
+
+    const mergedConfig = this.buildMergedConfig(configOverride);
+    const wxConfig = mergedConfig.weixin;
+
+    if (!wxConfig?.enabled) {
+      checks.push({
+        code: 'gateway_running',
+        level: 'info',
+        message: t('imWeixinNotEnabled'),
+        suggestion: t('imWeixinEnableSuggestion'),
+      });
+      return { platform, testedAt, verdict: 'pass', checks };
+    }
+
+    if (!wxConfig.accountId) {
+      checks.push({
+        code: 'missing_credentials',
+        level: 'fail',
+        message: t('imMissingCredentials', { fields: 'accountId' }),
+        suggestion: t('imWeixinCredentialMissingSuggestion'),
+      });
+      return { platform, testedAt, verdict: 'fail', checks };
+    }
+
+    const credential = this.imStore.getWeixinCredential(wxConfig.accountId);
+    if (!credential?.token) {
+      checks.push({
+        code: 'missing_credentials',
+        level: 'fail',
+        message: t('imWeixinCredentialMissing'),
+        suggestion: t('imWeixinCredentialMissingSuggestion'),
+      });
+      return { platform, testedAt, verdict: 'fail', checks };
+    }
+
+    checks.push({
+      code: 'auth_check',
+      level: 'pass',
+      message: t('imWeixinConfigReady'),
+    });
+
+    checks.push({
+      code: 'gateway_running',
+      level: this.weixinGateway.isConnected() ? 'pass' : 'info',
+      message: this.weixinGateway.isConnected() ? t('imChannelRunning') : t('imWeixinYdHint'),
+      suggestion: this.weixinGateway.isConnected() ? undefined : t('imChannelEnabledNotConnectedSuggestion'),
+    });
+
+    const verdict: IMConnectivityVerdict = checks.some(c => c.level === 'fail')
+      ? 'fail'
+      : checks.some(c => c.level === 'warn')
+        ? 'warn'
+        : 'pass';
+
+    return { platform, testedAt, verdict, checks };
+  }
+
   private async testWeixinOpenClawConnectivity(
     configOverride?: Partial<IMGatewayConfig>
   ): Promise<IMConnectivityTestResult> {
@@ -2124,6 +2314,24 @@ export class IMGatewayManager extends EventEmitter {
    * Returns the QR code data URL and a session key for polling.
    */
   async weixinQrLoginStart(): Promise<{ qrDataUrl?: string; message: string; sessionKey?: string }> {
+    const provider = this.getGatewayProvider();
+    if (this.shouldUseNativeWeixinGateway(provider)) {
+      const result = await this.weixinAuth.startLogin({
+        baseUrl: WeixinAuthDefaultsConfig.BaseUrl,
+        force: true,
+      });
+      if (!result.ok || !result.qrDataUrl || !result.sessionKey) {
+        return {
+          message: this.resolveWeixinAuthStartMessage(result.errorCode, result.errorDetail),
+        };
+      }
+      return {
+        qrDataUrl: result.qrDataUrl,
+        message: t('imWeixinQrReady'),
+        sessionKey: result.sessionKey,
+      };
+    }
+
     const client = this.getOpenClawGatewayClient?.();
     if (!client) {
       await this.ensureOpenClawGatewayReady?.();
@@ -2154,6 +2362,32 @@ export class IMGatewayManager extends EventEmitter {
    * Wait for Weixin QR code scan completion via OpenClaw Gateway RPC.
    */
   async weixinQrLoginWait(accountId?: string): Promise<{ connected: boolean; message: string; accountId?: string }> {
+    const provider = this.getGatewayProvider();
+    if (this.shouldUseNativeWeixinGateway(provider)) {
+      const sessionKey = accountId?.trim() || '';
+      if (!sessionKey) {
+        return { connected: false, message: t('imWeixinSessionMissing') };
+      }
+      const result = await this.weixinAuth.waitLogin(sessionKey, { timeoutMs: 480000 });
+      if (!result.connected || !result.accountId || !result.credential) {
+        return {
+          connected: false,
+          message: this.resolveWeixinAuthWaitMessage(result.errorCode, result.errorDetail),
+        };
+      }
+      this.imStore.setWeixinCredential(result.accountId, {
+        token: result.credential.token,
+        baseUrl: result.credential.baseUrl,
+        userId: result.credential.userId,
+      });
+      this.weixinGateway.setCredential(this.resolveWeixinCredential(result.accountId));
+      return {
+        connected: true,
+        accountId: result.accountId,
+        message: t('imWeixinQrSuccessMain'),
+      };
+    }
+
     const client = this.getOpenClawGatewayClient?.();
     if (!client) {
       return { connected: false, message: 'OpenClaw Gateway is not connected.' };
@@ -2177,6 +2411,38 @@ export class IMGatewayManager extends EventEmitter {
       console.error('[IMGatewayManager] Weixin QR login wait failed:', err);
       return { connected: false, message: `Login failed: ${String(err)}` };
     }
+  }
+
+  private resolveWeixinAuthStartMessage(
+    errorCode?: string,
+    errorDetail?: string,
+  ): string {
+    if (errorCode === WeixinAuthErrorCodes.StartFailed) {
+      return t('imWeixinQrStartFailed', { error: errorDetail || t('unknownError') });
+    }
+    return t('imWeixinQrStartFailed', { error: errorDetail || t('unknownError') });
+  }
+
+  private resolveWeixinAuthWaitMessage(
+    errorCode?: string,
+    errorDetail?: string,
+  ): string {
+    if (errorCode === WeixinAuthErrorCodes.SessionNotFound) {
+      return t('imWeixinSessionMissing');
+    }
+    if (errorCode === WeixinAuthErrorCodes.SessionExpired) {
+      return t('imWeixinQrExpiredMain');
+    }
+    if (errorCode === WeixinAuthErrorCodes.WaitTimeout) {
+      return t('imWeixinQrWaitTimeout');
+    }
+    if (errorCode === WeixinAuthErrorCodes.InvalidConfirmedPayload) {
+      return t('imWeixinQrInvalidPayload');
+    }
+    if (errorCode === WeixinAuthErrorCodes.PollFailed) {
+      return t('imWeixinQrPollFailed', { error: errorDetail || t('unknownError') });
+    }
+    return t('imWeixinQrFailedMain');
   }
 
   private async testNimOpenClawConnectivity(
@@ -2470,6 +2736,12 @@ export class IMGatewayManager extends EventEmitter {
         case 'feishu':
           if (this.shouldUseNativeFeishuGateway(this.getGatewayProvider())) {
             await this.feishuGateway.sendConversationNotification(conversationId, text);
+            return true;
+          }
+          return this.sendNotificationWithMedia(platform, text);
+        case 'weixin':
+          if (this.shouldUseNativeWeixinGateway(this.getGatewayProvider())) {
+            await this.weixinGateway.sendConversationNotification(conversationId, text);
             return true;
           }
           return this.sendNotificationWithMedia(platform, text);
