@@ -84,7 +84,7 @@ const migrateCustomProviders = (config: AppConfig): AppConfig => {
   if ('custom' in providers && !isCustomProvider('custom')) {
     const legacyCustom = providers['custom'];
     if (legacyCustom) {
-      const updatedProviders = { ...providers };
+      const updatedProviders = { ...providers } as Record<string, any>;
       updatedProviders['custom_0'] = { ...legacyCustom };
       delete updatedProviders['custom'];
       return {

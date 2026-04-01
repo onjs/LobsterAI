@@ -238,6 +238,7 @@ export interface AppConfig {
       authType?: 'apikey' | 'oauth';
       oauthRefreshToken?: string;
       oauthTokenExpiresAt?: number;
+      displayName?: string;
       models?: Array<{
         id: string;
         name: string;
