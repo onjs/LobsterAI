@@ -506,11 +506,15 @@ class CoworkService {
     if (!cowork) return false;
 
     const currentConfig = store.getState().cowork.config;
-    const engineChanged = config.agentEngine !== undefined
-      && config.agentEngine !== currentConfig.agentEngine;
     const result = await cowork.setConfig(config);
     if (result.success) {
-      store.dispatch(setConfig({ ...currentConfig, ...config }));
+      let nextConfig = { ...currentConfig, ...config };
+      const latestConfigResult = await cowork.getConfig();
+      if (latestConfigResult.success && latestConfigResult.config) {
+        nextConfig = latestConfigResult.config;
+      }
+      const engineChanged = nextConfig.agentEngine !== currentConfig.agentEngine;
+      store.dispatch(setConfig(nextConfig));
       if (engineChanged) {
         store.dispatch(clearPendingPermissions());
         store.dispatch(setStreaming(false));

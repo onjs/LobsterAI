@@ -20,6 +20,7 @@
 - 前端 schema IPC 已去 `openclaw` 耦合：新增 `im:config:schema`，旧通道保留兼容。
 - `yd-only` 档位下主进程配置读写已一致化：`cowork:config:get`、`cowork:config:set`、`cowork:session:remoteManaged` 均按有效引擎判定。
 - `yd-only` 档位下配对与微信扫码回调已加 OpenClaw 门禁，避免触发无效 OpenClaw 重启/配对流程。
+- Renderer 侧 `cowork` 配置保存后改为回读主进程配置，避免 build profile 下前端状态与实际生效值不一致。
 
 ## 1. 边界冻结（必须先完成）
 
