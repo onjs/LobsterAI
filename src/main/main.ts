@@ -4045,6 +4045,9 @@ if (!gotTheLock) {
   const doImConfigSync = async () => {
     imConfigSyncRunning = true;
     try {
+      if (!isOpenClawIntegrationEnabled()) {
+        return;
+      }
       await syncOpenClawConfig({
         reason: 'im-config-change',
         restartGatewayIfRunning: true,
@@ -4093,7 +4096,12 @@ if (!gotTheLock) {
       // the global Save button), to avoid frequent gateway restarts on every field blur.
       const hasOpenClawChange = config.telegram || config.discord || config.dingtalk
         || config.feishu || config.qq || config.wecom || config.popo || config.weixin;
-      if (options?.syncGateway && hasOpenClawChange && getOpenClawEngineManager().getStatus().phase === 'running') {
+      if (
+        options?.syncGateway
+        && hasOpenClawChange
+        && isOpenClawIntegrationEnabled()
+        && getOpenClawEngineManager().getStatus().phase === 'running'
+      ) {
         scheduleImConfigSync();
       }
       return { success: true };
@@ -4110,7 +4118,7 @@ if (!gotTheLock) {
   // persisted to DB via im:config:set (without syncGateway flag).
   ipcMain.handle('im:config:sync', async () => {
     try {
-      if (getOpenClawEngineManager().getStatus().phase === 'running') {
+      if (isOpenClawIntegrationEnabled() && getOpenClawEngineManager().getStatus().phase === 'running') {
         scheduleImConfigSync();
       }
       return { success: true };
