@@ -738,6 +738,10 @@ const isOpenClawRuntimeAllowedByBuildProfile = (): boolean => (
   resolveIMGatewayBuildProfileFromEnv() !== IMGatewayBuildProfile.YdOnly
 );
 
+const isOpenClawIntegrationEnabled = (): boolean => (
+  isOpenClawRuntimeAllowedByBuildProfile()
+);
+
 const normalizeCoworkAgentEngine = (
   configured: CoworkAgentEngine | null | undefined,
 ): CoworkAgentEngine => {
@@ -4107,7 +4111,7 @@ if (!gotTheLock) {
   ipcMain.handle('im:weixin:qr-login-wait', async (_event, accountId?: string) => {
     try {
       const result = await getIMGatewayManager().weixinQrLoginWait(accountId);
-      if (result.connected) {
+      if (result.connected && isOpenClawIntegrationEnabled()) {
         // Restart gateway so the plugin picks up the new token and starts
         // a fresh monitor loop (the old one may be stuck in a session pause).
         console.log('[IMGatewayManager] Weixin login succeeded, restarting OpenClaw gateway');
@@ -4160,6 +4164,9 @@ if (!gotTheLock) {
 
   ipcMain.handle('im:pairing:list', async (_event, platform: string) => {
     try {
+      if (!isOpenClawIntegrationEnabled()) {
+        return { success: false, requests: [], allowFrom: [], error: 'OpenClaw integration is disabled by build profile' };
+      }
       const stateDir = getOpenClawEngineManager().getStateDir();
       const requests = listPairingRequests(platform, stateDir);
       const allowFrom = readAllowFromStore(platform, stateDir);
@@ -4176,6 +4183,9 @@ if (!gotTheLock) {
 
   ipcMain.handle('im:pairing:approve', async (_event, platform: string, code: string) => {
     try {
+      if (!isOpenClawIntegrationEnabled()) {
+        return { success: false, error: 'OpenClaw integration is disabled by build profile' };
+      }
       const stateDir = getOpenClawEngineManager().getStateDir();
       const approved = approvePairingCode(platform, code, stateDir);
       if (!approved) {
@@ -4198,6 +4208,9 @@ if (!gotTheLock) {
 
   ipcMain.handle('im:pairing:reject', async (_event, platform: string, code: string) => {
     try {
+      if (!isOpenClawIntegrationEnabled()) {
+        return { success: false, error: 'OpenClaw integration is disabled by build profile' };
+      }
       const stateDir = getOpenClawEngineManager().getStateDir();
       const rejected = rejectPairingRequest(platform, code, stateDir);
       if (!rejected) {
