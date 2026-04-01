@@ -9,13 +9,13 @@ import * as path from 'path';
 import { t } from '../i18n';
 import { NimGateway } from './nimGateway';
 import { XiaomifengGateway } from './xiaomifengGateway';
-import { YdFeishuGateway } from './ydFeishuGateway';
-import { YdWeixinGateway } from './ydWeixinGateway';
+import { YdFeishuGateway } from './channels/feishu';
+import { YdWeixinGateway } from './channels/weixin';
 import {
   YdWeixinAuth,
   WeixinAuthErrorCodes,
   WeixinAuthDefaultsConfig,
-} from './ydWeixinAuth';
+} from './channels/weixin';
 import { IMChatHandler } from './imChatHandler';
 import { IMCoworkHandler } from './imCoworkHandler';
 import { IMStore, type IMOutboundDeliveryRecord } from './imStore';

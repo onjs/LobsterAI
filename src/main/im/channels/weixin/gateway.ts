@@ -5,9 +5,9 @@ import {
   type IMMessage,
   type WeixinGatewayStatus,
   type WeixinOpenClawConfig,
-} from './types';
-import { parseMediaMarkers, stripMediaMarkers } from './dingtalkMediaParser';
-import type { WeixinQrCredential } from './ydWeixinAuth';
+} from '../../types';
+import { parseMediaMarkers, stripMediaMarkers } from '../../dingtalkMediaParser';
+import type { WeixinQrCredential } from './auth';
 
 const WeixinPolicy = {
   Open: 'open',

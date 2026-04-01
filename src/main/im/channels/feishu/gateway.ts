@@ -12,9 +12,9 @@ import {
   type FeishuGatewayStatus,
   type FeishuOpenClawConfig,
   type IMMessage,
-} from './types';
-import { parseMediaMarkers, stripMediaMarkers } from './dingtalkMediaParser';
-import { WebhookHub } from './gateway/webhookHub';
+} from '../../types';
+import { parseMediaMarkers, stripMediaMarkers } from '../../dingtalkMediaParser';
+import { WebhookHub } from '../../gateway/webhookHub';
 
 const FeishuConnectionMode = {
   Websocket: 'websocket',
