@@ -31,6 +31,7 @@ const OPENCLAW_MANAGED_PLATFORMS = new Set<IMPlatform>([
 export interface IMGatewayProviderRuntimeDeps {
   syncOpenClawConfig?: () => Promise<void>;
   ensureOpenClawGatewayConnected?: () => Promise<void>;
+  isOpenClawIntegrationEnabled?: () => boolean;
 }
 
 export interface IManagedGatewayProvider {
@@ -44,6 +45,10 @@ export interface IManagedGatewayProvider {
 
 class OpenClawGatewayProvider implements IManagedGatewayProvider {
   readonly id = IMGatewayProviderId.OpenClaw;
+
+  private canUseOpenClawIntegration(deps: IMGatewayProviderRuntimeDeps): boolean {
+    return deps.isOpenClawIntegrationEnabled?.() ?? true;
+  }
 
   supportsManagedPlatform(platform: IMPlatform): boolean {
     return OPENCLAW_MANAGED_PLATFORMS.has(platform);
@@ -60,6 +65,10 @@ class OpenClawGatewayProvider implements IManagedGatewayProvider {
     if (!this.supportsManagedPlatform(platform)) {
       return false;
     }
+    if (!this.canUseOpenClawIntegration(deps)) {
+      console.warn(`[IMGatewayProvider] skip ${platform} start because OpenClaw integration is disabled`);
+      return false;
+    }
 
     console.log(`[IMGatewayProvider] start managed platform ${platform} via OpenClaw sync`);
     await deps.syncOpenClawConfig?.();
@@ -74,6 +83,10 @@ class OpenClawGatewayProvider implements IManagedGatewayProvider {
     if (!this.supportsManagedPlatform(platform)) {
       return false;
     }
+    if (!this.canUseOpenClawIntegration(deps)) {
+      console.warn(`[IMGatewayProvider] skip ${platform} stop because OpenClaw integration is disabled`);
+      return false;
+    }
 
     console.log(`[IMGatewayProvider] stop managed platform ${platform} via OpenClaw sync`);
     await deps.syncOpenClawConfig?.();
@@ -86,6 +99,12 @@ class OpenClawGatewayProvider implements IManagedGatewayProvider {
   ): Promise<boolean> {
     const activePlatforms = platforms.filter((platform) => this.supportsManagedPlatform(platform));
     if (activePlatforms.length === 0) {
+      return false;
+    }
+    if (!this.canUseOpenClawIntegration(deps)) {
+      console.warn(
+        `[IMGatewayProvider] skip managed platform batch start because OpenClaw integration is disabled: ${activePlatforms.join(', ')}`,
+      );
       return false;
     }
 
@@ -117,6 +136,12 @@ class YdCoworkGatewayProvider implements IManagedGatewayProvider {
       return false;
     }
 
+    if (!(deps.isOpenClawIntegrationEnabled?.() ?? true)) {
+      console.log(
+        `[IMGatewayProvider] yd_cowork fallback skipped for ${platform} start because OpenClaw integration is disabled`,
+      );
+      return false;
+    }
     console.log(
       `[IMGatewayProvider] yd_cowork compatibility fallback delegates ${platform} start to OpenClaw gateway`,
     );
@@ -131,6 +156,12 @@ class YdCoworkGatewayProvider implements IManagedGatewayProvider {
       return false;
     }
 
+    if (!(deps.isOpenClawIntegrationEnabled?.() ?? true)) {
+      console.log(
+        `[IMGatewayProvider] yd_cowork fallback skipped for ${platform} stop because OpenClaw integration is disabled`,
+      );
+      return false;
+    }
     console.log(
       `[IMGatewayProvider] yd_cowork compatibility fallback delegates ${platform} stop to OpenClaw gateway`,
     );

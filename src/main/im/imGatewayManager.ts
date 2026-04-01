@@ -110,6 +110,7 @@ export interface IMGatewayManagerOptions {
   ensureCoworkReady?: () => Promise<void>;
   isOpenClawEngine?: () => boolean;
   getCoworkAgentEngine?: () => CoworkAgentEngine;
+  isOpenClawIntegrationEnabled?: () => boolean;
   syncOpenClawConfig?: () => Promise<void>;
   ensureOpenClawGatewayConnected?: () => Promise<void>;
   getOpenClawGatewayClient?: () => GatewayClientLike | null;
@@ -133,6 +134,7 @@ export class IMGatewayManager extends EventEmitter {
   private ensureCoworkReady: (() => Promise<void>) | null = null;
   private isOpenClawEngine: (() => boolean) | null = null;
   private getCoworkAgentEngine: (() => CoworkAgentEngine) | null = null;
+  private isOpenClawIntegrationEnabled: (() => boolean) | null = null;
   private syncOpenClawConfig: (() => Promise<void>) | null = null;
   private ensureOpenClawGatewayConnected: (() => Promise<void>) | null = null;
   private getOpenClawGatewayClient: (() => GatewayClientLike | null) | null = null;
@@ -175,6 +177,7 @@ export class IMGatewayManager extends EventEmitter {
     this.ensureCoworkReady = options?.ensureCoworkReady ?? null;
     this.isOpenClawEngine = options?.isOpenClawEngine ?? null;
     this.getCoworkAgentEngine = options?.getCoworkAgentEngine ?? null;
+    this.isOpenClawIntegrationEnabled = options?.isOpenClawIntegrationEnabled ?? null;
     this.syncOpenClawConfig = options?.syncOpenClawConfig ?? null;
     this.ensureOpenClawGatewayConnected = options?.ensureOpenClawGatewayConnected ?? null;
     this.getOpenClawGatewayClient = options?.getOpenClawGatewayClient ?? null;
@@ -246,6 +249,7 @@ export class IMGatewayManager extends EventEmitter {
     return {
       syncOpenClawConfig: this.syncOpenClawConfig ?? undefined,
       ensureOpenClawGatewayConnected: this.ensureOpenClawGatewayConnected ?? undefined,
+      isOpenClawIntegrationEnabled: this.isOpenClawIntegrationEnabled ?? undefined,
     };
   }
 
@@ -1387,6 +1391,11 @@ export class IMGatewayManager extends EventEmitter {
     if (managed) {
       return;
     }
+    if (provider.supportsManagedPlatform(platform)) {
+      throw new Error(
+        `Managed platform ${platform} is unavailable for provider ${provider.id} in current runtime profile`,
+      );
+    }
 
     if (platform === 'xiaomifeng') {
       await this.xiaomifengGateway.start(config.xiaomifeng);
@@ -1403,6 +1412,11 @@ export class IMGatewayManager extends EventEmitter {
     );
     if (managed) {
       return;
+    }
+    if (provider.supportsManagedPlatform(platform)) {
+      throw new Error(
+        `Managed platform ${platform} is unavailable for provider ${provider.id} in current runtime profile`,
+      );
     }
 
     if (platform === 'xiaomifeng') {

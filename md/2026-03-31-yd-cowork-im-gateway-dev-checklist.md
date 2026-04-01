@@ -24,6 +24,7 @@
 - 开发脚本已补充 build profile 入口：`electron:dev:yd-only` / `electron:dev:openclaw-only` / `electron:dev:full`。
 - 新增 `cowork:capabilities:get` IPC，前端设置页根据能力禁用不可用引擎/后端，避免“可选但实际被主进程回退”的体验不一致。
 - 主进程对 `openclaw-only` 语义补齐：`agentEngine/scheduledTaskBackend` 归一化均可按 build profile 强约束。
+- `yd_cowork` provider 在 OpenClaw 集成被禁用时不再走兼容 fallback；手动启动托管 IM 平台会返回明确不可用错误，避免“假成功”状态。
 
 ## 1. 边界冻结（必须先完成）
 

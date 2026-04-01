@@ -1503,6 +1503,7 @@ const getIMGatewayManager = () => {
         },
         isOpenClawEngine: () => resolveCoworkAgentEngine() === 'openclaw',
         getCoworkAgentEngine: resolveCoworkAgentEngine,
+        isOpenClawIntegrationEnabled: () => isOpenClawIntegrationEnabled(),
         syncOpenClawConfig: async () => {
           await syncOpenClawConfig({
             reason: 'im-gateway-start',

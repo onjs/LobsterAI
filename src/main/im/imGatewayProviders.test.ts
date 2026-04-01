@@ -41,4 +41,38 @@ describe('imGatewayProviders', () => {
     expect(syncOpenClawConfig).toHaveBeenCalledOnce();
     expect(ensureOpenClawGatewayConnected).toHaveBeenCalledOnce();
   });
+
+  test('yd_cowork provider disables openclaw fallback when integration is blocked', async () => {
+    const provider = createIMGatewayProvider(IMGatewayProviderId.YdCowork);
+    const syncOpenClawConfig = vi.fn(async () => undefined);
+    const ensureOpenClawGatewayConnected = vi.fn(async () => undefined);
+    const isOpenClawIntegrationEnabled = vi.fn(() => false);
+
+    const handled = await provider.startManagedPlatform('feishu', {
+      syncOpenClawConfig,
+      ensureOpenClawGatewayConnected,
+      isOpenClawIntegrationEnabled,
+    });
+
+    expect(handled).toBe(false);
+    expect(syncOpenClawConfig).not.toHaveBeenCalled();
+    expect(ensureOpenClawGatewayConnected).not.toHaveBeenCalled();
+    expect(isOpenClawIntegrationEnabled).toHaveBeenCalled();
+  });
+
+  test('openclaw provider respects integration gate', async () => {
+    const provider = createIMGatewayProvider(IMGatewayProviderId.OpenClaw);
+    const syncOpenClawConfig = vi.fn(async () => undefined);
+    const ensureOpenClawGatewayConnected = vi.fn(async () => undefined);
+
+    const handled = await provider.startManagedPlatform('feishu', {
+      syncOpenClawConfig,
+      ensureOpenClawGatewayConnected,
+      isOpenClawIntegrationEnabled: () => false,
+    });
+
+    expect(handled).toBe(false);
+    expect(syncOpenClawConfig).not.toHaveBeenCalled();
+    expect(ensureOpenClawGatewayConnected).not.toHaveBeenCalled();
+  });
 });
