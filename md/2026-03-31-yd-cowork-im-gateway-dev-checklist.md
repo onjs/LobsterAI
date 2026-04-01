@@ -26,6 +26,7 @@
 - 主进程对 `openclaw-only` 语义补齐：`agentEngine/scheduledTaskBackend` 归一化均可按 build profile 强约束。
 - `yd_cowork` provider 在 OpenClaw 集成被禁用时不再走兼容 fallback；手动启动托管 IM 平台会返回明确不可用错误，避免“假成功”状态。
 - `yd-only` 档位下 IM 配置同步路径已加门禁：不再触发 OpenClaw 配置同步与网关连接尝试。
+- IM 手动启停链路增加失败回滚：若启动/停止失败，会恢复平台 `enabled` 开关，避免配置与实际运行状态漂移。
 
 ## 1. 边界冻结（必须先完成）
 

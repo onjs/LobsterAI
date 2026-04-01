@@ -179,6 +179,18 @@ const ensureZipFileName = (value: string): string => {
   return value.toLowerCase().endsWith('.zip') ? value : `${value}.zip`;
 };
 
+const getIMPlatformEnabled = (config: IMGatewayConfig, platform: IMPlatform): boolean => {
+  const platformConfig = (config as unknown as Record<string, { enabled?: boolean } | undefined>)[platform];
+  return Boolean(platformConfig?.enabled);
+};
+
+const buildIMPlatformEnabledPatch = (
+  platform: IMPlatform,
+  enabled: boolean,
+): Partial<IMGatewayConfig> => (
+  { [platform]: { enabled } } as Partial<IMGatewayConfig>
+);
+
 const padTwoDigits = (value: number): string => value.toString().padStart(2, '0');
 
 const buildLogExportFileName = (): string => {
@@ -4131,13 +4143,18 @@ if (!gotTheLock) {
   });
 
   ipcMain.handle('im:gateway:start', async (_event, platform: IMPlatform) => {
+    const manager = getIMGatewayManager();
+    const previousEnabled = getIMPlatformEnabled(manager.getConfig(), platform);
     try {
-      // Persist enabled state
-      const manager = getIMGatewayManager();
-      manager.setConfig({ [platform]: { enabled: true } });
+      if (!previousEnabled) {
+        manager.setConfig(buildIMPlatformEnabledPatch(platform, true));
+      }
       await manager.startGateway(platform);
       return { success: true };
     } catch (error) {
+      if (!previousEnabled) {
+        manager.setConfig(buildIMPlatformEnabledPatch(platform, false));
+      }
       return {
         success: false,
         error: error instanceof Error ? error.message : 'Failed to start gateway',
@@ -4146,13 +4163,18 @@ if (!gotTheLock) {
   });
 
   ipcMain.handle('im:gateway:stop', async (_event, platform: IMPlatform) => {
+    const manager = getIMGatewayManager();
+    const previousEnabled = getIMPlatformEnabled(manager.getConfig(), platform);
     try {
-      // Persist disabled state
-      const manager = getIMGatewayManager();
-      manager.setConfig({ [platform]: { enabled: false } });
+      if (previousEnabled) {
+        manager.setConfig(buildIMPlatformEnabledPatch(platform, false));
+      }
       await manager.stopGateway(platform);
       return { success: true };
     } catch (error) {
+      if (previousEnabled) {
+        manager.setConfig(buildIMPlatformEnabledPatch(platform, true));
+      }
       return {
         success: false,
         error: error instanceof Error ? error.message : 'Failed to stop gateway',
