@@ -4839,6 +4839,66 @@ export class CoworkRunner extends EventEmitter {
     return trimmed;
   }
 
+  private getResultFailureMessage(payload: Record<string, unknown>, subtype: string): string {
+    const payloadErrors = Array.isArray(payload.errors)
+      ? payload.errors
+        .filter((error) => typeof error === 'string')
+        .map((error) => (error as string).trim())
+        .filter((error) => error && error.toLowerCase() !== 'unknown')
+      : [];
+    if (payloadErrors.length > 0) {
+      return payloadErrors.join('\n');
+    }
+
+    const payloadError = this.normalizeSdkError(payload.error);
+    if (payloadError) {
+      return payloadError;
+    }
+
+    const resultRecord = payload.result && typeof payload.result === 'object'
+      ? (payload.result as Record<string, unknown>)
+      : null;
+
+    if (resultRecord) {
+      const candidateKeys = ['error', 'message', 'detail', 'reason', 'status'];
+      for (const key of candidateKeys) {
+        const value = this.normalizeSdkError(resultRecord[key]);
+        if (value) {
+          return value;
+        }
+      }
+    }
+
+    return subtype ? `Claude run failed (${subtype})` : 'Claude run failed';
+  }
+
+  private logResultFailurePayload(
+    sessionId: string,
+    subtype: string,
+    payload: Record<string, unknown>,
+  ): void {
+    const resultRecord = payload.result && typeof payload.result === 'object'
+      ? (payload.result as Record<string, unknown>)
+      : null;
+    const resultSummary = resultRecord
+      ? Object.fromEntries(
+        Object.entries(resultRecord).filter(([, value]) =>
+          ['string', 'number', 'boolean'].includes(typeof value)
+        ).slice(0, 12)
+      )
+      : null;
+
+    coworkLog('ERROR', 'runClaudeCodeLocal', 'Received non-success result event from Claude SDK', {
+      sessionId,
+      subtype,
+      payloadError: typeof payload.error === 'string' ? payload.error : undefined,
+      payloadErrors: Array.isArray(payload.errors) ? payload.errors.slice(0, 6) : undefined,
+      payloadKeys: Object.keys(payload),
+      resultKeys: resultRecord ? Object.keys(resultRecord) : undefined,
+      resultSummary,
+    });
+  }
+
   private handleClaudeEvent(sessionId: string, event: unknown): void {
     const activeSession = this.activeSessions.get(sessionId);
     if (!activeSession) return;
@@ -4907,19 +4967,8 @@ export class CoworkRunner extends EventEmitter {
 
       const subtype = String(payload.subtype ?? 'success');
       if (subtype !== 'success') {
-        const errors = Array.isArray(payload.errors)
-          ? payload.errors
-            .filter((error) => typeof error === 'string')
-            .map((error) => (error as string).trim())
-            .filter((error) => error && error.toLowerCase() !== 'unknown')
-          : [];
-        const payloadError = this.normalizeSdkError(payload.error);
-        const errorMessage =
-          errors.length > 0
-            ? errors.join('\n')
-            : payloadError
-              ? payloadError
-              : 'Claude run failed';
+        this.logResultFailurePayload(sessionId, subtype, payload);
+        const errorMessage = this.getResultFailureMessage(payload, subtype);
         this.handleError(sessionId, errorMessage);
         return;
       }

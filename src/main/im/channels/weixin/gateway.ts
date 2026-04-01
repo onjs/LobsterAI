@@ -53,6 +53,7 @@ const WeixinChatType = {
 } as const;
 
 const WeixinMessageState = {
+  Typing: 1,
   Finish: 2,
 } as const;
 
@@ -393,6 +394,8 @@ export class YdWeixinGateway extends EventEmitter {
       throw new Error('Weixin outbound text is empty.');
     }
 
+    await this.sendTypingStateBestEffort(normalizedConversationId, contextToken);
+
     if (outboundText) {
       for (const chunk of this.chunkText(outboundText, WeixinGatewayDefaults.TextChunkLimit)) {
         await this.sendTextMessage(normalizedConversationId, contextToken, chunk);
@@ -498,13 +501,14 @@ export class YdWeixinGateway extends EventEmitter {
         type: WeixinItemType.Text,
         text_item: { text },
       },
-    ]);
+    ], WeixinMessageState.Finish);
   }
 
   private async sendMessageItems(
     toUserId: string,
     contextToken: string,
     items: WeixinMessageItem[],
+    messageState: number = WeixinMessageState.Finish,
   ): Promise<void> {
     if (!this.credential) {
       throw new Error('Weixin credential is missing.');
@@ -516,7 +520,7 @@ export class YdWeixinGateway extends EventEmitter {
         to_user_id: toUserId,
         client_id: randomUUID(),
         message_type: WeixinMessageType.Bot,
-        message_state: WeixinMessageState.Finish,
+        message_state: messageState,
         context_token: contextToken,
         item_list: items,
       },
@@ -529,6 +533,17 @@ export class YdWeixinGateway extends EventEmitter {
     });
 
     this.assertSendMessageResponse(response as WeixinSendMessageResponse);
+  }
+
+  private async sendTypingStateBestEffort(
+    toUserId: string,
+    contextToken: string,
+  ): Promise<void> {
+    try {
+      await this.sendMessageItems(toUserId, contextToken, [], WeixinMessageState.Typing);
+    } catch (error) {
+      console.debug('[YdWeixinGateway] Failed to send typing state, continuing reply flow', error);
+    }
   }
 
   private assertSendMessageResponse(payload: WeixinSendMessageResponse): void {
@@ -1208,7 +1223,12 @@ export class YdWeixinGateway extends EventEmitter {
   private normalizeInboundImageContent(item: WeixinMessageItem): string {
     const imageUrl = item.image_item?.url?.trim() || '';
     if (imageUrl && this.isDisplayableRemoteUrl(imageUrl) && !this.isLikelyHexPayload(imageUrl)) {
-      return `${WeixinInboundPlaceholder.Image} ${imageUrl}`;
+      return `![image](${imageUrl})`;
+    }
+
+    const mediaDerivedUrl = this.buildInboundImageMediaUrl(item);
+    if (mediaDerivedUrl) {
+      return `![image](${mediaDerivedUrl})`;
     }
     return WeixinInboundPlaceholder.Image;
   }
@@ -1247,6 +1267,31 @@ export class YdWeixinGateway extends EventEmitter {
     } catch {
       return false;
     }
+  }
+
+  private buildInboundImageMediaUrl(item: WeixinMessageItem): string | null {
+    const media = item.image_item?.media;
+    const encryptedQuery = media?.encrypt_query_param?.trim() || '';
+    if (!encryptedQuery || this.isLikelyHexPayload(encryptedQuery)) {
+      return null;
+    }
+
+    const downloadBase = `${WeixinGatewayDefaults.CdnBaseUrl}/download`;
+    let query = encryptedQuery.replace(/^\?+/, '');
+    if (!query.includes('=')) {
+      query = `encrypt_query_param=${encodeURIComponent(query)}`;
+    }
+
+    const aesKey = media?.aes_key?.trim() || '';
+    if (aesKey && !/(\?|&)aes_key=/i.test(query)) {
+      query += `&aes_key=${encodeURIComponent(aesKey)}`;
+    }
+
+    const candidate = `${downloadBase}?${query}`;
+    if (!this.isDisplayableRemoteUrl(candidate)) {
+      return null;
+    }
+    return candidate;
   }
 
   private isInboundAllowed(

@@ -65,12 +65,14 @@ describe('YdWeixinGateway outbound media', () => {
     const gateway = createReadyGateway();
     await gateway.sendConversationNotification('user-1', `hello world\n![img](${imagePath})`);
 
-    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fetchMock).toHaveBeenCalledTimes(5);
     expect(uploadPayloads).toHaveLength(1);
     expect(uploadPayloads[0]?.media_type).toBe(1);
-    expect(sendPayloads).toHaveLength(2);
-    expect(sendPayloads[0]?.msg?.item_list?.[0]?.type).toBe(1);
-    expect(sendPayloads[1]?.msg?.item_list?.[0]?.type).toBe(2);
+    expect(sendPayloads).toHaveLength(3);
+    expect(sendPayloads[0]?.msg?.message_state).toBe(1);
+    expect(sendPayloads[0]?.msg?.item_list ?? []).toHaveLength(0);
+    expect(sendPayloads[1]?.msg?.item_list?.[0]?.type).toBe(1);
+    expect(sendPayloads[2]?.msg?.item_list?.[0]?.type).toBe(2);
 
     await fs.rm(tempDir, { recursive: true, force: true });
   });
@@ -117,10 +119,12 @@ describe('YdWeixinGateway outbound media', () => {
       `[DINGTALK_AUDIO]{"path":"${audioPath}"}[/DINGTALK_AUDIO]`,
     );
 
+    expect(sendPayloads).toHaveLength(2);
+    expect(sendPayloads[0]?.msg?.message_state).toBe(1);
+    expect(sendPayloads[0]?.msg?.item_list ?? []).toHaveLength(0);
     expect(uploadPayloads).toHaveLength(1);
     expect(uploadPayloads[0]?.media_type).toBe(4);
-    expect(sendPayloads).toHaveLength(1);
-    expect(sendPayloads[0]?.msg?.item_list?.[0]?.type).toBe(3);
+    expect(sendPayloads[1]?.msg?.item_list?.[0]?.type).toBe(3);
 
     await fs.rm(tempDir, { recursive: true, force: true });
   });
@@ -137,7 +141,7 @@ describe('YdWeixinGateway outbound media', () => {
         '[DINGTALK_FILE]{"path":"http://127.0.0.1/test.txt"}[/DINGTALK_FILE]',
       ),
     ).rejects.toThrow(/private\/internal IP/i);
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   test('rejects ipv6-mapped private remote media URL', async () => {
@@ -152,7 +156,7 @@ describe('YdWeixinGateway outbound media', () => {
         '[DINGTALK_FILE]{"path":"http://[::ffff:10.0.0.1]/test.txt"}[/DINGTALK_FILE]',
       ),
     ).rejects.toThrow(/private\/internal IP/i);
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   test('rejects oversized remote media download by content-length', async () => {
@@ -286,5 +290,82 @@ describe('YdWeixinGateway outbound media', () => {
 
     expect(received).toHaveLength(1);
     expect(received[0]?.content).toBe('[image]');
+  });
+
+  test('normalizes inbound image item to markdown image when URL is available', async () => {
+    const gateway = new YdWeixinGateway();
+    (gateway as any).config = {
+      enabled: true,
+      accountId: 'wx-account',
+      dmPolicy: 'open',
+      allowFrom: [],
+      groupPolicy: 'open',
+      groupAllowFrom: [],
+      debug: false,
+    };
+    (gateway as any).credential = {
+      accountId: 'wx-account',
+      baseUrl: 'https://weixin.example.com',
+      token: 'token',
+      userId: 'bot-user',
+    };
+
+    const received: any[] = [];
+    gateway.on('message', (message) => received.push(message));
+
+    await (gateway as any).handleRawMessage({
+      message_id: 'm-image-url',
+      message_type: 1,
+      from_user_id: 'user-image-url',
+      context_token: 'ctx-image-url',
+      create_time_ms: Date.now(),
+      item_list: [{ type: 2, image_item: { url: 'https://cdn.example.com/a.png' } }],
+    });
+
+    expect(received).toHaveLength(1);
+    expect(received[0]?.content).toBe('![image](https://cdn.example.com/a.png)');
+  });
+
+  test('normalizes inbound image item to media download markdown when encrypt query exists', async () => {
+    const gateway = new YdWeixinGateway();
+    (gateway as any).config = {
+      enabled: true,
+      accountId: 'wx-account',
+      dmPolicy: 'open',
+      allowFrom: [],
+      groupPolicy: 'open',
+      groupAllowFrom: [],
+      debug: false,
+    };
+    (gateway as any).credential = {
+      accountId: 'wx-account',
+      baseUrl: 'https://weixin.example.com',
+      token: 'token',
+      userId: 'bot-user',
+    };
+
+    const received: any[] = [];
+    gateway.on('message', (message) => received.push(message));
+
+    await (gateway as any).handleRawMessage({
+      message_id: 'm-image-media',
+      message_type: 1,
+      from_user_id: 'user-image-media',
+      context_token: 'ctx-image-media',
+      create_time_ms: Date.now(),
+      item_list: [{
+        type: 2,
+        image_item: {
+          media: {
+            encrypt_query_param: 'k=v',
+            aes_key: 'base64-key',
+            encrypt_type: 1,
+          },
+        },
+      }],
+    });
+
+    expect(received).toHaveLength(1);
+    expect(received[0]?.content).toContain('![image](https://novac2c.cdn.weixin.qq.com/c2c/download?k=v&aes_key=base64-key)');
   });
 });
