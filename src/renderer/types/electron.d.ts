@@ -62,6 +62,14 @@ interface CoworkConfig {
   memoryUserMemoriesMaxItems: number;
 }
 
+interface CoworkCapabilities {
+  buildProfile: 'full' | 'yd-only' | 'openclaw-only';
+  openClawRuntimeAllowed: boolean;
+  ydCoworkRuntimeAllowed: boolean;
+  agentEngines: Array<'openclaw' | 'yd_cowork'>;
+  scheduledTaskBackends: Array<'openclaw' | 'yd_cowork' | 'auto'>;
+}
+
 type CoworkConfigUpdate = Partial<Pick<
   CoworkConfig,
   | 'workingDirectory'
@@ -365,6 +373,7 @@ interface IElectronAPI {
     }) => Promise<{ success: boolean; canceled?: boolean; path?: string; error?: string }>;
     respondToPermission: (options: { requestId: string; result: CoworkPermissionResult }) => Promise<{ success: boolean; error?: string }>;
     getConfig: () => Promise<{ success: boolean; config?: CoworkConfig; error?: string }>;
+    getCapabilities: () => Promise<{ success: boolean; capabilities?: CoworkCapabilities; error?: string }>;
     setConfig: (config: CoworkConfigUpdate) => Promise<{ success: boolean; error?: string }>;
     listMemoryEntries: (input: {
       query?: string;

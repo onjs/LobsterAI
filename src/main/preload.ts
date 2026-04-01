@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { IpcChannel as ScheduledTaskIpc } from '../scheduled-task/constants';
+import { CoworkIpcChannel } from './coworkIpcChannels';
 
 // 暴露安全的 API 到渲染进程
 contextBridge.exposeInMainWorld('electron', {
@@ -199,7 +200,9 @@ contextBridge.exposeInMainWorld('electron', {
 
     // Configuration
     getConfig: () =>
-      ipcRenderer.invoke('cowork:config:get'),
+      ipcRenderer.invoke(CoworkIpcChannel.ConfigGet),
+    getCapabilities: () =>
+      ipcRenderer.invoke(CoworkIpcChannel.CapabilitiesGet),
     setConfig: (config: {
       workingDirectory?: string;
       executionMode?: 'auto' | 'local' | 'sandbox';
@@ -211,7 +214,7 @@ contextBridge.exposeInMainWorld('electron', {
       memoryGuardLevel?: 'strict' | 'standard' | 'relaxed';
       memoryUserMemoriesMaxItems?: number;
     }) =>
-      ipcRenderer.invoke('cowork:config:set', config),
+      ipcRenderer.invoke(CoworkIpcChannel.ConfigSet, config),
     listMemoryEntries: (input: {
       query?: string;
       status?: 'created' | 'stale' | 'deleted' | 'all';

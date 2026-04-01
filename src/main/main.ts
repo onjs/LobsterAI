@@ -54,6 +54,7 @@ import {
   IMGatewayProviderEnvKey,
   resolveIMGatewayBuildProfile,
 } from './im/imGatewayProviderRouter';
+import { CoworkIpcChannel } from './coworkIpcChannels';
 import { APP_NAME } from './appConstants';
 import { getSkillServiceManager } from './skillServices';
 import { createTray, destroyTray, updateTrayMenu } from './trayManager';
@@ -738,6 +739,50 @@ const isOpenClawRuntimeAllowedByBuildProfile = (): boolean => (
   resolveIMGatewayBuildProfileFromEnv() !== IMGatewayBuildProfile.YdOnly
 );
 
+const isYdCoworkRuntimeAllowedByBuildProfile = (): boolean => (
+  resolveIMGatewayBuildProfileFromEnv() !== IMGatewayBuildProfile.OpenClawOnly
+);
+
+const resolveAllowedCoworkAgentEnginesByBuildProfile = (): CoworkAgentEngine[] => {
+  const buildProfile = resolveIMGatewayBuildProfileFromEnv();
+  if (buildProfile === IMGatewayBuildProfile.YdOnly) {
+    return ['yd_cowork'];
+  }
+  if (buildProfile === IMGatewayBuildProfile.OpenClawOnly) {
+    return ['openclaw'];
+  }
+  return ['yd_cowork', 'openclaw'];
+};
+
+const resolveDefaultCoworkAgentEngineForBuildProfile = (): CoworkAgentEngine => (
+  resolveAllowedCoworkAgentEnginesByBuildProfile()[0] ?? 'yd_cowork'
+);
+
+const resolveCoworkCapabilities = (): {
+  buildProfile: IMGatewayBuildProfile;
+  openClawRuntimeAllowed: boolean;
+  ydCoworkRuntimeAllowed: boolean;
+  agentEngines: CoworkAgentEngine[];
+  scheduledTaskBackends: STBackendType[];
+} => {
+  const buildProfile = resolveIMGatewayBuildProfileFromEnv();
+  const agentEngines = resolveAllowedCoworkAgentEnginesByBuildProfile();
+  const scheduledTaskBackends: STBackendType[] = [STBackend.Auto];
+  if (agentEngines.includes('yd_cowork')) {
+    scheduledTaskBackends.push(STBackend.YdCowork);
+  }
+  if (agentEngines.includes('openclaw')) {
+    scheduledTaskBackends.push(STBackend.OpenClaw);
+  }
+  return {
+    buildProfile,
+    openClawRuntimeAllowed: agentEngines.includes('openclaw'),
+    ydCoworkRuntimeAllowed: agentEngines.includes('yd_cowork'),
+    agentEngines,
+    scheduledTaskBackends,
+  };
+};
+
 const isOpenClawIntegrationEnabled = (): boolean => (
   isOpenClawRuntimeAllowedByBuildProfile()
 );
@@ -745,9 +790,13 @@ const isOpenClawIntegrationEnabled = (): boolean => (
 const normalizeCoworkAgentEngine = (
   configured: CoworkAgentEngine | null | undefined,
 ): CoworkAgentEngine => {
+  const fallbackEngine = resolveDefaultCoworkAgentEngineForBuildProfile();
   const normalized = configured === 'openclaw' ? 'openclaw' : 'yd_cowork';
   if (normalized === 'openclaw' && !isOpenClawRuntimeAllowedByBuildProfile()) {
-    return 'yd_cowork';
+    return fallbackEngine;
+  }
+  if (normalized === 'yd_cowork' && !isYdCoworkRuntimeAllowedByBuildProfile()) {
+    return fallbackEngine;
   }
   return normalized;
 };
@@ -834,15 +883,19 @@ const resolveScheduledTaskBackendFromConfig = (
   config: Pick<ReturnType<CoworkStore['getConfig']>, 'scheduledTaskBackend' | 'agentEngine'>,
 ): Exclude<STBackendType, 'auto'> => {
   const configured = config.scheduledTaskBackend;
+  const fallbackBackend = normalizeCoworkAgentEngine(config.agentEngine) === 'openclaw'
+    ? STBackend.OpenClaw
+    : STBackend.YdCowork;
   if (configured === STBackend.OpenClaw || configured === STBackend.YdCowork) {
     if (configured === STBackend.OpenClaw && !isOpenClawRuntimeAllowedByBuildProfile()) {
-      return STBackend.YdCowork;
+      return fallbackBackend;
+    }
+    if (configured === STBackend.YdCowork && !isYdCoworkRuntimeAllowedByBuildProfile()) {
+      return fallbackBackend;
     }
     return configured;
   }
-  return normalizeCoworkAgentEngine(config.agentEngine) === 'openclaw'
-    ? STBackend.OpenClaw
-    : STBackend.YdCowork;
+  return fallbackBackend;
 };
 
 const resolveScheduledTaskBackend = (): Exclude<STBackendType, 'auto'> => {
@@ -3337,7 +3390,7 @@ if (!gotTheLock) {
     }
   });
 
-  ipcMain.handle('cowork:config:get', async () => {
+  ipcMain.handle(CoworkIpcChannel.ConfigGet, async () => {
     try {
       const config = resolveEffectiveCoworkConfig(getCoworkStore().getConfig());
       return { success: true, config };
@@ -3345,6 +3398,17 @@ if (!gotTheLock) {
       return {
         success: false,
         error: error instanceof Error ? error.message : 'Failed to get config',
+      };
+    }
+  });
+
+  ipcMain.handle(CoworkIpcChannel.CapabilitiesGet, async () => {
+    try {
+      return { success: true, capabilities: resolveCoworkCapabilities() };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to get cowork capabilities',
       };
     }
   });
@@ -3507,7 +3571,7 @@ if (!gotTheLock) {
       error: result.ok ? undefined : ('error' in result ? result.error : undefined),
     };
   });
-  ipcMain.handle('cowork:config:set', async (_event, config: {
+  ipcMain.handle(CoworkIpcChannel.ConfigSet, async (_event, config: {
     workingDirectory?: string;
     executionMode?: 'auto' | 'local' | 'sandbox';
     agentEngine?: CoworkAgentEngine;
@@ -3531,10 +3595,15 @@ if (!gotTheLock) {
       const normalizedAgentEngine = requestedAgentEngine
         ? normalizeCoworkAgentEngine(requestedAgentEngine)
         : undefined;
+      const fallbackScheduledTaskBackend = normalizeCoworkAgentEngine(
+        normalizedAgentEngine ?? getCoworkStore().getConfig().agentEngine,
+      ) === 'openclaw'
+        ? STBackend.OpenClaw
+        : STBackend.YdCowork;
       const normalizedScheduledTaskBackend = config.scheduledTaskBackend === STBackend.OpenClaw
-        ? (isOpenClawRuntimeAllowedByBuildProfile() ? STBackend.OpenClaw : STBackend.YdCowork)
+        ? (isOpenClawRuntimeAllowedByBuildProfile() ? STBackend.OpenClaw : fallbackScheduledTaskBackend)
         : config.scheduledTaskBackend === STBackend.YdCowork
-          ? STBackend.YdCowork
+          ? (isYdCoworkRuntimeAllowedByBuildProfile() ? STBackend.YdCowork : fallbackScheduledTaskBackend)
           : config.scheduledTaskBackend === STBackend.Auto
             ? STBackend.Auto
             : undefined;

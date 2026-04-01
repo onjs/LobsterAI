@@ -15,6 +15,15 @@ export type CoworkMessageType = 'user' | 'assistant' | 'tool_use' | 'tool_result
 export type CoworkExecutionMode = 'auto' | 'local' | 'sandbox';
 export type CoworkAgentEngine = 'openclaw' | 'yd_cowork';
 export type CoworkScheduledTaskBackend = 'openclaw' | 'yd_cowork' | 'auto';
+export type CoworkBuildProfile = 'full' | 'yd-only' | 'openclaw-only';
+
+export interface CoworkCapabilities {
+  buildProfile: CoworkBuildProfile;
+  openClawRuntimeAllowed: boolean;
+  ydCoworkRuntimeAllowed: boolean;
+  agentEngines: CoworkAgentEngine[];
+  scheduledTaskBackends: CoworkScheduledTaskBackend[];
+}
 
 // Cowork message metadata
 export interface CoworkMessageMetadata {
@@ -214,6 +223,12 @@ export interface CoworkSessionListResult {
 export interface CoworkConfigResult {
   success: boolean;
   config?: CoworkConfig;
+  error?: string;
+}
+
+export interface CoworkCapabilitiesResult {
+  success: boolean;
+  capabilities?: CoworkCapabilities;
   error?: string;
 }
 

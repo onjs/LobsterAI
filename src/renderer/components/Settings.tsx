@@ -21,6 +21,7 @@ import { RootState } from '../store';
 import ThemedSelect from './ui/ThemedSelect';
 import type {
   CoworkAgentEngine,
+  CoworkCapabilities,
   CoworkExecutionMode,
   CoworkScheduledTaskBackend,
   OpenClawEngineStatus,
@@ -214,6 +215,13 @@ const MINIMAX_CODE_ENDPOINT_CN = 'https://api.minimaxi.com/oauth/code';
 const MINIMAX_CODE_ENDPOINT_GLOBAL = 'https://api.minimax.io/oauth/code';
 const MINIMAX_TOKEN_ENDPOINT_CN = 'https://api.minimaxi.com/oauth/token';
 const MINIMAX_TOKEN_ENDPOINT_GLOBAL = 'https://api.minimax.io/oauth/token';
+const DEFAULT_COWORK_CAPABILITIES: CoworkCapabilities = {
+  buildProfile: 'full',
+  openClawRuntimeAllowed: true,
+  ydCoworkRuntimeAllowed: true,
+  agentEngines: ['yd_cowork', 'openclaw'],
+  scheduledTaskBackends: ['auto', 'yd_cowork', 'openclaw'],
+};
 
 type MiniMaxRegion = 'cn' | 'global';
 type MiniMaxOAuthPhase =
@@ -601,6 +609,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
   const [coworkSandboxProgress, setCoworkSandboxProgress] = useState<CoworkSandboxProgress | null>(null);
   const [coworkSandboxInstalling, setCoworkSandboxInstalling] = useState(false);
   const [openClawEngineStatus, setOpenClawEngineStatus] = useState<OpenClawEngineStatus | null>(null);
+  const [coworkCapabilities, setCoworkCapabilities] = useState<CoworkCapabilities>(DEFAULT_COWORK_CAPABILITIES);
 
   useEffect(() => {
     setCoworkAgentEngine(coworkConfig.agentEngine || 'yd_cowork');
@@ -670,6 +679,39 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
       unsubscribe();
     };
   }, []);
+
+  useEffect(() => {
+    let active = true;
+    void coworkService.getCapabilities().then((capabilities) => {
+      if (!active || !capabilities) return;
+      setCoworkCapabilities(capabilities);
+    }).catch((error) => {
+      console.warn('Failed to load cowork capabilities:', error);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    const fallbackAgentEngine = coworkCapabilities.agentEngines[0] ?? 'yd_cowork';
+    if (!coworkCapabilities.agentEngines.includes(coworkAgentEngine)) {
+      setCoworkAgentEngine(fallbackAgentEngine);
+    }
+
+    if (!coworkCapabilities.scheduledTaskBackends.includes(coworkScheduledTaskBackend)) {
+      const fallbackScheduledTaskBackend: CoworkScheduledTaskBackend =
+        coworkCapabilities.scheduledTaskBackends.includes('auto')
+          ? 'auto'
+          : (coworkCapabilities.scheduledTaskBackends[0] ?? 'yd_cowork');
+      setCoworkScheduledTaskBackend(fallbackScheduledTaskBackend);
+    }
+  }, [
+    coworkAgentEngine,
+    coworkCapabilities.agentEngines,
+    coworkCapabilities.scheduledTaskBackends,
+    coworkScheduledTaskBackend,
+  ]);
 
   useEffect(() => {
     try {
@@ -1215,10 +1257,20 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
     || coworkExecutionMode !== coworkConfig.executionMode
     || coworkMemoryEnabled !== coworkConfig.memoryEnabled
     || coworkMemoryLlmJudgeEnabled !== coworkConfig.memoryLlmJudgeEnabled;
-  const isOpenClawAgentEngine = coworkAgentEngine === 'openclaw';
-  const resolvedScheduledTaskBackend = coworkScheduledTaskBackend === 'auto'
-    ? (coworkAgentEngine === 'openclaw' ? 'openclaw' : 'yd_cowork')
-    : coworkScheduledTaskBackend;
+  const effectiveCoworkAgentEngine = coworkCapabilities.agentEngines.includes(coworkAgentEngine)
+    ? coworkAgentEngine
+    : (coworkCapabilities.agentEngines[0] ?? 'yd_cowork');
+  const effectiveCoworkScheduledTaskBackend = coworkCapabilities.scheduledTaskBackends.includes(coworkScheduledTaskBackend)
+    ? coworkScheduledTaskBackend
+    : (coworkCapabilities.scheduledTaskBackends.includes('auto')
+      ? 'auto'
+      : (coworkCapabilities.scheduledTaskBackends[0] ?? 'yd_cowork'));
+  const isOpenClawAgentEngine = effectiveCoworkAgentEngine === 'openclaw';
+  const canUseOpenClawAgentEngine = coworkCapabilities.agentEngines.includes('openclaw');
+  const canUseOpenClawScheduledTaskBackend = coworkCapabilities.scheduledTaskBackends.includes('openclaw');
+  const resolvedScheduledTaskBackend = effectiveCoworkScheduledTaskBackend === 'auto'
+    ? (effectiveCoworkAgentEngine === 'openclaw' ? 'openclaw' : 'yd_cowork')
+    : effectiveCoworkScheduledTaskBackend;
 
   const coworkSandboxDisabled = !coworkSandboxStatus?.supported
     || !coworkSandboxStatus?.runtimeReady
@@ -2444,6 +2496,13 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
       case 'coworkAgentEngine':
         return (
           <div className="space-y-6">
+            {coworkCapabilities.buildProfile !== 'full' && (
+              <div className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-xs text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-300">
+                {coworkCapabilities.buildProfile === 'yd-only'
+                  ? i18nService.t('coworkBuildProfileYdOnlyNotice')
+                  : i18nService.t('coworkBuildProfileOpenClawOnlyNotice')}
+              </div>
+            )}
             <div className="space-y-3">
               {([
                 {
@@ -2456,34 +2515,50 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
                   label: i18nService.t('coworkAgentEngineOpenClaw'),
                   hint: i18nService.t('coworkAgentEngineOpenClawHint'),
                 },
-              ]).map((option) => (
-                <label
-                  key={option.value}
-                  className="flex items-start gap-3 rounded-xl border px-3 py-2 text-sm transition-colors cursor-pointer dark:border-claude-darkBorder border-claude-border hover:border-claude-accent"
-                >
-                  <input
-                    type="radio"
-                    name="cowork-agent-engine"
-                    value={option.value}
-                    checked={coworkAgentEngine === option.value}
-                    onChange={() => {
-                      setCoworkAgentEngine(option.value);
-                      if (option.value === 'yd_cowork') {
-                        setCoworkExecutionMode('local');
-                      }
-                    }}
-                    className="mt-1"
-                  />
-                  <span>
-                    <span className="block font-medium dark:text-claude-darkText text-claude-text">
-                      {option.label}
+              ]).map((option) => {
+                const isDisabled = option.value === 'openclaw'
+                  ? !canUseOpenClawAgentEngine
+                  : !coworkCapabilities.agentEngines.includes('yd_cowork');
+                const hintText = isDisabled
+                  ? (option.value === 'openclaw'
+                    ? i18nService.t('coworkAgentEngineOpenClawUnavailableHint')
+                    : i18nService.t('coworkAgentEngineYdCoworkUnavailableHint'))
+                  : option.hint;
+                return (
+                  <label
+                    key={option.value}
+                    className={`flex items-start gap-3 rounded-xl border px-3 py-2 text-sm transition-colors ${
+                      isDisabled
+                        ? 'cursor-not-allowed opacity-60 dark:border-claude-darkBorder border-claude-border'
+                        : 'cursor-pointer dark:border-claude-darkBorder border-claude-border hover:border-claude-accent'
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="cowork-agent-engine"
+                      value={option.value}
+                      checked={coworkAgentEngine === option.value}
+                      onChange={() => {
+                        if (isDisabled) return;
+                        setCoworkAgentEngine(option.value);
+                        if (option.value === 'yd_cowork') {
+                          setCoworkExecutionMode('local');
+                        }
+                      }}
+                      disabled={isDisabled}
+                      className="mt-1"
+                    />
+                    <span>
+                      <span className="block font-medium dark:text-claude-darkText text-claude-text">
+                        {option.label}
+                      </span>
+                      <span className="block text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
+                        {hintText}
+                      </span>
                     </span>
-                    <span className="block text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
-                      {option.hint}
-                    </span>
-                  </span>
-                </label>
-              ))}
+                  </label>
+                );
+              })}
             </div>
             <div className="space-y-3 rounded-xl border px-4 py-4 dark:border-claude-darkBorder border-claude-border">
               <div className="text-sm font-medium dark:text-claude-darkText text-claude-text">
@@ -2506,29 +2581,51 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
                     label: i18nService.t('coworkScheduledTaskBackendOpenClaw'),
                     hint: i18nService.t('coworkScheduledTaskBackendOpenClawHint'),
                   },
-                ]).map((option) => (
-                  <label
-                    key={option.value}
-                    className="flex items-start gap-3 rounded-xl border px-3 py-2 text-sm transition-colors cursor-pointer dark:border-claude-darkBorder border-claude-border hover:border-claude-accent"
-                  >
-                    <input
-                      type="radio"
-                      name="cowork-scheduled-task-backend"
-                      value={option.value}
-                      checked={coworkScheduledTaskBackend === option.value}
-                      onChange={() => setCoworkScheduledTaskBackend(option.value)}
-                      className="mt-1"
-                    />
-                    <span>
-                      <span className="block font-medium dark:text-claude-darkText text-claude-text">
-                        {option.label}
+                ]).map((option) => {
+                  const isDisabled = option.value === 'openclaw'
+                    ? !canUseOpenClawScheduledTaskBackend
+                    : option.value === 'yd_cowork'
+                      ? !coworkCapabilities.scheduledTaskBackends.includes('yd_cowork')
+                      : !coworkCapabilities.scheduledTaskBackends.includes('auto');
+                  const hintText = isDisabled
+                    ? (option.value === 'openclaw'
+                      ? i18nService.t('coworkScheduledTaskBackendOpenClawUnavailableHint')
+                      : option.value === 'yd_cowork'
+                        ? i18nService.t('coworkScheduledTaskBackendYdCoworkUnavailableHint')
+                        : option.hint)
+                    : option.hint;
+                  return (
+                    <label
+                      key={option.value}
+                      className={`flex items-start gap-3 rounded-xl border px-3 py-2 text-sm transition-colors ${
+                        isDisabled
+                          ? 'cursor-not-allowed opacity-60 dark:border-claude-darkBorder border-claude-border'
+                          : 'cursor-pointer dark:border-claude-darkBorder border-claude-border hover:border-claude-accent'
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="cowork-scheduled-task-backend"
+                        value={option.value}
+                        checked={coworkScheduledTaskBackend === option.value}
+                        onChange={() => {
+                          if (isDisabled) return;
+                          setCoworkScheduledTaskBackend(option.value);
+                        }}
+                        disabled={isDisabled}
+                        className="mt-1"
+                      />
+                      <span>
+                        <span className="block font-medium dark:text-claude-darkText text-claude-text">
+                          {option.label}
+                        </span>
+                        <span className="block text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
+                          {hintText}
+                        </span>
                       </span>
-                      <span className="block text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
-                        {option.hint}
-                      </span>
-                    </span>
-                  </label>
-                ))}
+                    </label>
+                  );
+                })}
               </div>
               <div className="text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
                 {i18nService.t('coworkScheduledTaskBackendResolved')}：

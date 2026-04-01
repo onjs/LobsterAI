@@ -22,6 +22,8 @@
 - `yd-only` 档位下配对与微信扫码回调已加 OpenClaw 门禁，避免触发无效 OpenClaw 重启/配对流程。
 - Renderer 侧 `cowork` 配置保存后改为回读主进程配置，避免 build profile 下前端状态与实际生效值不一致。
 - 开发脚本已补充 build profile 入口：`electron:dev:yd-only` / `electron:dev:openclaw-only` / `electron:dev:full`。
+- 新增 `cowork:capabilities:get` IPC，前端设置页根据能力禁用不可用引擎/后端，避免“可选但实际被主进程回退”的体验不一致。
+- 主进程对 `openclaw-only` 语义补齐：`agentEngine/scheduledTaskBackend` 归一化均可按 build profile 强约束。
 
 ## 1. 边界冻结（必须先完成）
 

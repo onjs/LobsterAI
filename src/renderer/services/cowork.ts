@@ -28,6 +28,7 @@ import type {
   CoworkMemoryStats,
   CoworkPermissionResult,
   OpenClawEngineStatus,
+  CoworkCapabilities,
   CoworkStartOptions,
   CoworkContinueOptions,
 } from '../types/cowork';
@@ -219,6 +220,18 @@ class CoworkService {
     if (result?.success && result.config) {
       store.dispatch(setConfig(result.config));
     }
+  }
+
+  async getCapabilities(): Promise<CoworkCapabilities | null> {
+    const cowork = window.electron?.cowork;
+    if (!cowork?.getCapabilities) {
+      return null;
+    }
+    const result = await cowork.getCapabilities();
+    if (!result?.success || !result.capabilities) {
+      return null;
+    }
+    return result.capabilities;
   }
 
   async loadOpenClawEngineStatus(): Promise<OpenClawEngineStatus | null> {
