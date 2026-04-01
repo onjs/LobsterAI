@@ -1,8 +1,12 @@
-import { randomBytes, randomUUID } from 'crypto';
+import { createCipheriv, createHash, randomBytes, randomUUID } from 'crypto';
 import { EventEmitter } from 'events';
+import fs from 'fs/promises';
+import os from 'os';
+import path from 'path';
 import {
   DEFAULT_WEIXIN_STATUS,
   type IMMessage,
+  type MediaMarker,
   type WeixinGatewayStatus,
   type WeixinOpenClawConfig,
 } from '../../types';
@@ -57,10 +61,14 @@ const WeixinGatewayDefaults = {
   LongPollTimeoutMs: 40_000,
   LongPollTimeoutFloorMs: 10_000,
   ApiTimeoutMs: 15_000,
+  CdnUploadTimeoutMs: 20_000,
   RetryDelayMs: 1_000,
   RetryDelayMaxMs: 10_000,
+  CdnUploadMaxRetries: 3,
   SessionExpiredCode: -14,
   TextChunkLimit: 2_000,
+  CdnBaseUrl: 'https://novac2c.cdn.weixin.qq.com/c2c',
+  RemoteMediaDir: 'lobsterai-weixin-media',
 } as const;
 
 interface WeixinMessageItem {
@@ -70,12 +78,38 @@ interface WeixinMessageItem {
   };
   image_item?: {
     url?: string;
+    media?: {
+      encrypt_query_param?: string;
+      aes_key?: string;
+      encrypt_type?: number;
+    };
+    mid_size?: number;
   };
   voice_item?: {
     text?: string;
+    media?: {
+      encrypt_query_param?: string;
+      aes_key?: string;
+      encrypt_type?: number;
+    };
+    encode_type?: number;
   };
   file_item?: {
     file_name?: string;
+    len?: string;
+    media?: {
+      encrypt_query_param?: string;
+      aes_key?: string;
+      encrypt_type?: number;
+    };
+  };
+  video_item?: {
+    media?: {
+      encrypt_query_param?: string;
+      aes_key?: string;
+      encrypt_type?: number;
+    };
+    video_size?: number;
   };
 }
 
@@ -102,6 +136,48 @@ interface WeixinSendMessageResponse {
   ret?: number;
   errcode?: number;
   errmsg?: string;
+}
+
+interface WeixinGetUploadUrlResponse {
+  upload_param?: string;
+  errcode?: number;
+  errmsg?: string;
+}
+
+const WeixinUploadMediaType = {
+  Image: 1,
+  Video: 2,
+  File: 3,
+  Voice: 4,
+} as const;
+
+type WeixinUploadMediaType = typeof WeixinUploadMediaType[keyof typeof WeixinUploadMediaType];
+
+const WeixinOutboundMediaKind = {
+  Image: 'image',
+  Video: 'video',
+  File: 'file',
+  Voice: 'voice',
+} as const;
+
+type WeixinOutboundMediaKind = typeof WeixinOutboundMediaKind[keyof typeof WeixinOutboundMediaKind];
+
+const WeixinVoiceEncodeTypeByExtension: Record<string, number> = {
+  pcm: 1,
+  wav: 1,
+  adpcm: 2,
+  speex: 4,
+  amr: 5,
+  silk: 6,
+  mp3: 7,
+  ogg: 8,
+};
+
+interface WeixinUploadedMedia {
+  downloadEncryptedQueryParam: string;
+  aesKeyBase64: string;
+  fileSize: number;
+  fileSizeCiphertext: number;
 }
 
 export class YdWeixinGateway extends EventEmitter {
@@ -286,13 +362,19 @@ export class YdWeixinGateway extends EventEmitter {
 
     const mediaMarkers = parseMediaMarkers(text);
     const plainText = stripMediaMarkers(text, mediaMarkers).trim();
-    const outboundText = plainText || text.trim();
-    if (!outboundText) {
+    const outboundText = plainText || (mediaMarkers.length === 0 ? text.trim() : '');
+    if (!outboundText && mediaMarkers.length === 0) {
       throw new Error('Weixin outbound text is empty.');
     }
 
-    for (const chunk of this.chunkText(outboundText, WeixinGatewayDefaults.TextChunkLimit)) {
-      await this.sendTextMessage(normalizedConversationId, contextToken, chunk);
+    if (outboundText) {
+      for (const chunk of this.chunkText(outboundText, WeixinGatewayDefaults.TextChunkLimit)) {
+        await this.sendTextMessage(normalizedConversationId, contextToken, chunk);
+      }
+    }
+
+    for (const marker of mediaMarkers) {
+      await this.sendMediaMarkerMessage(normalizedConversationId, contextToken, marker);
     }
 
     this.lastConversationId = normalizedConversationId;
@@ -385,6 +467,19 @@ export class YdWeixinGateway extends EventEmitter {
     contextToken: string,
     text: string,
   ): Promise<void> {
+    await this.sendMessageItems(toUserId, contextToken, [
+      {
+        type: WeixinItemType.Text,
+        text_item: { text },
+      },
+    ]);
+  }
+
+  private async sendMessageItems(
+    toUserId: string,
+    contextToken: string,
+    items: WeixinMessageItem[],
+  ): Promise<void> {
     if (!this.credential) {
       throw new Error('Weixin credential is missing.');
     }
@@ -397,12 +492,7 @@ export class YdWeixinGateway extends EventEmitter {
         message_type: WeixinMessageType.Bot,
         message_state: WeixinMessageState.Finish,
         context_token: contextToken,
-        item_list: [
-          {
-            type: WeixinItemType.Text,
-            text_item: { text },
-          },
-        ],
+        item_list: items,
       },
       base_info: {
         channel_version: '1.0.0',
@@ -412,7 +502,10 @@ export class YdWeixinGateway extends EventEmitter {
       timeoutMs: WeixinGatewayDefaults.ApiTimeoutMs,
     });
 
-    const payload = response as WeixinSendMessageResponse;
+    this.assertSendMessageResponse(response as WeixinSendMessageResponse);
+  }
+
+  private assertSendMessageResponse(payload: WeixinSendMessageResponse): void {
     const errorCode = payload.errcode ?? payload.ret ?? 0;
     if (errorCode !== 0) {
       if (errorCode === WeixinGatewayDefaults.SessionExpiredCode) {
@@ -428,6 +521,309 @@ export class YdWeixinGateway extends EventEmitter {
         payload.errmsg,
       );
     }
+  }
+
+  private async sendMediaMarkerMessage(
+    toUserId: string,
+    contextToken: string,
+    marker: MediaMarker,
+  ): Promise<void> {
+    const prepared = await this.prepareOutboundMediaFile(marker.path);
+    try {
+      const preferredKind = this.resolveMediaKind(marker, prepared.filePath);
+      const kindsToTry: WeixinOutboundMediaKind[] = preferredKind === WeixinOutboundMediaKind.Voice
+        ? [WeixinOutboundMediaKind.Voice, WeixinOutboundMediaKind.File]
+        : [preferredKind];
+      let lastError: unknown = null;
+
+      for (const kind of kindsToTry) {
+        try {
+          const uploaded = await this.uploadMediaToCdn({
+            filePath: prepared.filePath,
+            toUserId,
+            mediaType: this.resolveUploadMediaType(kind),
+          });
+          const item = this.buildMediaItem(kind, uploaded, prepared.filePath, marker.name);
+          await this.sendMessageItems(toUserId, contextToken, [item]);
+          return;
+        } catch (error) {
+          lastError = error;
+          if (kind !== WeixinOutboundMediaKind.Voice) {
+            throw error;
+          }
+        }
+      }
+
+      throw lastError instanceof Error
+        ? lastError
+        : new Error('Failed to send Weixin media item');
+    } finally {
+      if (prepared.tempFilePath) {
+        await fs.rm(prepared.tempFilePath, { force: true }).catch(() => {});
+      }
+    }
+  }
+
+  private buildMediaItem(
+    kind: WeixinOutboundMediaKind,
+    uploaded: WeixinUploadedMedia,
+    filePath: string,
+    explicitName?: string,
+  ): WeixinMessageItem {
+    const media = {
+      encrypt_query_param: uploaded.downloadEncryptedQueryParam,
+      aes_key: uploaded.aesKeyBase64,
+      encrypt_type: 1,
+    };
+
+    if (kind === WeixinOutboundMediaKind.Image) {
+      return {
+        type: WeixinItemType.Image,
+        image_item: {
+          media,
+          mid_size: uploaded.fileSizeCiphertext,
+        },
+      };
+    }
+
+    if (kind === WeixinOutboundMediaKind.Video) {
+      return {
+        type: WeixinItemType.Video,
+        video_item: {
+          media,
+          video_size: uploaded.fileSizeCiphertext,
+        },
+      };
+    }
+
+    if (kind === WeixinOutboundMediaKind.Voice) {
+      const extension = path.extname(filePath).replace('.', '').toLowerCase();
+      return {
+        type: WeixinItemType.Voice,
+        voice_item: {
+          media,
+          encode_type: WeixinVoiceEncodeTypeByExtension[extension] ?? undefined,
+        },
+      };
+    }
+
+    const fileName = explicitName?.trim() || path.basename(filePath);
+    return {
+      type: WeixinItemType.File,
+      file_item: {
+        media,
+        file_name: fileName,
+        len: String(uploaded.fileSize),
+      },
+    };
+  }
+
+  private resolveUploadMediaType(kind: WeixinOutboundMediaKind): WeixinUploadMediaType {
+    if (kind === WeixinOutboundMediaKind.Image) {
+      return WeixinUploadMediaType.Image;
+    }
+    if (kind === WeixinOutboundMediaKind.Video) {
+      return WeixinUploadMediaType.Video;
+    }
+    if (kind === WeixinOutboundMediaKind.Voice) {
+      return WeixinUploadMediaType.Voice;
+    }
+    return WeixinUploadMediaType.File;
+  }
+
+  private resolveMediaKind(marker: MediaMarker, filePath: string): WeixinOutboundMediaKind {
+    if (marker.type === 'image') {
+      return WeixinOutboundMediaKind.Image;
+    }
+    if (marker.type === 'video') {
+      return WeixinOutboundMediaKind.Video;
+    }
+    if (marker.type === 'audio') {
+      return WeixinOutboundMediaKind.Voice;
+    }
+    if (marker.type === 'file') {
+      const extension = path.extname(filePath).replace('.', '').toLowerCase();
+      if (['mp3', 'wav', 'ogg', 'amr', 'm4a', 'aac', 'pcm', 'silk', 'speex'].includes(extension)) {
+        return WeixinOutboundMediaKind.Voice;
+      }
+      if (['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp'].includes(extension)) {
+        return WeixinOutboundMediaKind.Image;
+      }
+      if (['mp4', 'mov', 'm4v', 'webm'].includes(extension)) {
+        return WeixinOutboundMediaKind.Video;
+      }
+    }
+    return WeixinOutboundMediaKind.File;
+  }
+
+  private async prepareOutboundMediaFile(sourcePath: string): Promise<{
+    filePath: string;
+    tempFilePath: string | null;
+  }> {
+    const normalized = this.normalizeMediaPath(sourcePath);
+    if (!normalized) {
+      throw new Error('Weixin media path is empty.');
+    }
+    if (/^https?:\/\//i.test(normalized)) {
+      const tempFilePath = await this.downloadRemoteMediaToTemp(normalized);
+      return { filePath: tempFilePath, tempFilePath };
+    }
+
+    const absolutePath = path.isAbsolute(normalized)
+      ? normalized
+      : path.resolve(normalized);
+    await fs.access(absolutePath);
+    return { filePath: absolutePath, tempFilePath: null };
+  }
+
+  private normalizeMediaPath(input: string): string {
+    const value = input.trim();
+    if (!value) {
+      return value;
+    }
+    if (value.startsWith('~/')) {
+      return path.join(os.homedir(), value.slice(2));
+    }
+    if (value.startsWith('file://')) {
+      try {
+        return decodeURIComponent(value.replace(/^file:\/\//, ''));
+      } catch {
+        return value.replace(/^file:\/\//, '');
+      }
+    }
+    return value;
+  }
+
+  private async downloadRemoteMediaToTemp(url: string): Promise<string> {
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`Weixin media download failed: HTTP ${response.status}`);
+    }
+    const buffer = Buffer.from(await response.arrayBuffer());
+    const pathname = new URL(url).pathname;
+    const extension = path.extname(pathname) || '.bin';
+    const tempDir = path.join(os.tmpdir(), WeixinGatewayDefaults.RemoteMediaDir);
+    await fs.mkdir(tempDir, { recursive: true });
+    const tempFilePath = path.join(tempDir, `${Date.now()}-${randomUUID()}${extension}`);
+    await fs.writeFile(tempFilePath, buffer);
+    return tempFilePath;
+  }
+
+  private async uploadMediaToCdn(params: {
+    filePath: string;
+    toUserId: string;
+    mediaType: WeixinUploadMediaType;
+  }): Promise<WeixinUploadedMedia> {
+    if (!this.credential) {
+      throw new Error('Weixin credential is missing.');
+    }
+
+    const plainBuffer = await fs.readFile(params.filePath);
+    const rawSize = plainBuffer.length;
+    const rawFileMd5 = createHash('md5').update(plainBuffer).digest('hex');
+    const fileSizeCiphertext = this.aesEcbPaddedSize(rawSize);
+    const fileKey = randomBytes(16).toString('hex');
+    const aesKey = randomBytes(16);
+    const aesKeyHex = aesKey.toString('hex');
+    const uploadUrlResponse = await this.fetchWithTimeout(this.credential.baseUrl, '/ilink/bot/getuploadurl', {
+      filekey: fileKey,
+      media_type: params.mediaType,
+      to_user_id: params.toUserId,
+      rawsize: rawSize,
+      rawfilemd5: rawFileMd5,
+      filesize: fileSizeCiphertext,
+      no_need_thumb: true,
+      aeskey: aesKeyHex,
+      base_info: {
+        channel_version: '1.0.0',
+      },
+    }, {
+      token: this.credential.token,
+      timeoutMs: WeixinGatewayDefaults.ApiTimeoutMs,
+    });
+    const payload = uploadUrlResponse as WeixinGetUploadUrlResponse;
+    const uploadParam = payload.upload_param?.trim() || '';
+    if (!uploadParam) {
+      throw new Error(`Weixin getuploadurl failed: ${payload.errmsg || 'upload_param is empty'}`);
+    }
+
+    const downloadEncryptedQueryParam = await this.uploadBufferToCdn({
+      plainBuffer,
+      uploadParam,
+      fileKey,
+      aesKey,
+    });
+    return {
+      downloadEncryptedQueryParam,
+      aesKeyBase64: aesKey.toString('base64'),
+      fileSize: rawSize,
+      fileSizeCiphertext,
+    };
+  }
+
+  private async uploadBufferToCdn(params: {
+    plainBuffer: Buffer;
+    uploadParam: string;
+    fileKey: string;
+    aesKey: Buffer;
+  }): Promise<string> {
+    const ciphertext = this.encryptAesEcb(params.plainBuffer, params.aesKey);
+    const uploadUrl = `${WeixinGatewayDefaults.CdnBaseUrl}/upload?encrypted_query_param=${encodeURIComponent(params.uploadParam)}&filekey=${encodeURIComponent(params.fileKey)}`;
+    let lastError: unknown = null;
+
+    for (let attempt = 1; attempt <= WeixinGatewayDefaults.CdnUploadMaxRetries; attempt += 1) {
+      try {
+        const response = await this.fetchCdnBinary(uploadUrl, ciphertext, WeixinGatewayDefaults.CdnUploadTimeoutMs);
+        if (response.status >= 400 && response.status < 500) {
+          const body = await response.text();
+          throw new Error(`Weixin CDN upload client error ${response.status}: ${body}`);
+        }
+        if (response.status !== 200) {
+          const body = await response.text();
+          throw new Error(`Weixin CDN upload server error ${response.status}: ${body}`);
+        }
+        const downloadParam = response.headers.get('x-encrypted-param')?.trim() || '';
+        if (!downloadParam) {
+          throw new Error('Weixin CDN upload response missing x-encrypted-param');
+        }
+        return downloadParam;
+      } catch (error) {
+        lastError = error;
+        if (attempt < WeixinGatewayDefaults.CdnUploadMaxRetries) {
+          continue;
+        }
+      }
+    }
+
+    throw lastError instanceof Error
+      ? lastError
+      : new Error('Weixin CDN upload failed.');
+  }
+
+  private async fetchCdnBinary(url: string, payload: Buffer, timeoutMs: number): Promise<Response> {
+    const timeoutController = new AbortController();
+    const timeout = setTimeout(() => timeoutController.abort(), timeoutMs);
+    try {
+      return await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/octet-stream',
+        },
+        body: new Uint8Array(payload),
+        signal: timeoutController.signal,
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  private encryptAesEcb(plainBuffer: Buffer, key: Buffer): Buffer {
+    const cipher = createCipheriv('aes-128-ecb', key, null);
+    return Buffer.concat([cipher.update(plainBuffer), cipher.final()]);
+  }
+
+  private aesEcbPaddedSize(plainSize: number): number {
+    return Math.ceil((plainSize + 1) / 16) * 16;
   }
 
   private async handleRawMessage(raw: WeixinRawMessage): Promise<void> {
