@@ -265,6 +265,67 @@ describe('YdWeixinGateway outbound media', () => {
     expect(received).toHaveLength(1);
   });
 
+  test('starts typing before callback and stops after callback completion', async () => {
+    const gateway = createReadyGateway();
+    (gateway as any).config = {
+      enabled: true,
+      accountId: 'wx-account',
+      dmPolicy: 'open',
+      allowFrom: [],
+      groupPolicy: 'open',
+      groupAllowFrom: [],
+      debug: false,
+    };
+    const sendTypingPayloads: any[] = [];
+    const sendMessagePayloads: any[] = [];
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : input.toString();
+
+      if (url === 'https://weixin.example.com/ilink/bot/getconfig') {
+        return new Response(JSON.stringify({ typing_ticket: 'typing-ticket-callback' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      if (url === 'https://weixin.example.com/ilink/bot/sendtyping') {
+        sendTypingPayloads.push(JSON.parse(String(init?.body ?? '{}')));
+        return new Response('{}', {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      if (url === 'https://weixin.example.com/ilink/bot/sendmessage') {
+        sendMessagePayloads.push(JSON.parse(String(init?.body ?? '{}')));
+        return new Response('{}', {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      throw new Error(`Unexpected fetch url: ${url}`);
+    });
+
+    gateway.setMessageCallback(async (_message, replyFn) => {
+      await replyFn('hello callback');
+    });
+
+    await (gateway as any).handleRawMessage({
+      message_id: 'm-callback-typing',
+      message_type: 1,
+      from_user_id: 'user-1',
+      context_token: 'ctx-token-1',
+      create_time_ms: Date.now(),
+      item_list: [{ type: 1, text_item: { text: 'trigger callback' } }],
+    });
+
+    expect(sendMessagePayloads).toHaveLength(1);
+    expect(sendTypingPayloads).toHaveLength(2);
+    expect(sendTypingPayloads[0]?.status).toBe(1);
+    expect(sendTypingPayloads[1]?.status).toBe(2);
+  });
+
   test('normalizes hex-like inbound text payload', async () => {
     const gateway = new YdWeixinGateway();
     (gateway as any).config = {

@@ -238,6 +238,7 @@ export class YdWeixinGateway extends EventEmitter {
   private lastConversationId: string | null = null;
   private cursor = '';
   private contextTokens = new Map<string, string>();
+  private activeTypingConversations = new Set<string>();
   private nextPollTimeoutMs: number = WeixinGatewayDefaults.LongPollTimeoutMs;
 
   getStatus(): WeixinGatewayStatus {
@@ -356,6 +357,7 @@ export class YdWeixinGateway extends EventEmitter {
     }
 
     this.runPromise = null;
+    this.activeTypingConversations.clear();
     this.status = {
       ...this.status,
       connected: false,
@@ -411,11 +413,14 @@ export class YdWeixinGateway extends EventEmitter {
       throw new Error('Weixin outbound text is empty.');
     }
 
-    await this.sendTypingStateBestEffort(
-      normalizedConversationId,
-      contextToken,
-      WeixinTypingStatus.Start,
-    );
+    const hasActiveTyping = this.activeTypingConversations.has(normalizedConversationId);
+    if (!hasActiveTyping) {
+      await this.sendTypingStateBestEffort(
+        normalizedConversationId,
+        contextToken,
+        WeixinTypingStatus.Start,
+      );
+    }
 
     try {
       if (outboundText) {
@@ -428,11 +433,13 @@ export class YdWeixinGateway extends EventEmitter {
         await this.sendMediaMarkerMessage(normalizedConversationId, contextToken, marker);
       }
     } finally {
-      await this.sendTypingStateBestEffort(
-        normalizedConversationId,
-        contextToken,
-        WeixinTypingStatus.Stop,
-      );
+      if (!hasActiveTyping) {
+        await this.sendTypingStateBestEffort(
+          normalizedConversationId,
+          contextToken,
+          WeixinTypingStatus.Stop,
+        );
+      }
     }
 
     this.lastConversationId = normalizedConversationId;
@@ -619,16 +626,18 @@ export class YdWeixinGateway extends EventEmitter {
     toUserId: string,
     contextToken: string,
     status: number,
-  ): Promise<void> {
+  ): Promise<boolean> {
     try {
       const typingTicket = await this.fetchTypingTicket(toUserId, contextToken);
       if (!typingTicket) {
         console.debug('[YdWeixinGateway] getconfig returned no typing ticket, skipping typing update');
-        return;
+        return false;
       }
       await this.sendTypingState(toUserId, typingTicket, status);
+      return true;
     } catch (error) {
       console.debug('[YdWeixinGateway] Failed to send typing state; continuing reply flow:', error);
+      return false;
     }
   }
 
@@ -1176,10 +1185,35 @@ export class YdWeixinGateway extends EventEmitter {
       return;
     }
 
+    const hasActiveTyping = this.activeTypingConversations.has(normalized.conversationId);
+    let startedTypingInCallbackFlow = false;
+    if (!hasActiveTyping) {
+      const started = await this.sendTypingStateBestEffort(
+        normalized.conversationId,
+        normalized.contextToken,
+        WeixinTypingStatus.Start,
+      );
+      if (started) {
+        this.activeTypingConversations.add(normalized.conversationId);
+        startedTypingInCallbackFlow = true;
+      }
+    }
+
     const replyFn = async (text: string): Promise<void> => {
       await this.sendConversationNotification(normalized.conversationId, text);
     };
-    await this.onMessageCallback(message, replyFn);
+    try {
+      await this.onMessageCallback(message, replyFn);
+    } finally {
+      if (startedTypingInCallbackFlow && this.activeTypingConversations.has(normalized.conversationId)) {
+        await this.sendTypingStateBestEffort(
+          normalized.conversationId,
+          normalized.contextToken,
+          WeixinTypingStatus.Stop,
+        );
+        this.activeTypingConversations.delete(normalized.conversationId);
+      }
+    }
   }
 
   private normalizeInboundMessage(raw: WeixinRawMessage): {
