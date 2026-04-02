@@ -2126,7 +2126,7 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
         <LazyRenderTurn key={turn.id} turnId={turn.id} alwaysRender={alwaysRender} data-turn-index={index}>
           {turn.userMessage && (
             <div data-export-role="user-message" {...(userRailIdx >= 0 ? { 'data-rail-index': userRailIdx } : undefined)}>
-              <UserMessageItem message={turn.userMessage} skills={skills} />
+              <UserMessageItem message={turn.userMessage} skills={skills} onReEdit={remoteManaged ? undefined : handleReEdit} />
             </div>
           )}
           {showAssistantBlock && (
@@ -2553,15 +2553,16 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
       <div className="p-4 shrink-0">
         <div className="max-w-3xl mx-auto">
           <CoworkPromptInput
+            ref={promptInputRef}
             onSubmit={onContinue}
             onStop={onStop}
             isStreaming={isStreaming}
-            placeholder={i18nService.t('coworkContinuePlaceholder')}
-            disabled={false}
+            placeholder={i18nService.t(remoteManaged ? 'coworkRemoteManagedPlaceholder' : 'coworkContinuePlaceholder')}
+            disabled={remoteManaged}
             size="large"
-            remoteManaged={false}
-            onManageSkills={onManageSkills}
-            showModelSelector
+            remoteManaged={remoteManaged}
+            onManageSkills={remoteManaged ? undefined : onManageSkills}
+            showModelSelector={!remoteManaged}
             sessionId={currentSession?.id}
           />
         </div>
