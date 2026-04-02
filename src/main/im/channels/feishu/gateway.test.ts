@@ -1,4 +1,7 @@
 import { describe, expect, test, vi } from 'vitest';
+import * as fs from 'fs/promises';
+import * as os from 'os';
+import * as path from 'path';
 import { WebhookHub } from '../../gateway/webhookHub';
 import { DEFAULT_FEISHU_OPENCLAW_CONFIG, DEFAULT_FEISHU_STATUS } from '../../types';
 import { YdFeishuGateway } from './gateway';
@@ -139,12 +142,6 @@ describe('YdFeishuGateway', () => {
 
   test('rejects remote media URL', async () => {
     const gateway = createConfiguredGateway();
-    const sendTextLark = vi.fn().mockResolvedValue(undefined);
-    const sendMediaLark = vi.fn().mockResolvedValue(undefined);
-    vi.spyOn(gateway as any, 'loadLarkDeliverModule').mockResolvedValue({
-      sendTextLark,
-      sendMediaLark,
-    });
 
     await expect(
       gateway.sendConversationNotification(
@@ -152,37 +149,30 @@ describe('YdFeishuGateway', () => {
         '[DINGTALK_FILE]{"path":"http://127.0.0.1/test.pdf"}[/DINGTALK_FILE]',
       ),
     ).rejects.toThrow(/remote URL is not allowed/i);
-    expect(sendMediaLark).not.toHaveBeenCalled();
   });
 
-  test('sends plain text through lark sdk without loading deliver module', async () => {
+  test('sends plain text through lark sdk request api', async () => {
     const gateway = createConfiguredGateway();
     const request = vi.fn().mockResolvedValue({ code: 0 });
-    const loadLarkDeliverModuleSpy = vi
-      .spyOn(gateway as any, 'loadLarkDeliverModule')
-      .mockResolvedValue({});
     vi.spyOn(gateway as any, 'loadLarkSdkModule').mockResolvedValue({
       AppType: { SelfBuild: 'self_build' },
       Domain: { Feishu: 'feishu', Lark: 'lark' },
       Client: class {
         request = request;
+        im = {
+          image: { create: vi.fn() },
+          file: { create: vi.fn() },
+        };
       },
     });
 
     await gateway.sendConversationNotification('chat-1', 'hello');
 
     expect(request).toHaveBeenCalledTimes(1);
-    expect(loadLarkDeliverModuleSpy).not.toHaveBeenCalled();
   });
 
   test('rejects public remote media URL', async () => {
     const gateway = createConfiguredGateway();
-    const sendTextLark = vi.fn().mockResolvedValue(undefined);
-    const sendMediaLark = vi.fn().mockResolvedValue(undefined);
-    vi.spyOn(gateway as any, 'loadLarkDeliverModule').mockResolvedValue({
-      sendTextLark,
-      sendMediaLark,
-    });
 
     await expect(
       gateway.sendConversationNotification(
@@ -190,17 +180,10 @@ describe('YdFeishuGateway', () => {
         '[DINGTALK_FILE]{"path":"https://8.8.8.8/test.pdf"}[/DINGTALK_FILE]',
       ),
     ).rejects.toThrow(/remote URL is not allowed/i);
-    expect(sendMediaLark).not.toHaveBeenCalled();
   });
 
   test('rejects relative local media path', async () => {
     const gateway = createConfiguredGateway();
-    const sendTextLark = vi.fn().mockResolvedValue(undefined);
-    const sendMediaLark = vi.fn().mockResolvedValue(undefined);
-    vi.spyOn(gateway as any, 'loadLarkDeliverModule').mockResolvedValue({
-      sendTextLark,
-      sendMediaLark,
-    });
 
     await expect(
       gateway.sendConversationNotification(
@@ -208,7 +191,42 @@ describe('YdFeishuGateway', () => {
         '[DINGTALK_FILE]{"path":"relative/path/test.pdf"}[/DINGTALK_FILE]',
       ),
     ).rejects.toThrow(/must be absolute/i);
-    expect(sendMediaLark).not.toHaveBeenCalled();
+  });
+
+  test('uploads local image and sends image message via lark sdk', async () => {
+    const gateway = createConfiguredGateway();
+    const request = vi.fn().mockResolvedValue({ code: 0 });
+    const createImage = vi.fn().mockResolvedValue({ code: 0, data: { image_key: 'img_key_1' } });
+    const createFile = vi.fn().mockResolvedValue({ code: 0, data: { file_key: 'file_key_1' } });
+    vi.spyOn(gateway as any, 'loadLarkSdkModule').mockResolvedValue({
+      AppType: { SelfBuild: 'self_build' },
+      Domain: { Feishu: 'feishu', Lark: 'lark' },
+      Client: class {
+        request = request;
+        im = {
+          image: { create: createImage },
+          file: { create: createFile },
+        };
+      },
+    });
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'lobsterai-feishu-test-'));
+    const imagePath = path.join(tempDir, 'test.jpg');
+    await fs.writeFile(imagePath, Buffer.from([0xff, 0xd8, 0xff, 0xd9]));
+
+    await gateway.sendConversationNotification('chat-1', `![test](${imagePath})`);
+
+    expect(createImage).toHaveBeenCalledTimes(1);
+    expect(createFile).not.toHaveBeenCalled();
+    expect(request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: 'POST',
+        url: '/open-apis/im/v1/messages',
+        data: expect.objectContaining({
+          receive_id: 'chat-1',
+          msg_type: 'image',
+        }),
+      }),
+    );
   });
 
   test('accepts direct message payload shape from lark sdk callback', async () => {

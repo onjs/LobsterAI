@@ -13,6 +13,7 @@ import {
   type FeishuGatewayStatus,
   type FeishuOpenClawConfig,
   type IMMessage,
+  type MediaMarker,
 } from '../../types';
 import { parseMediaMarkers, stripMediaMarkers } from '../../dingtalkMediaParser';
 import { WebhookHub } from '../../gateway/webhookHub';
@@ -52,6 +53,11 @@ const FeishuApi = {
   CreateMessage: '/open-apis/im/v1/messages',
   ReceiveIdTypeChatId: 'chat_id',
   MessageTypeText: 'text',
+  MessageTypeImage: 'image',
+  MessageTypeFile: 'file',
+  MessageTypeAudio: 'audio',
+  MessageTypeMedia: 'media',
+  ImageUploadTypeMessage: 'message',
 } as const;
 
 const FeishuGatewayDefaults = {
@@ -62,6 +68,36 @@ const FeishuGatewayDefaults = {
   ExperimentalWebhookEnv: 'LOBSTERAI_IM_FEISHU_WEBHOOK_EXPERIMENTAL',
 } as const;
 
+const FeishuFileType = {
+  Opus: 'opus',
+  Mp4: 'mp4',
+  Pdf: 'pdf',
+  Doc: 'doc',
+  Xls: 'xls',
+  Ppt: 'ppt',
+  Stream: 'stream',
+} as const;
+
+type FeishuFileType = typeof FeishuFileType[keyof typeof FeishuFileType];
+
+const FeishuFileTypeByExtension: Record<string, FeishuFileType> = {
+  '.opus': FeishuFileType.Opus,
+  '.ogg': FeishuFileType.Opus,
+  '.mp4': FeishuFileType.Mp4,
+  '.mov': FeishuFileType.Mp4,
+  '.avi': FeishuFileType.Mp4,
+  '.mkv': FeishuFileType.Mp4,
+  '.webm': FeishuFileType.Mp4,
+  '.pdf': FeishuFileType.Pdf,
+  '.doc': FeishuFileType.Doc,
+  '.docx': FeishuFileType.Doc,
+  '.xls': FeishuFileType.Xls,
+  '.xlsx': FeishuFileType.Xls,
+  '.csv': FeishuFileType.Xls,
+  '.ppt': FeishuFileType.Ppt,
+  '.pptx': FeishuFileType.Ppt,
+};
+
 export class YdFeishuGateway extends EventEmitter {
   private status: FeishuGatewayStatus = { ...DEFAULT_FEISHU_STATUS };
   private config: FeishuOpenClawConfig | null = null;
@@ -69,7 +105,6 @@ export class YdFeishuGateway extends EventEmitter {
   private webhookHandler: ((req: IncomingMessage, res: ServerResponse) => void) | null = null;
   private webhookRouteId: string | null = null;
   private larkSdkModule: any | null = null;
-  private larkDeliverModule: any | null = null;
   private onMessageCallback?: (
     message: IMMessage,
     replyFn: (text: string) => Promise<void>,
@@ -221,16 +256,8 @@ export class YdFeishuGateway extends EventEmitter {
     }
 
     if (mediaMarkers.length > 0) {
-      const deliver = await this.loadLarkDeliverModule();
-      const cfg = this.buildFeishuLarkConfig();
       for (const marker of mediaMarkers) {
-        const prepared = await this.prepareOutboundMedia(marker.path);
-        await deliver.sendMediaLark({
-          cfg,
-          to: conversationId,
-          mediaUrl: prepared.mediaUrl,
-          mediaLocalRoots: prepared.mediaLocalRoots,
-        });
+        await this.sendMediaMessage(conversationId, marker);
       }
     }
 
@@ -251,13 +278,76 @@ export class YdFeishuGateway extends EventEmitter {
   }
 
   private async sendTextMessage(conversationId: string, text: string): Promise<void> {
+    const client = await this.createLarkClient();
+    await this.sendMessageByType(client, conversationId, FeishuApi.MessageTypeText, { text });
+  }
+
+  private async sendMediaMessage(conversationId: string, marker: MediaMarker): Promise<void> {
+    const prepared = await this.prepareOutboundMedia(marker.path);
+    const client = await this.createLarkClient();
+
+    if (marker.type === FeishuMessageType.Image) {
+      const uploadResponse = await client.im.image.create({
+        data: {
+          image_type: FeishuApi.ImageUploadTypeMessage,
+          image: prepared.fileBuffer,
+        },
+      });
+      const imageKey = uploadResponse?.data?.image_key ?? uploadResponse?.image_key;
+      if (!imageKey) {
+        throw new Error(`Feishu image upload failed: ${uploadResponse?.msg || uploadResponse?.code || 'missing image_key'}`);
+      }
+      await this.sendMessageByType(client, conversationId, FeishuApi.MessageTypeImage, { image_key: imageKey });
+      return;
+    }
+
+    const fileType = this.resolveFeishuFileType(prepared.filePath);
+    const uploadResponse = await client.im.file.create({
+      data: {
+        file_type: fileType,
+        file_name: prepared.fileName,
+        file: prepared.fileBuffer,
+      },
+    });
+    const fileKey = uploadResponse?.data?.file_key ?? uploadResponse?.file_key;
+    if (!fileKey) {
+      throw new Error(`Feishu file upload failed: ${uploadResponse?.msg || uploadResponse?.code || 'missing file_key'}`);
+    }
+    const messageType = this.resolveMediaMessageType(marker.type);
+    await this.sendMessageByType(client, conversationId, messageType, { file_key: fileKey });
+  }
+
+  private resolveMediaMessageType(markerType: MediaMarker['type']): string {
+    if (markerType === FeishuMessageType.Audio) {
+      return FeishuApi.MessageTypeAudio;
+    }
+    if (markerType === FeishuMessageType.Video) {
+      return FeishuApi.MessageTypeMedia;
+    }
+    return FeishuApi.MessageTypeFile;
+  }
+
+  private resolveFeishuFileType(filePath: string): FeishuFileType {
+    const extension = path.extname(filePath).toLowerCase();
+    return FeishuFileTypeByExtension[extension] ?? FeishuFileType.Stream;
+  }
+
+  private async createLarkClient(): Promise<any> {
     const Lark = await this.loadLarkSdkModule();
-    const client = new Lark.Client({
+    return new Lark.Client({
       appId: this.config?.appId,
       appSecret: this.config?.appSecret,
       appType: Lark.AppType.SelfBuild,
       domain: this.resolveLarkDomain(this.config?.domain ?? 'feishu', Lark),
     });
+  }
+
+  private async sendMessageByType(
+    client: any,
+    conversationId: string,
+    messageType: string,
+    content: Record<string, string>,
+  ): Promise<void> {
     const response = await client.request({
       method: 'POST',
       url: FeishuApi.CreateMessage,
@@ -266,21 +356,13 @@ export class YdFeishuGateway extends EventEmitter {
       },
       data: {
         receive_id: conversationId,
-        msg_type: FeishuApi.MessageTypeText,
-        content: JSON.stringify({ text }),
+        msg_type: messageType,
+        content: JSON.stringify(content),
       },
     });
     if (response?.code !== 0) {
-      throw new Error(`Feishu send text failed: ${response?.msg || response?.code || 'unknown'}`);
+      throw new Error(`Feishu send message failed: ${response?.msg || response?.code || 'unknown'}`);
     }
-  }
-
-  private async loadLarkDeliverModule(): Promise<any> {
-    if (this.larkDeliverModule) {
-      return this.larkDeliverModule;
-    }
-    this.larkDeliverModule = await import('@larksuite/openclaw-lark');
-    return this.larkDeliverModule;
   }
 
   private resolveConnectionMode(config: FeishuOpenClawConfig): FeishuConnectionMode {
@@ -638,31 +720,6 @@ export class YdFeishuGateway extends EventEmitter {
     return '[Unsupported message type]';
   }
 
-  private buildFeishuLarkConfig(): Record<string, unknown> {
-    return {
-      channels: {
-        feishu: {
-          enabled: this.config?.enabled ?? false,
-          appId: this.config?.appId ?? '',
-          appSecret: this.config?.appSecret ?? '',
-          domain: this.config?.domain ?? 'feishu',
-          dmPolicy: this.config?.dmPolicy ?? FeishuPolicy.Open,
-          allowFrom: this.config?.allowFrom ?? [],
-          groupPolicy: this.config?.groupPolicy ?? FeishuPolicy.Open,
-          groupAllowFrom: this.config?.groupAllowFrom ?? [],
-          groups: this.config?.groups ?? {},
-          historyLimit: this.config?.historyLimit ?? 50,
-          mediaMaxMb: this.config?.mediaMaxMb ?? 30,
-          replyMode: this.config?.replyMode ?? 'auto',
-          debug: this.config?.debug ?? false,
-          connectionMode: this.resolveConnectionMode(this.config ?? ({} as FeishuOpenClawConfig)),
-          verificationToken: this.config?.verificationToken ?? '',
-          encryptKey: this.config?.encryptKey ?? '',
-        },
-      },
-    };
-  }
-
   private normalizeMediaPath(input: string): string {
     if (!input) {
       return input;
@@ -674,8 +731,9 @@ export class YdFeishuGateway extends EventEmitter {
   }
 
   private async prepareOutboundMedia(inputPath: string): Promise<{
-    mediaUrl: string;
-    mediaLocalRoots: string[];
+    filePath: string;
+    fileName: string;
+    fileBuffer: Buffer;
   }> {
     const normalizedPath = this.normalizeMediaPath(inputPath).trim();
     if (!normalizedPath) {
@@ -691,9 +749,11 @@ export class YdFeishuGateway extends EventEmitter {
     if (!stat.isFile()) {
       throw new Error('Feishu media path must point to a file');
     }
+    const fileBuffer = await fs.readFile(filePath);
     return {
-      mediaUrl: filePath,
-      mediaLocalRoots: [path.dirname(filePath)],
+      filePath,
+      fileName: path.basename(filePath),
+      fileBuffer,
     };
   }
 
