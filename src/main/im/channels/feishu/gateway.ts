@@ -272,6 +272,7 @@ export class YdFeishuGateway extends EventEmitter {
     }
 
     const mediaMarkers = parseMediaMarkers(text);
+    const outboundMediaMarkers = mediaMarkers.filter((marker) => !this.shouldSkipOutboundMediaEcho(marker.path));
     const plainText = stripMediaMarkers(text, mediaMarkers).trim();
     const failedMediaMarkers: MediaMarker[] = [];
 
@@ -279,8 +280,8 @@ export class YdFeishuGateway extends EventEmitter {
       await this.sendTextMessage(conversationId, plainText);
     }
 
-    if (mediaMarkers.length > 0) {
-      for (const marker of mediaMarkers) {
+    if (outboundMediaMarkers.length > 0) {
+      for (const marker of outboundMediaMarkers) {
         try {
           await this.sendMediaMessage(conversationId, marker);
         } catch (error) {
@@ -318,6 +319,12 @@ export class YdFeishuGateway extends EventEmitter {
       lastOutboundAt: Date.now(),
     };
     this.emit('status', this.getStatus());
+  }
+
+  private shouldSkipOutboundMediaEcho(rawPath: string): boolean {
+    const normalizedPath = this.normalizeMediaPath(rawPath).replace(/\\/g, '/').toLowerCase();
+    return normalizedPath.includes('/lobsterai-feishu-inbound/')
+      || normalizedPath.includes('/lobsterai-weixin-inbound/');
   }
 
   private buildMediaSendFallbackText(failedCount: number): string {

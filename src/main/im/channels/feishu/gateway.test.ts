@@ -266,6 +266,39 @@ describe('YdFeishuGateway', () => {
     );
   });
 
+  test('does not re-send inbound temporary image markers back to feishu', async () => {
+    const gateway = createConfiguredGateway();
+    const request = vi.fn().mockResolvedValue({ code: 0 });
+    const createImage = vi.fn().mockResolvedValue({ code: 0, data: { image_key: 'img_key_1' } });
+    vi.spyOn(gateway as any, 'loadLarkSdkModule').mockResolvedValue({
+      AppType: { SelfBuild: 'self_build' },
+      Domain: { Feishu: 'feishu', Lark: 'lark' },
+      Client: class {
+        request = request;
+        im = {
+          image: { create: createImage },
+          file: { create: vi.fn() },
+        };
+      },
+    });
+
+    await gateway.sendConversationNotification(
+      'chat-1',
+      '![image](/var/folders/abc/T/lobsterai-feishu-inbound/123.jpg)\n我看到了这张图',
+    );
+
+    expect(createImage).not.toHaveBeenCalled();
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          msg_type: 'text',
+          content: JSON.stringify({ text: '我看到了这张图' }),
+        }),
+      }),
+    );
+  });
+
   test('accepts direct message payload shape from lark sdk callback', async () => {
     const gateway = createConfiguredGateway();
     const onMessageCallback = vi.fn().mockResolvedValue(undefined);
