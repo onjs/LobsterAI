@@ -1,3 +1,5 @@
+import { createCipheriv } from 'crypto';
+import { promises as dnsPromises } from 'dns';
 import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
@@ -449,6 +451,19 @@ describe('YdWeixinGateway outbound media', () => {
 
     const received: any[] = [];
     gateway.on('message', (message) => received.push(message));
+    const decryptKey = Buffer.from('0123456789abcdef', 'utf8');
+    const aesKeyTransport = Buffer.from(decryptKey.toString('hex'), 'utf8').toString('base64');
+    const plainPng = Buffer.from('89504e470d0a1a0a', 'hex');
+    const cipher = createCipheriv('aes-128-ecb', decryptKey, null);
+    const encryptedPng = Buffer.concat([cipher.update(plainPng), cipher.final()]);
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.startsWith('https://novac2c.cdn.weixin.qq.com/c2c/download?')) {
+        return new Response(encryptedPng, { status: 200 });
+      }
+      throw new Error(`Unexpected fetch url: ${url}`);
+    });
+    vi.spyOn(dnsPromises, 'lookup').mockResolvedValue([{ address: '1.1.1.1', family: 4 }] as any);
 
     await (gateway as any).handleRawMessage({
       message_id: 'm-image-media',
@@ -461,7 +476,7 @@ describe('YdWeixinGateway outbound media', () => {
         image_item: {
           media: {
             encrypt_query_param: 'k=v',
-            aes_key: 'base64-key',
+            aes_key: aesKeyTransport,
             encrypt_type: 1,
           },
         },
@@ -469,6 +484,11 @@ describe('YdWeixinGateway outbound media', () => {
     });
 
     expect(received).toHaveLength(1);
-    expect(received[0]?.content).toContain('![image](https://novac2c.cdn.weixin.qq.com/c2c/download?k=v&aes_key=base64-key)');
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(received[0]?.content).toMatch(/^!\[image\]\(file:\/\/.+\)$/);
+    expect(received[0]?.attachments).toHaveLength(1);
+    expect(received[0]?.attachments?.[0]?.type).toBe('image');
+    await fs.access(received[0]?.attachments?.[0]?.localPath);
+    await fs.rm(received[0]?.attachments?.[0]?.localPath, { force: true });
   });
 });
