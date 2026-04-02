@@ -555,7 +555,7 @@ export const DEFAULT_FEISHU_OPENCLAW_CONFIG: FeishuOpenClawConfig = {
   encryptKey: '',
   dmPolicy: 'open',
   allowFrom: [],
-  groupPolicy: 'allowlist',
+  groupPolicy: 'open',
   groupAllowFrom: [],
   groups: { '*': { requireMention: true } },
   historyLimit: 50,

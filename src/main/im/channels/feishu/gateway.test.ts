@@ -25,7 +25,7 @@ function createConfiguredGateway(): YdFeishuGateway {
 }
 
 describe('YdFeishuGateway', () => {
-  test('drops group message when requireMention is enabled but botOpenId is missing', () => {
+  test('drops group message when requireMention is enabled and no mention marker exists', () => {
     const gateway = createConfiguredGateway();
     const normalized = (gateway as any).normalizeInboundMessage({
       sender: {
@@ -45,6 +45,29 @@ describe('YdFeishuGateway', () => {
       },
     });
     expect(normalized).toBeNull();
+  });
+
+  test('accepts group message when requireMention is enabled, botOpenId is missing, and mentions are present', () => {
+    const gateway = createConfiguredGateway();
+    const normalized = (gateway as any).normalizeInboundMessage({
+      sender: {
+        sender_id: {
+          open_id: 'sender-open-id',
+          user_id: 'sender-user-id',
+        },
+      },
+      message: {
+        message_id: 'msg-1b',
+        chat_id: 'chat-1',
+        chat_type: 'group',
+        message_type: 'text',
+        content: JSON.stringify({ text: '@_user_1 hello' }),
+        mentions: [{ id: { open_id: 'some-open-id' } }],
+        create_time: String(Date.now()),
+      },
+    });
+    expect(normalized).not.toBeNull();
+    expect(normalized?.chatType).toBe('group');
   });
 
   test('accepts group message when mention contains botOpenId', () => {
@@ -73,6 +96,45 @@ describe('YdFeishuGateway', () => {
     });
     expect(normalized).not.toBeNull();
     expect(normalized?.chatType).toBe('group');
+  });
+
+  test('treats empty group allowlist as open when policy is allowlist', () => {
+    const gateway = new YdFeishuGateway(new WebhookHub());
+    (gateway as any).config = {
+      ...DEFAULT_FEISHU_OPENCLAW_CONFIG,
+      enabled: true,
+      appId: 'app-id',
+      appSecret: 'app-secret',
+      groupPolicy: 'allowlist',
+      groupAllowFrom: [],
+      groups: {
+        '*': {
+          requireMention: false,
+        },
+      },
+    };
+    (gateway as any).status = {
+      ...DEFAULT_FEISHU_STATUS,
+      connected: true,
+    };
+    const normalized = (gateway as any).normalizeInboundMessage({
+      sender: {
+        sender_id: {
+          open_id: 'sender-open-id',
+          user_id: 'sender-user-id',
+        },
+      },
+      message: {
+        message_id: 'msg-2b',
+        chat_id: 'chat-2',
+        chat_type: 'group',
+        message_type: 'text',
+        content: JSON.stringify({ text: 'hello from group' }),
+        mentions: [],
+        create_time: String(Date.now()),
+      },
+    });
+    expect(normalized).not.toBeNull();
   });
 
   test('rejects remote media URL', async () => {

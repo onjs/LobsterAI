@@ -488,8 +488,15 @@ export class YdFeishuGateway extends EventEmitter {
     if (this.config.groupPolicy === FeishuPolicy.Disabled) {
       return false;
     }
-    if (this.config.groupPolicy === FeishuPolicy.Allowlist
-      && !this.config.groupAllowFrom.includes(conversationId)) {
+    const groupAllowFrom = Array.isArray(this.config.groupAllowFrom)
+      ? this.config.groupAllowFrom
+      : [];
+    if (
+      this.config.groupPolicy === FeishuPolicy.Allowlist
+      // Empty allowlist should not block all group traffic by default.
+      && groupAllowFrom.length > 0
+      && !groupAllowFrom.includes(conversationId)
+    ) {
       return false;
     }
 
@@ -504,11 +511,19 @@ export class YdFeishuGateway extends EventEmitter {
     if (!requireMention) {
       return true;
     }
-    if (!this.status.botOpenId) {
-      console.warn('[YdFeishuGateway] requireMention is enabled but botOpenId is unavailable, dropping group message');
-      return false;
-    }
     const mentions = Array.isArray(message?.mentions) ? message.mentions : [];
+    if (!this.status.botOpenId) {
+      // Fallback when bot identity probe fails: if Feishu still provides any
+      // mention marker, treat it as a bot mention to avoid dead channels.
+      const rawContent = typeof message?.content === 'string' ? message.content : '';
+      const hasMentionMarker = mentions.length > 0 || /@_user_\d+/.test(rawContent);
+      if (!hasMentionMarker) {
+        console.warn('[YdFeishuGateway] requireMention is enabled but botOpenId is unavailable and no mention marker was found, dropping group message');
+        return false;
+      }
+      console.warn('[YdFeishuGateway] botOpenId is unavailable, using mention-marker fallback for group message');
+      return true;
+    }
     return mentions.some((item: any) => item?.id?.open_id === this.status.botOpenId);
   }
 
