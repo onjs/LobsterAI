@@ -26,6 +26,8 @@ type FeishuConnectionMode = typeof FeishuConnectionMode[keyof typeof FeishuConne
 
 const FeishuChatType = {
   P2P: 'p2p',
+  Private: 'private',
+  Single: 'single',
 } as const;
 
 const FeishuPolicy = {
@@ -406,7 +408,7 @@ export class YdFeishuGateway extends EventEmitter {
     if (this.stopRequested) {
       return;
     }
-    const event = payload?.event;
+    const event = this.resolveInboundEvent(payload);
     if (!event?.message) {
       return;
     }
@@ -435,16 +437,42 @@ export class YdFeishuGateway extends EventEmitter {
     await this.onMessageCallback(normalized, replyFn);
   }
 
+  private resolveInboundEvent(payload: any): any {
+    if (payload?.event?.message) {
+      return payload.event;
+    }
+    if (payload?.message) {
+      return payload;
+    }
+    if (payload?.data?.event?.message) {
+      return payload.data.event;
+    }
+    if (payload?.data?.message) {
+      return payload.data;
+    }
+    return null;
+  }
+
   private normalizeInboundMessage(event: any): IMMessage | null {
     const message = event?.message;
-    const senderId = event?.sender?.sender_id?.open_id?.trim() || '';
+    const senderIdentity = event?.sender?.sender_id ?? {};
+    const senderId = (
+      senderIdentity.open_id
+      || senderIdentity.user_id
+      || senderIdentity.union_id
+      || ''
+    ).trim();
     const messageId = message?.message_id?.trim() || '';
     const conversationId = message?.chat_id?.trim() || '';
     if (!senderId || !messageId || !conversationId) {
       return null;
     }
 
-    const chatType = message.chat_type === FeishuChatType.P2P ? 'direct' : 'group';
+    const rawChatType = String(message?.chat_type || '').toLowerCase();
+    const isDirectChat = rawChatType === FeishuChatType.P2P
+      || rawChatType === FeishuChatType.Private
+      || rawChatType === FeishuChatType.Single;
+    const chatType = isDirectChat ? 'direct' : 'group';
     if (!this.isInboundAllowed(chatType, senderId, conversationId, message)) {
       return null;
     }
@@ -457,7 +485,7 @@ export class YdFeishuGateway extends EventEmitter {
       messageId,
       conversationId,
       senderId,
-      senderName: event?.sender?.sender_id?.user_id || undefined,
+      senderName: senderIdentity.user_id || senderIdentity.open_id || undefined,
       groupName: message?.chat_name || undefined,
       content: textContent,
       chatType,

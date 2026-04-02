@@ -190,4 +190,33 @@ describe('YdFeishuGateway', () => {
     ).rejects.toThrow(/must be absolute/i);
     expect(sendMediaLark).not.toHaveBeenCalled();
   });
+
+  test('accepts direct message payload shape from lark sdk callback', async () => {
+    const gateway = createConfiguredGateway();
+    const onMessageCallback = vi.fn().mockResolvedValue(undefined);
+    gateway.setMessageCallback(onMessageCallback);
+
+    await (gateway as any).handleInboundEvent({
+      event_id: 'evt-1',
+      sender: {
+        sender_id: {
+          user_id: 'ou_user_only',
+        },
+      },
+      message: {
+        message_id: 'msg-direct-1',
+        chat_id: 'oc_direct_1',
+        chat_type: 'p2p',
+        message_type: 'text',
+        content: JSON.stringify({ text: 'hello' }),
+        create_time: String(Date.now()),
+      },
+    });
+
+    expect(onMessageCallback).toHaveBeenCalledTimes(1);
+    const [message] = onMessageCallback.mock.calls[0];
+    expect(message.platform).toBe('feishu');
+    expect(message.senderId).toBe('ou_user_only');
+    expect(message.chatType).toBe('direct');
+  });
 });
