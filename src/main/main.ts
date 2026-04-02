@@ -1050,23 +1050,11 @@ const syncOpenClawConfig = async (
     };
   }
 
-  // When the gateway is running and there are active workloads (cowork
-  // sessions OR running cron jobs), defer the entire sync — including the
-  // config file write — to avoid triggering OpenClaw's built-in file-watcher
-  // reload (SIGUSR1) which would drain in-flight conversations and cron tasks.
-  if (hasActiveGatewayWorkloads()) {
-    const manager = getOpenClawEngineManager();
-    const status = manager.getStatus();
-    if (status.phase === 'running') {
-      console.log(`[OpenClaw] syncOpenClawConfig: deferring entire config sync because active workloads exist (reason: ${options.reason})`);
-      scheduleDeferredGatewayRestart(options.reason);
-      return {
-        success: true,
-        changed: false,
-        status,
-      };
-    }
-  }
+  // Always write openclaw.json immediately. OpenClaw's built-in file-watcher
+  // will detect the change and gracefully reload (waiting for active tasks to
+  // complete before restarting, up to a 30s drain timeout).  Previous versions
+  // deferred the file write when active workloads existed, but that caused
+  // stale config (e.g. model switches not taking effect for new sessions).
 
   const syncResult = getOpenClawConfigSync().sync(options.reason);
   if (!syncResult.ok) {
@@ -1092,9 +1080,10 @@ const syncOpenClawConfig = async (
   // When secret env vars change, the running gateway must be restarted even if
   // the caller didn't request it — the ${VAR} placeholders in openclaw.json
   // resolve from the process environment which is fixed at spawn time.
-  const needsRestart = syncResult.changed || secretEnvVarsChanged;
+  const needsHardRestart = secretEnvVarsChanged || (syncResult.changed && options.restartGatewayIfRunning);
 
-  if (!needsRestart || (!options.restartGatewayIfRunning && !secretEnvVarsChanged)) {
+  if (!needsHardRestart) {
+    // Config file was written; OpenClaw's file-watcher will handle the reload.
     return {
       success: true,
       changed: syncResult.changed,
@@ -1104,6 +1093,18 @@ const syncOpenClawConfig = async (
   const manager = getOpenClawEngineManager();
   const status = manager.getStatus();
   if (status.phase !== 'running') {
+    return {
+      success: true,
+      changed: true,
+      status,
+    };
+  }
+
+  // Hard restart required (e.g. secret env vars changed) but active workloads
+  // exist — defer the restart to avoid killing in-flight sessions.
+  if (hasActiveGatewayWorkloads()) {
+    console.log(`[OpenClaw] syncOpenClawConfig: deferring hard restart because active workloads exist (reason: ${options.reason})`);
+    scheduleDeferredGatewayRestart(options.reason);
     return {
       success: true,
       changed: true,
