@@ -10,7 +10,7 @@ import type { PermissionResult } from '@anthropic-ai/claude-agent-sdk';
 import type { CoworkRuntime, PermissionRequest } from '../libs/agentEngine/types';
 import type { CoworkStore, CoworkMessage } from '../coworkStore';
 import type { IMStore } from './imStore';
-import type { IMMessage, IMPlatform, IMSessionMapping } from './types';
+import type { IMMessage, IMPlatform, IMMediaAttachment, IMSessionMapping } from './types';
 import { buildIMMediaInstruction } from './imMediaInstruction';
 import { analyzeIMReply, DEFAULT_IM_EMPTY_REPLY } from './imReplyGuard';
 import {
@@ -268,8 +268,7 @@ export class IMCoworkHandler extends EventEmitter {
       isActive,
       originalContent: message.content,
       formattedContent,
-      attachmentCount: message.attachments?.length ?? 0,
-      attachmentTypes: Array.from(new Set((message.attachments ?? []).map((item) => item.type))),
+      attachments: message.attachments,
       hasAvailableSkills,
     }, null, 2));
 
@@ -1100,11 +1099,20 @@ export class IMCoworkHandler extends EventEmitter {
       ? message.content.replace(/<br\s*\/?>/gi, '\n')
       : message.content;
 
-    if (content) {
-      // Do not leak local absolute file paths into runtime prompts.
+    if (message.attachments && message.attachments.length > 0) {
+      const mediaInfo = message.attachments.map((att: IMMediaAttachment) => {
+        const parts = [`类型: ${att.type}`, `路径: ${att.localPath}`];
+        if (att.fileName) parts.push(`文件名: ${att.fileName}`);
+        if (att.mimeType) parts.push(`MIME: ${att.mimeType}`);
+        if (att.width && att.height) parts.push(`尺寸: ${att.width}x${att.height}`);
+        if (att.duration) parts.push(`时长: ${att.duration}秒`);
+        if (att.fileSize) parts.push(`大小: ${(att.fileSize / 1024).toFixed(1)}KB`);
+        return `- ${parts.join(', ')}`;
+      }).join('\n');
+
       content = content
-        .replace(/!\[[^\]]*]\(file:\/\/[^)]+\)/gi, '[image]')
-        .replace(/\[[^\]]*]\(file:\/\/[^)]+\)/gi, '[file]');
+        ? `${content}\n\n[附件信息]\n${mediaInfo}`
+        : `[附件信息]\n${mediaInfo}`;
     }
 
     return content;
