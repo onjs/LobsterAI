@@ -2,6 +2,7 @@ import { describe, expect, test, vi } from 'vitest';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
+import { Readable } from 'stream';
 import { WebhookHub } from '../../gateway/webhookHub';
 import { DEFAULT_FEISHU_OPENCLAW_CONFIG, DEFAULT_FEISHU_STATUS } from '../../types';
 import { YdFeishuGateway } from './gateway';
@@ -28,9 +29,9 @@ function createConfiguredGateway(): YdFeishuGateway {
 }
 
 describe('YdFeishuGateway', () => {
-  test('drops group message when requireMention is enabled and no mention marker exists', () => {
+  test('drops group message when requireMention is enabled and no mention marker exists', async () => {
     const gateway = createConfiguredGateway();
-    const normalized = (gateway as any).normalizeInboundMessage({
+    const normalized = await (gateway as any).normalizeInboundMessage({
       sender: {
         sender_id: {
           open_id: 'sender-open-id',
@@ -50,9 +51,9 @@ describe('YdFeishuGateway', () => {
     expect(normalized).toBeNull();
   });
 
-  test('accepts group message when requireMention is enabled, botOpenId is missing, and mentions are present', () => {
+  test('accepts group message when requireMention is enabled, botOpenId is missing, and mentions are present', async () => {
     const gateway = createConfiguredGateway();
-    const normalized = (gateway as any).normalizeInboundMessage({
+    const normalized = await (gateway as any).normalizeInboundMessage({
       sender: {
         sender_id: {
           open_id: 'sender-open-id',
@@ -73,14 +74,14 @@ describe('YdFeishuGateway', () => {
     expect(normalized?.chatType).toBe('group');
   });
 
-  test('accepts group message when mention contains botOpenId', () => {
+  test('accepts group message when mention contains botOpenId', async () => {
     const gateway = createConfiguredGateway();
     (gateway as any).status = {
       ...DEFAULT_FEISHU_STATUS,
       connected: true,
       botOpenId: 'bot-open-id',
     };
-    const normalized = (gateway as any).normalizeInboundMessage({
+    const normalized = await (gateway as any).normalizeInboundMessage({
       sender: {
         sender_id: {
           open_id: 'sender-open-id',
@@ -101,7 +102,7 @@ describe('YdFeishuGateway', () => {
     expect(normalized?.chatType).toBe('group');
   });
 
-  test('treats empty group allowlist as open when policy is allowlist', () => {
+  test('treats empty group allowlist as open when policy is allowlist', async () => {
     const gateway = new YdFeishuGateway(new WebhookHub());
     (gateway as any).config = {
       ...DEFAULT_FEISHU_OPENCLAW_CONFIG,
@@ -120,7 +121,7 @@ describe('YdFeishuGateway', () => {
       ...DEFAULT_FEISHU_STATUS,
       connected: true,
     };
-    const normalized = (gateway as any).normalizeInboundMessage({
+    const normalized = await (gateway as any).normalizeInboundMessage({
       sender: {
         sender_id: {
           open_id: 'sender-open-id',
@@ -292,5 +293,57 @@ describe('YdFeishuGateway', () => {
     expect(message.platform).toBe('feishu');
     expect(message.senderId).toBe('ou_user_only');
     expect(message.chatType).toBe('direct');
+  });
+
+  test('downloads inbound feishu image resource and converts to markdown image', async () => {
+    const gateway = createConfiguredGateway();
+    const onMessageCallback = vi.fn().mockResolvedValue(undefined);
+    gateway.setMessageCallback(onMessageCallback);
+    const imageBuffer = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
+    vi.spyOn(gateway as any, 'loadLarkSdkModule').mockResolvedValue({
+      AppType: { SelfBuild: 'self_build' },
+      Domain: { Feishu: 'feishu', Lark: 'lark' },
+      Client: class {
+        request = vi.fn().mockResolvedValue({ code: 0 });
+        im = {
+          image: { create: vi.fn() },
+          file: { create: vi.fn() },
+          messageResource: {
+            get: vi.fn().mockResolvedValue({
+              headers: {
+                'content-type': 'image/jpeg',
+                'content-disposition': 'attachment; filename=\"img.jpg\"',
+              },
+              getReadableStream: () => Readable.from(imageBuffer),
+            }),
+          },
+        };
+      },
+    });
+
+    await (gateway as any).handleInboundEvent({
+      event_id: 'evt-2',
+      sender: {
+        sender_id: {
+          user_id: 'ou_user_only',
+        },
+      },
+      message: {
+        message_id: 'msg-image-1',
+        chat_id: 'oc_direct_1',
+        chat_type: 'p2p',
+        message_type: 'image',
+        content: JSON.stringify({ image_key: 'img_v3_test_key' }),
+        create_time: String(Date.now()),
+      },
+    });
+
+    expect(onMessageCallback).toHaveBeenCalledTimes(1);
+    const [message] = onMessageCallback.mock.calls[0];
+    expect(message.content).toContain('![image](file://');
+    expect(message.attachments).toHaveLength(1);
+    expect(message.attachments?.[0]?.type).toBe('image');
+    expect(message.attachments?.[0]?.localPath).toContain('/lobsterai-feishu-inbound/');
+    await fs.rm(message.attachments?.[0]?.localPath, { force: true });
   });
 });

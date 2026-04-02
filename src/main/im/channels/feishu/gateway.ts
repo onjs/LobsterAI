@@ -8,9 +8,11 @@ import * as fs from 'fs/promises';
 import type { IncomingMessage, ServerResponse } from 'http';
 import * as os from 'os';
 import * as path from 'path';
+import { pathToFileURL } from 'url';
 import {
   DEFAULT_FEISHU_STATUS,
   type FeishuGatewayStatus,
+  type IMMediaAttachment,
   type FeishuOpenClawConfig,
   type IMMessage,
   type MediaMarker,
@@ -66,6 +68,7 @@ const FeishuGatewayDefaults = {
   WebhookPort: 3110,
   WebhookRoutePrefix: 'yd_cowork_feishu_webhook',
   ExperimentalWebhookEnv: 'LOBSTERAI_IM_FEISHU_WEBHOOK_EXPERIMENTAL',
+  InboundMediaDir: 'lobsterai-feishu-inbound',
 } as const;
 
 const FeishuFileType = {
@@ -96,6 +99,26 @@ const FeishuFileTypeByExtension: Record<string, FeishuFileType> = {
   '.csv': FeishuFileType.Xls,
   '.ppt': FeishuFileType.Ppt,
   '.pptx': FeishuFileType.Ppt,
+};
+
+const FeishuInboundResourceType = {
+  Image: 'image',
+  File: 'file',
+} as const;
+
+type FeishuInboundResourceType = typeof FeishuInboundResourceType[keyof typeof FeishuInboundResourceType];
+
+const MimeToExtension: Record<string, string> = {
+  'image/jpeg': '.jpg',
+  'image/png': '.png',
+  'image/gif': '.gif',
+  'image/webp': '.webp',
+  'image/bmp': '.bmp',
+  'audio/ogg': '.ogg',
+  'audio/mpeg': '.mp3',
+  'audio/mp4': '.m4a',
+  'video/mp4': '.mp4',
+  'application/pdf': '.pdf',
 };
 
 export class YdFeishuGateway extends EventEmitter {
@@ -559,7 +582,7 @@ export class YdFeishuGateway extends EventEmitter {
       return;
     }
 
-    const normalized = this.normalizeInboundMessage(event);
+    const normalized = await this.normalizeInboundMessage(event);
     if (!normalized) {
       return;
     }
@@ -599,7 +622,7 @@ export class YdFeishuGateway extends EventEmitter {
     return null;
   }
 
-  private normalizeInboundMessage(event: any): IMMessage | null {
+  private async normalizeInboundMessage(event: any): Promise<IMMessage | null> {
     const message = event?.message;
     const senderIdentity = event?.sender?.sender_id ?? {};
     const senderId = (
@@ -623,7 +646,7 @@ export class YdFeishuGateway extends EventEmitter {
       return null;
     }
 
-    const textContent = this.extractMessageContent(message);
+    const contentResult = await this.extractMessageContent(message);
     const timestampValue = Number.parseInt(message?.create_time || '', 10);
 
     return {
@@ -633,9 +656,10 @@ export class YdFeishuGateway extends EventEmitter {
       senderId,
       senderName: senderIdentity.user_id || senderIdentity.open_id || undefined,
       groupName: message?.chat_name || undefined,
-      content: textContent,
+      content: contentResult.content,
       chatType,
       timestamp: Number.isFinite(timestampValue) ? timestampValue : Date.now(),
+      attachments: contentResult.attachments,
     };
   }
 
@@ -701,26 +725,237 @@ export class YdFeishuGateway extends EventEmitter {
     return mentions.some((item: any) => item?.id?.open_id === this.status.botOpenId);
   }
 
-  private extractMessageContent(message: any): string {
+  private async extractMessageContent(message: any): Promise<{
+    content: string;
+    attachments?: IMMediaAttachment[];
+  }> {
     const messageType = String(message?.message_type || '');
     const rawContent = typeof message?.content === 'string' ? message.content : '';
     const mentions = Array.isArray(message?.mentions) ? message.mentions : [];
 
     if (!rawContent) {
-      return this.fallbackContentForType(messageType);
+      return {
+        content: this.fallbackContentForType(messageType),
+      };
     }
 
     try {
       const parsed = JSON.parse(rawContent);
       if (typeof parsed?.text === 'string') {
-        return this.stripMentionKeys(parsed.text, mentions) || this.fallbackContentForType(messageType);
+        return {
+          content: this.stripMentionKeys(parsed.text, mentions) || this.fallbackContentForType(messageType),
+        };
+      }
+      const mediaResult = await this.tryExtractMediaContent(message, parsed);
+      if (mediaResult) {
+        return mediaResult;
       }
     } catch {
       if (messageType === FeishuMessageType.Text) {
-        return this.stripMentionKeys(rawContent, mentions) || this.fallbackContentForType(messageType);
+        return {
+          content: this.stripMentionKeys(rawContent, mentions) || this.fallbackContentForType(messageType),
+        };
       }
     }
-    return this.fallbackContentForType(messageType);
+    return {
+      content: this.fallbackContentForType(messageType),
+    };
+  }
+
+  private async tryExtractMediaContent(message: any, parsedContent: any): Promise<{
+    content: string;
+    attachments: IMMediaAttachment[];
+  } | null> {
+    const messageType = String(message?.message_type || '');
+    const messageId = String(message?.message_id || '').trim();
+    if (!messageId) {
+      return null;
+    }
+
+    const isImage = messageType === FeishuMessageType.Image;
+    const fileKey = String((isImage ? parsedContent?.image_key : parsedContent?.file_key) || '').trim();
+    if (!fileKey) {
+      return null;
+    }
+
+    const resourceType: FeishuInboundResourceType = isImage
+      ? FeishuInboundResourceType.Image
+      : FeishuInboundResourceType.File;
+
+    try {
+      const downloaded = await this.downloadInboundMediaResource({
+        messageId,
+        fileKey,
+        resourceType,
+      });
+      const attachmentType: IMMediaAttachment['type'] = isImage
+        ? 'image'
+        : (messageType === FeishuMessageType.Video ? 'video'
+          : (messageType === FeishuMessageType.Audio ? 'audio' : 'document'));
+      const attachment: IMMediaAttachment = {
+        type: attachmentType,
+        localPath: downloaded.localPath,
+        mimeType: downloaded.mimeType,
+        fileName: downloaded.fileName,
+        fileSize: downloaded.fileSize,
+      };
+      const content = isImage
+        ? `![image](${pathToFileURL(downloaded.localPath).toString()})`
+        : `[${attachmentType}] ${downloaded.fileName}`;
+      return {
+        content,
+        attachments: [attachment],
+      };
+    } catch (error) {
+      console.warn('[YdFeishuGateway] failed to resolve inbound media resource, fallback to placeholder:', {
+        messageId,
+        messageType,
+        fileKey,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+  }
+
+  private async downloadInboundMediaResource(params: {
+    messageId: string;
+    fileKey: string;
+    resourceType: FeishuInboundResourceType;
+  }): Promise<{
+    localPath: string;
+    fileName: string;
+    fileSize: number;
+    mimeType: string;
+  }> {
+    const client = await this.createLarkClient();
+    const response = await client.im.messageResource.get({
+      path: {
+        message_id: params.messageId,
+        file_key: params.fileKey,
+      },
+      params: {
+        type: params.resourceType,
+      },
+    });
+    const stream = response?.getReadableStream?.();
+    if (!stream) {
+      throw new Error('Feishu message resource stream is unavailable');
+    }
+    const buffer = await this.readStreamToBuffer(stream);
+    if (!buffer.length) {
+      throw new Error('Feishu message resource is empty');
+    }
+
+    const maxBytes = (this.config?.mediaMaxMb ?? 30) * 1024 * 1024;
+    if (buffer.length > maxBytes) {
+      throw new Error(`Feishu inbound media exceeds max size: ${buffer.length} > ${maxBytes}`);
+    }
+
+    const headers = response?.headers;
+    const mimeType = this.extractContentType(headers, params.resourceType);
+    const headerFileName = this.extractFileNameFromHeaders(headers);
+    const finalFileName = this.ensureFileNameExtension(
+      headerFileName || params.fileKey,
+      mimeType,
+      params.resourceType,
+    );
+    const mediaDir = path.join(os.tmpdir(), FeishuGatewayDefaults.InboundMediaDir);
+    await fs.mkdir(mediaDir, { recursive: true });
+    const localPath = path.join(mediaDir, `${Date.now()}-${params.fileKey}${path.extname(finalFileName)}`);
+    await fs.writeFile(localPath, buffer);
+    return {
+      localPath,
+      fileName: finalFileName,
+      fileSize: buffer.length,
+      mimeType,
+    };
+  }
+
+  private async readStreamToBuffer(stream: any): Promise<Buffer> {
+    const chunks: Buffer[] = [];
+    return new Promise((resolve, reject) => {
+      stream.on('data', (chunk: Buffer | Uint8Array | string) => {
+        if (Buffer.isBuffer(chunk)) {
+          chunks.push(chunk);
+          return;
+        }
+        if (chunk instanceof Uint8Array) {
+          chunks.push(Buffer.from(chunk));
+          return;
+        }
+        chunks.push(Buffer.from(String(chunk)));
+      });
+      stream.on('end', () => {
+        resolve(Buffer.concat(chunks));
+      });
+      stream.on('error', reject);
+    });
+  }
+
+  private extractContentType(
+    headers: Record<string, unknown> | undefined,
+    resourceType: FeishuInboundResourceType,
+  ): string {
+    const value = this.readHeaderValue(headers, 'content-type').split(';')[0].trim().toLowerCase();
+    if (value) {
+      return value;
+    }
+    if (resourceType === FeishuInboundResourceType.Image) {
+      return 'image/jpeg';
+    }
+    return 'application/octet-stream';
+  }
+
+  private extractFileNameFromHeaders(headers: Record<string, unknown> | undefined): string {
+    const contentDisposition = this.readHeaderValue(headers, 'content-disposition');
+    if (!contentDisposition) {
+      return '';
+    }
+    const utf8Match = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
+    if (utf8Match?.[1]) {
+      try {
+        return decodeURIComponent(utf8Match[1].trim().replace(/^"|"$/g, ''));
+      } catch {
+        return utf8Match[1].trim().replace(/^"|"$/g, '');
+      }
+    }
+    const fallbackMatch = contentDisposition.match(/filename="?([^";]+)"?/i);
+    if (fallbackMatch?.[1]) {
+      return fallbackMatch[1].trim();
+    }
+    return '';
+  }
+
+  private ensureFileNameExtension(
+    fileName: string,
+    mimeType: string,
+    resourceType: FeishuInboundResourceType,
+  ): string {
+    const normalized = fileName.trim() || 'resource';
+    const extension = path.extname(normalized);
+    if (extension) {
+      return normalized;
+    }
+    const resolvedExtension = MimeToExtension[mimeType] || (resourceType === FeishuInboundResourceType.Image ? '.jpg' : '.bin');
+    return `${normalized}${resolvedExtension}`;
+  }
+
+  private readHeaderValue(headers: Record<string, unknown> | undefined, name: string): string {
+    if (!headers || typeof headers !== 'object') {
+      return '';
+    }
+    const normalizedName = name.toLowerCase();
+    for (const key of Object.keys(headers)) {
+      if (key.toLowerCase() !== normalizedName) {
+        continue;
+      }
+      const value = headers[key];
+      if (Array.isArray(value)) {
+        return String(value[0] ?? '');
+      }
+      return String(value ?? '');
+    }
+    return '';
   }
 
   private stripMentionKeys(text: string, mentions: any[]): string {
