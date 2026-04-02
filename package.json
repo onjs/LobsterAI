@@ -44,7 +44,7 @@
         "optional": true
       },
       {
-        "id": "nim",
+        "id": "openclaw-nim",
         "npm": "openclaw-nim",
         "version": "0.3.0"
       }
