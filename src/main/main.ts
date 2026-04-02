@@ -1014,7 +1014,7 @@ const clearDeferredRestart = () => {
 const executeDeferredGatewayRestart = async (reason: string) => {
   clearDeferredRestart();
   console.log(`[OpenClaw] executeDeferredGatewayRestart: performing deferred restart (reason: ${reason})`);
-  await syncOpenClawConfig({ reason: `deferred:${reason}`, restartGatewayIfRunning: true });
+  await syncOpenClawConfig({ reason: `deferred:${reason}` });
 };
 
 const scheduleDeferredGatewayRestart = (reason: string) => {
@@ -1415,7 +1415,6 @@ const refreshMcpBridge = (): Promise<{ tools: number; error?: string }> => {
       if (shouldSyncOpenClawForBackgroundChanges()) {
         const syncResult = await syncOpenClawConfig({
           reason: 'mcp-server-changed',
-          restartGatewayIfRunning: true,
         });
         if (!syncResult.success) {
           console.error('[McpBridge] refresh: config sync failed:', syncResult.error);
@@ -1466,7 +1465,6 @@ const getIMGatewayManager = () => {
         syncOpenClawConfig: async () => {
           await syncOpenClawConfig({
             reason: 'im-gateway-start',
-            restartGatewayIfRunning: true,
           });
         },
         ensureOpenClawGatewayConnected: async () => {
@@ -3460,7 +3458,6 @@ if (!gotTheLock) {
       if (shouldAttemptOpenClawSync) {
         const syncResult = await syncOpenClawConfig({
           reason: 'cowork-config-change',
-          restartGatewayIfRunning: true,
         });
         if (!syncResult.success && nextAgentEngine === 'openclaw') {
           return {
@@ -3822,10 +3819,9 @@ if (!gotTheLock) {
       }
       await syncOpenClawConfig({
         reason: 'im-config-change',
-        restartGatewayIfRunning: true,
       });
-      // After config sync (which may restart the gateway), ensure the runtime
-      // adapter's WebSocket client is connected so channel events are received.
+      // After config sync, ensure the runtime adapter's WebSocket client
+      // is connected so channel events are received.
       if (openClawRuntimeAdapter) {
         try {
           await openClawRuntimeAdapter.connectGatewayIfNeeded();
@@ -4058,11 +4054,8 @@ if (!gotTheLock) {
       if (!approved) {
         return { success: false, error: 'Pairing code not found or expired' };
       }
-      // Restart gateway so it reloads the updated allowFrom from disk
-      // (OpenClaw SDK caches allowFrom in memory)
       await syncOpenClawConfig({
         reason: `im-pairing-approval:${platform}`,
-        restartGatewayIfRunning: true,
       });
       return { success: true };
     } catch (error) {
@@ -5029,6 +5022,16 @@ if (!gotTheLock) {
       console.error('Failed to start OpenAI compatibility proxy:', error);
     });
 
+    // Re-sync OpenClaw config after proxy is ready so that providers that route
+    // through the proxy (e.g. github-copilot) get the correct baseUrl.
+    if (shouldSyncOpenClawForBackgroundChanges()) {
+      const proxyResync = await syncOpenClawConfig({
+        reason: 'proxy-ready',
+      });
+      if (proxyResync.changed) {
+        console.log('[Main] OpenClaw config updated after proxy ready, gateway will restart to pick up new config');
+      }
+    }
     // 设置安全策略
     setContentSecurityPolicy();
 

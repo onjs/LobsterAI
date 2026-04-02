@@ -1595,11 +1595,31 @@ export class SkillManager {
     const primaryRoot = this.ensureSkillsRoot();
     const roots = this.getSkillRoots(primaryRoot);
 
-    const watchHandler = () => this.scheduleNotify();
+    // Root-level watch: only react to directory additions/removals (new/deleted skills).
+    const rootWatchHandler = (_event: string, filename: string | null) => {
+      if (!filename) { this.scheduleNotify(); return; }
+      // Ignore hidden files/dirs and known non-skill files
+      if (filename.startsWith('.')) return;
+      // Accept directory changes (new skill added/removed) and config file
+      if (filename === SKILLS_CONFIG_FILE) { this.scheduleNotify(); return; }
+      // For other filenames, check if it looks like a skill directory entry
+      // (no extension = likely a directory name)
+      if (!path.extname(filename)) { this.scheduleNotify(); }
+    };
+
+    // Skill-directory-level watch: only react to skill definition file changes.
+    const skillDirWatchHandler = (_event: string, filename: string | null) => {
+      if (!filename) { this.scheduleNotify(); return; }
+      if (filename === SKILL_FILE_NAME || filename === SKILLS_CONFIG_FILE) {
+        this.scheduleNotify();
+      }
+      // Ignore cache files, data files, and any other non-definition files.
+    };
+
     roots.forEach(root => {
       if (!fs.existsSync(root)) return;
       try {
-        this.watchers.push(fs.watch(root, watchHandler));
+        this.watchers.push(fs.watch(root, rootWatchHandler));
       } catch (error) {
         console.warn('[skills] Failed to watch skills root:', root, error);
       }
@@ -1607,7 +1627,7 @@ export class SkillManager {
       const skillDirs = listSkillDirs(root);
       skillDirs.forEach(dir => {
         try {
-          this.watchers.push(fs.watch(dir, watchHandler));
+          this.watchers.push(fs.watch(dir, skillDirWatchHandler));
         } catch (error) {
           console.warn('[skills] Failed to watch skill directory:', dir, error);
         }
