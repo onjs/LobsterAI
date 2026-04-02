@@ -250,6 +250,7 @@ export class YdFeishuGateway extends EventEmitter {
 
     const mediaMarkers = parseMediaMarkers(text);
     const plainText = stripMediaMarkers(text, mediaMarkers).trim();
+    const failedMediaMarkers: MediaMarker[] = [];
 
     if (plainText) {
       await this.sendTextMessage(conversationId, plainText);
@@ -257,16 +258,50 @@ export class YdFeishuGateway extends EventEmitter {
 
     if (mediaMarkers.length > 0) {
       for (const marker of mediaMarkers) {
-        await this.sendMediaMessage(conversationId, marker);
+        try {
+          await this.sendMediaMessage(conversationId, marker);
+        } catch (error) {
+          failedMediaMarkers.push(marker);
+          console.warn('[YdFeishuGateway] failed to send media marker, skipped this marker:', {
+            type: marker.type,
+            path: marker.path,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
       }
+    }
+
+    if (!plainText && failedMediaMarkers.length > 0) {
+      await this.sendTextMessage(conversationId, this.buildMediaSendFallbackText(failedMediaMarkers.length));
+    }
+
+    if (failedMediaMarkers.length > 0) {
+      const failedSummary = failedMediaMarkers
+        .map((item) => `${item.type}:${item.path}`)
+        .join(', ');
+      this.status = {
+        ...this.status,
+        error: `Feishu media markers were skipped: ${failedSummary}`,
+      };
+    } else {
+      this.status = {
+        ...this.status,
+        error: null,
+      };
     }
 
     this.status = {
       ...this.status,
       lastOutboundAt: Date.now(),
-      error: null,
     };
     this.emit('status', this.getStatus());
+  }
+
+  private buildMediaSendFallbackText(failedCount: number): string {
+    if (failedCount <= 1) {
+      return 'Attachment could not be sent because the local file is unavailable.';
+    }
+    return `${failedCount} attachments could not be sent because local files are unavailable.`;
   }
 
   private async loadLarkSdkModule(): Promise<any> {
@@ -745,7 +780,15 @@ export class YdFeishuGateway extends EventEmitter {
     }
 
     const filePath = this.resolveLocalMediaAbsolutePath(normalizedPath);
-    const stat = await fs.stat(filePath);
+    let stat;
+    try {
+      stat = await fs.stat(filePath);
+    } catch (error: any) {
+      if (error?.code === 'ENOENT') {
+        throw new Error(`Feishu media file does not exist: ${filePath}`);
+      }
+      throw error;
+    }
     if (!stat.isFile()) {
       throw new Error('Feishu media path must point to a file');
     }

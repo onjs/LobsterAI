@@ -140,15 +140,27 @@ describe('YdFeishuGateway', () => {
     expect(normalized).not.toBeNull();
   });
 
-  test('rejects remote media URL', async () => {
+  test('skips remote media URL and sends fallback text instead of failing', async () => {
     const gateway = createConfiguredGateway();
+    const request = vi.fn().mockResolvedValue({ code: 0 });
+    vi.spyOn(gateway as any, 'loadLarkSdkModule').mockResolvedValue({
+      AppType: { SelfBuild: 'self_build' },
+      Domain: { Feishu: 'feishu', Lark: 'lark' },
+      Client: class {
+        request = request;
+        im = {
+          image: { create: vi.fn() },
+          file: { create: vi.fn() },
+        };
+      },
+    });
 
-    await expect(
-      gateway.sendConversationNotification(
-        'chat-1',
-        '[DINGTALK_FILE]{"path":"http://127.0.0.1/test.pdf"}[/DINGTALK_FILE]',
-      ),
-    ).rejects.toThrow(/remote URL is not allowed/i);
+    await expect(gateway.sendConversationNotification(
+      'chat-1',
+      '[DINGTALK_FILE]{"path":"http://127.0.0.1/test.pdf"}[/DINGTALK_FILE]',
+    )).resolves.toBeUndefined();
+
+    expect(request).toHaveBeenCalledTimes(1);
   });
 
   test('sends plain text through lark sdk request api', async () => {
@@ -171,26 +183,50 @@ describe('YdFeishuGateway', () => {
     expect(request).toHaveBeenCalledTimes(1);
   });
 
-  test('rejects public remote media URL', async () => {
+  test('skips public remote media URL and keeps reply flow alive', async () => {
     const gateway = createConfiguredGateway();
+    const request = vi.fn().mockResolvedValue({ code: 0 });
+    vi.spyOn(gateway as any, 'loadLarkSdkModule').mockResolvedValue({
+      AppType: { SelfBuild: 'self_build' },
+      Domain: { Feishu: 'feishu', Lark: 'lark' },
+      Client: class {
+        request = request;
+        im = {
+          image: { create: vi.fn() },
+          file: { create: vi.fn() },
+        };
+      },
+    });
 
-    await expect(
-      gateway.sendConversationNotification(
-        'chat-1',
-        '[DINGTALK_FILE]{"path":"https://8.8.8.8/test.pdf"}[/DINGTALK_FILE]',
-      ),
-    ).rejects.toThrow(/remote URL is not allowed/i);
+    await expect(gateway.sendConversationNotification(
+      'chat-1',
+      '[DINGTALK_FILE]{"path":"https://8.8.8.8/test.pdf"}[/DINGTALK_FILE]',
+    )).resolves.toBeUndefined();
+
+    expect(request).toHaveBeenCalledTimes(1);
   });
 
-  test('rejects relative local media path', async () => {
+  test('skips relative local media path and sends fallback text instead of throwing', async () => {
     const gateway = createConfiguredGateway();
+    const request = vi.fn().mockResolvedValue({ code: 0 });
+    vi.spyOn(gateway as any, 'loadLarkSdkModule').mockResolvedValue({
+      AppType: { SelfBuild: 'self_build' },
+      Domain: { Feishu: 'feishu', Lark: 'lark' },
+      Client: class {
+        request = request;
+        im = {
+          image: { create: vi.fn() },
+          file: { create: vi.fn() },
+        };
+      },
+    });
 
-    await expect(
-      gateway.sendConversationNotification(
-        'chat-1',
-        '[DINGTALK_FILE]{"path":"relative/path/test.pdf"}[/DINGTALK_FILE]',
-      ),
-    ).rejects.toThrow(/must be absolute/i);
+    await expect(gateway.sendConversationNotification(
+      'chat-1',
+      '[DINGTALK_FILE]{"path":"relative/path/test.pdf"}[/DINGTALK_FILE]',
+    )).resolves.toBeUndefined();
+
+    expect(request).toHaveBeenCalledTimes(1);
   });
 
   test('uploads local image and sends image message via lark sdk', async () => {
