@@ -1,12 +1,14 @@
-import { createCipheriv, createHash, randomBytes, randomUUID } from 'crypto';
+import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'crypto';
 import { promises as dnsPromises } from 'dns';
 import { EventEmitter } from 'events';
 import fs from 'fs/promises';
 import net from 'net';
 import os from 'os';
 import path from 'path';
+import { pathToFileURL } from 'url';
 import {
   DEFAULT_WEIXIN_STATUS,
+  type IMMediaAttachment,
   type IMMessage,
   type MediaMarker,
   type WeixinGatewayStatus,
@@ -83,6 +85,7 @@ const WeixinGatewayDefaults = {
   RemoteMediaMaxBytes: 30 * 1024 * 1024,
   CdnBaseUrl: 'https://novac2c.cdn.weixin.qq.com/c2c',
   RemoteMediaDir: 'lobsterai-weixin-media',
+  InboundMediaDir: 'lobsterai-weixin-inbound',
 } as const;
 
 const WeixinInboundMessageDefaults = {
@@ -105,6 +108,7 @@ interface WeixinMessageItem {
   image_item?: {
     url?: string;
     media?: {
+      encrypted_query_param?: string;
       encrypt_query_param?: string;
       aes_key?: string;
       encrypt_type?: number;
@@ -114,6 +118,7 @@ interface WeixinMessageItem {
   voice_item?: {
     text?: string;
     media?: {
+      encrypted_query_param?: string;
       encrypt_query_param?: string;
       aes_key?: string;
       encrypt_type?: number;
@@ -124,6 +129,7 @@ interface WeixinMessageItem {
     file_name?: string;
     len?: string;
     media?: {
+      encrypted_query_param?: string;
       encrypt_query_param?: string;
       aes_key?: string;
       encrypt_type?: number;
@@ -131,6 +137,7 @@ interface WeixinMessageItem {
   };
   video_item?: {
     media?: {
+      encrypted_query_param?: string;
       encrypt_query_param?: string;
       aes_key?: string;
       encrypt_type?: number;
@@ -1149,7 +1156,7 @@ export class YdWeixinGateway extends EventEmitter {
   }
 
   private async handleRawMessage(raw: WeixinRawMessage): Promise<void> {
-    const normalized = this.normalizeInboundMessage(raw);
+    const normalized = await this.normalizeInboundMessage(raw);
     if (!normalized) {
       return;
     }
@@ -1176,6 +1183,7 @@ export class YdWeixinGateway extends EventEmitter {
       content: normalized.content,
       chatType: normalized.chatType,
       timestamp: normalized.timestamp,
+      attachments: normalized.attachments.length > 0 ? normalized.attachments : undefined,
     };
 
     this.emit('message', message);
@@ -1216,15 +1224,16 @@ export class YdWeixinGateway extends EventEmitter {
     }
   }
 
-  private normalizeInboundMessage(raw: WeixinRawMessage): {
+  private async normalizeInboundMessage(raw: WeixinRawMessage): Promise<{
     messageId: string;
     conversationId: string;
     senderId: string;
     chatType: IMMessage['chatType'];
     content: string;
+    attachments: IMMediaAttachment[];
     timestamp: number;
     contextToken: string;
-  } | null {
+  } | null> {
     if (raw.message_type !== WeixinMessageType.User) {
       return null;
     }
@@ -1252,7 +1261,7 @@ export class YdWeixinGateway extends EventEmitter {
         ? messageIdValue
         : `${Date.now()}`;
 
-    const content = this.extractMessageContent(raw.item_list || []);
+    const { content, attachments } = await this.extractMessageContent(raw.item_list || []);
     const timestamp = typeof raw.create_time_ms === 'number' && Number.isFinite(raw.create_time_ms)
       ? raw.create_time_ms
       : Date.now();
@@ -1263,6 +1272,7 @@ export class YdWeixinGateway extends EventEmitter {
       senderId,
       chatType,
       content,
+      attachments,
       timestamp,
       contextToken,
     };
@@ -1329,25 +1339,48 @@ export class YdWeixinGateway extends EventEmitter {
     return normalized.endsWith('@chatroom') || normalized.startsWith('chatroom_');
   }
 
-  private extractMessageContent(items: WeixinMessageItem[]): string {
-    const parts = items.map((item) => {
-      switch (item.type) {
-        case WeixinItemType.Text:
-          return this.normalizeInboundTextContent(item.text_item?.text || '');
-        case WeixinItemType.Image:
-          return this.normalizeInboundImageContent(item);
-        case WeixinItemType.Voice:
-          return this.normalizeInboundVoiceContent(item);
-        case WeixinItemType.File:
-          return this.normalizeInboundFileContent(item);
-        case WeixinItemType.Video:
-          return WeixinInboundPlaceholder.Video;
-        default:
-          return '';
+  private async extractMessageContent(items: WeixinMessageItem[]): Promise<{
+    content: string;
+    attachments: IMMediaAttachment[];
+  }> {
+    const parts: string[] = [];
+    const attachments: IMMediaAttachment[] = [];
+    for (const item of items) {
+      if (item.type === WeixinItemType.Text) {
+        const normalized = this.normalizeInboundTextContent(item.text_item?.text || '');
+        if (normalized) {
+          parts.push(normalized);
+        }
+        continue;
       }
-    }).filter(Boolean);
 
-    return parts.join('\n').trim() || '[empty]';
+      if (item.type === WeixinItemType.Image) {
+        const normalized = await this.normalizeInboundImageContent(item, attachments);
+        if (normalized) {
+          parts.push(normalized);
+        }
+        continue;
+      }
+
+      if (item.type === WeixinItemType.Voice) {
+        parts.push(this.normalizeInboundVoiceContent(item));
+        continue;
+      }
+
+      if (item.type === WeixinItemType.File) {
+        parts.push(this.normalizeInboundFileContent(item));
+        continue;
+      }
+
+      if (item.type === WeixinItemType.Video) {
+        parts.push(WeixinInboundPlaceholder.Video);
+      }
+    }
+
+    return {
+      content: parts.join('\n').trim() || '[empty]',
+      attachments,
+    };
   }
 
   private normalizeInboundTextContent(text: string): string {
@@ -1361,16 +1394,25 @@ export class YdWeixinGateway extends EventEmitter {
     return normalized;
   }
 
-  private normalizeInboundImageContent(item: WeixinMessageItem): string {
+  private async normalizeInboundImageContent(
+    item: WeixinMessageItem,
+    attachments: IMMediaAttachment[],
+  ): Promise<string> {
+    const mediaMarkdown = await this.tryNormalizeInboundImageFromMedia(item, attachments);
+    if (mediaMarkdown) {
+      return mediaMarkdown;
+    }
+
     const imageUrl = item.image_item?.url?.trim() || '';
-    if (imageUrl && this.isDisplayableRemoteUrl(imageUrl) && !this.isLikelyHexPayload(imageUrl)) {
+    if (
+      imageUrl
+      && this.isDisplayableRemoteUrl(imageUrl)
+      && !this.isLikelyHexPayload(imageUrl)
+      && !this.isWeixinCdnUrl(imageUrl)
+    ) {
       return `![image](${imageUrl})`;
     }
 
-    const mediaDerivedUrl = this.buildInboundImageMediaUrl(item);
-    if (mediaDerivedUrl) {
-      return `![image](${mediaDerivedUrl})`;
-    }
     return WeixinInboundPlaceholder.Image;
   }
 
@@ -1410,29 +1452,206 @@ export class YdWeixinGateway extends EventEmitter {
     }
   }
 
-  private buildInboundImageMediaUrl(item: WeixinMessageItem): string | null {
+  private isWeixinCdnUrl(value: string): boolean {
+    try {
+      const parsed = new URL(value);
+      const hostname = parsed.hostname.trim().toLowerCase();
+      return hostname.endsWith('cdn.weixin.qq.com');
+    } catch {
+      return false;
+    }
+  }
+
+  private async tryNormalizeInboundImageFromMedia(
+    item: WeixinMessageItem,
+    attachments: IMMediaAttachment[],
+  ): Promise<string | null> {
     const media = item.image_item?.media;
-    const encryptedQuery = media?.encrypt_query_param?.trim() || '';
+    const encryptedQuery = media?.encrypted_query_param?.trim()
+      || media?.encrypt_query_param?.trim()
+      || '';
     if (!encryptedQuery || this.isLikelyHexPayload(encryptedQuery)) {
       return null;
     }
 
-    const downloadBase = `${WeixinGatewayDefaults.CdnBaseUrl}/download`;
-    let query = encryptedQuery.replace(/^\?+/, '');
-    if (!query.includes('=')) {
-      query = `encrypt_query_param=${encodeURIComponent(query)}`;
-    }
-
     const aesKey = media?.aes_key?.trim() || '';
-    if (aesKey && !/(\?|&)aes_key=/i.test(query)) {
-      query += `&aes_key=${encodeURIComponent(aesKey)}`;
-    }
-
-    const candidate = `${downloadBase}?${query}`;
-    if (!this.isDisplayableRemoteUrl(candidate)) {
+    if (!aesKey || this.isLikelyHexPayload(aesKey)) {
       return null;
     }
-    return candidate;
+
+    try {
+      const downloaded = await this.downloadAndStoreInboundImage({
+        encryptedQuery,
+        aesKeyBase64: aesKey,
+      });
+      attachments.push({
+        type: 'image',
+        localPath: downloaded.localPath,
+        mimeType: downloaded.mimeType,
+        fileName: path.basename(downloaded.localPath),
+        fileSize: downloaded.fileSize,
+      });
+      return `![image](${pathToFileURL(downloaded.localPath).toString()})`;
+    } catch (error) {
+      console.warn('[YdWeixinGateway] failed to decode inbound image media, using placeholder:', error);
+      return null;
+    }
+  }
+
+  private async downloadAndStoreInboundImage(params: {
+    encryptedQuery: string;
+    aesKeyBase64: string;
+  }): Promise<{
+    localPath: string;
+    mimeType: string;
+    fileSize: number;
+  }> {
+    const downloadUrl = this.buildInboundImageDownloadUrl(
+      params.encryptedQuery,
+      params.aesKeyBase64,
+    );
+    const safeUrl = await this.assertSafeRemoteMediaUrl(downloadUrl);
+
+    const timeoutController = new AbortController();
+    const timeout = setTimeout(
+      () => timeoutController.abort(),
+      WeixinGatewayDefaults.RemoteMediaDownloadTimeoutMs,
+    );
+
+    let response: Response;
+    try {
+      response = await fetch(safeUrl.toString(), {
+        method: 'GET',
+        signal: timeoutController.signal,
+        redirect: 'error',
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
+
+    if (!response.ok) {
+      throw new Error(`Weixin inbound image download failed: HTTP ${response.status}`);
+    }
+
+    const encryptedBuffer = await this.readResponseBodyWithLimit(
+      response,
+      WeixinGatewayDefaults.RemoteMediaMaxBytes,
+    );
+    const decryptedBuffer = this.decryptInboundMediaPayload(encryptedBuffer, params.aesKeyBase64);
+    const inferred = this.inferInboundImageFileInfo(decryptedBuffer);
+
+    const mediaDir = path.join(os.tmpdir(), WeixinGatewayDefaults.InboundMediaDir);
+    await fs.mkdir(mediaDir, { recursive: true });
+
+    const localPath = path.join(
+      mediaDir,
+      `${Date.now()}-${randomUUID()}${inferred.extension}`,
+    );
+    await fs.writeFile(localPath, decryptedBuffer);
+
+    return {
+      localPath,
+      mimeType: inferred.mimeType,
+      fileSize: decryptedBuffer.length,
+    };
+  }
+
+  private buildInboundImageDownloadUrl(encryptedQuery: string, aesKeyBase64: string): string {
+    const downloadBase = `${WeixinGatewayDefaults.CdnBaseUrl}/download`;
+    let query = encryptedQuery.trim().replace(/^\?+/, '');
+
+    if (!query.includes('=')) {
+      query = `encrypted_query_param=${encodeURIComponent(query)}`;
+    } else {
+      query = query.replace(/(^|&)encrypt_query_param=/i, '$1encrypted_query_param=');
+      if (!/(^|&)encrypted_query_param=/i.test(query)) {
+        query = `encrypted_query_param=${encodeURIComponent(query)}`;
+      }
+    }
+
+    if (aesKeyBase64 && !/(^|&)aes_key=/i.test(query)) {
+      query = `${query}&aes_key=${encodeURIComponent(aesKeyBase64)}`;
+    }
+    return `${downloadBase}?${query}`;
+  }
+
+  private decryptInboundMediaPayload(encryptedBuffer: Buffer, aesKeyBase64: string): Buffer {
+    const keyBuffer = this.decodeInboundAesKey(aesKeyBase64);
+
+    try {
+      const decipher = createDecipheriv('aes-128-ecb', keyBuffer, null);
+      decipher.setAutoPadding(true);
+      return Buffer.concat([decipher.update(encryptedBuffer), decipher.final()]);
+    } catch (error) {
+      if (this.isLikelyImageBuffer(encryptedBuffer)) {
+        return encryptedBuffer;
+      }
+      throw error;
+    }
+  }
+
+  private decodeInboundAesKey(rawValue: string): Buffer {
+    const decoded = this.decodeBase64Loose(rawValue);
+    if (decoded.length === 16) {
+      return decoded;
+    }
+
+    const decodedAscii = decoded.toString('ascii').trim();
+    if (decoded.length === 32 && /^[0-9a-f]{32}$/i.test(decodedAscii)) {
+      return Buffer.from(decodedAscii, 'hex');
+    }
+
+    const normalizedRaw = rawValue.trim();
+    if (/^[0-9a-f]{32}$/i.test(normalizedRaw)) {
+      return Buffer.from(normalizedRaw, 'hex');
+    }
+
+    throw new Error(`Invalid Weixin aes key length: ${decoded.length}`);
+  }
+
+  private decodeBase64Loose(rawValue: string): Buffer {
+    const trimmed = rawValue.trim();
+    if (!trimmed) {
+      throw new Error('Weixin aes key is empty.');
+    }
+    let normalized = trimmed.replace(/-/g, '+').replace(/_/g, '/');
+    const paddingLength = normalized.length % 4;
+    if (paddingLength > 0) {
+      normalized = `${normalized}${'='.repeat(4 - paddingLength)}`;
+    }
+    return Buffer.from(normalized, 'base64');
+  }
+
+  private inferInboundImageFileInfo(buffer: Buffer): { extension: string; mimeType: string } {
+    if (buffer.length >= 8 && buffer.subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex'))) {
+      return { extension: '.png', mimeType: 'image/png' };
+    }
+    if (buffer.length >= 3 && buffer.subarray(0, 3).equals(Buffer.from('ffd8ff', 'hex'))) {
+      return { extension: '.jpg', mimeType: 'image/jpeg' };
+    }
+    if (buffer.length >= 6) {
+      const header6 = buffer.subarray(0, 6).toString('ascii');
+      if (header6 === 'GIF87a' || header6 === 'GIF89a') {
+        return { extension: '.gif', mimeType: 'image/gif' };
+      }
+    }
+    if (
+      buffer.length >= 12
+      && buffer.subarray(0, 4).toString('ascii') === 'RIFF'
+      && buffer.subarray(8, 12).toString('ascii') === 'WEBP'
+    ) {
+      return { extension: '.webp', mimeType: 'image/webp' };
+    }
+    if (buffer.length >= 2 && buffer.subarray(0, 2).toString('ascii') === 'BM') {
+      return { extension: '.bmp', mimeType: 'image/bmp' };
+    }
+
+    return { extension: '.bin', mimeType: 'application/octet-stream' };
+  }
+
+  private isLikelyImageBuffer(buffer: Buffer): boolean {
+    const inferred = this.inferInboundImageFileInfo(buffer);
+    return inferred.mimeType.startsWith('image/');
   }
 
   private isInboundAllowed(
