@@ -7,7 +7,7 @@ import { EventEmitter } from 'events';
 import fs from 'fs';
 import path from 'path';
 import type { PermissionResult } from '@anthropic-ai/claude-agent-sdk';
-import type { CoworkRuntime, PermissionRequest } from '../libs/agentEngine/types';
+import type { CoworkRuntime, CoworkImageAttachment, PermissionRequest } from '../libs/agentEngine/types';
 import type { CoworkStore, CoworkMessage } from '../coworkStore';
 import type { IMStore } from './imStore';
 import type { IMMessage, IMPlatform, IMMediaAttachment, IMSessionMapping } from './types';
@@ -50,6 +50,19 @@ const ACCUMULATOR_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 const IM_ALLOW_RESPONSE_RE = /^(允许|同意|yes|y)$/i;
 const IM_DENY_RESPONSE_RE = /^(拒绝|不同意|no|n)$/i;
 const IM_ALLOW_OPTION_LABEL = '允许本次操作';
+const IM_IMAGE_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
+
+const ImageMimeTypeByExtension: Record<string, string> = {
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.png': 'image/png',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.bmp': 'image/bmp',
+  '.svg': 'image/svg+xml',
+  '.heic': 'image/heic',
+  '.heif': 'image/heif',
+};
 
 export function selectRunMessagesForReply(
   sessionMessages: CoworkMessage[],
@@ -224,6 +237,7 @@ export class IMCoworkHandler extends EventEmitter {
     });
 
     const formattedContent = this.formatMessageWithMedia(message);
+    const imageAttachments = await this.buildImageAttachments(message);
     const directScheduledTaskRequest = this.createScheduledTask && this.detectScheduledTaskRequest
       ? await this.detectScheduledTaskRequest(message)
       : null;
@@ -269,6 +283,7 @@ export class IMCoworkHandler extends EventEmitter {
       originalContent: message.content,
       formattedContent,
       attachments: message.attachments,
+      imageAttachmentsCount: imageAttachments.length,
       hasAvailableSkills,
     }, null, 2));
 
@@ -280,13 +295,17 @@ export class IMCoworkHandler extends EventEmitter {
     };
 
     if (isActive) {
-      this.coworkRuntime.continueSession(coworkSessionId, formattedContent, { systemPrompt })
+      this.coworkRuntime.continueSession(coworkSessionId, formattedContent, {
+        systemPrompt,
+        ...(imageAttachments.length > 0 ? { imageAttachments } : {}),
+      })
         .catch(onSessionStartError);
     } else {
       this.coworkRuntime.startSession(coworkSessionId, formattedContent, {
         workspaceRoot: session?.cwd,
         confirmationMode: 'text',
         systemPrompt,
+        ...(imageAttachments.length > 0 ? { imageAttachments } : {}),
       }).catch(onSessionStartError);
     }
 
@@ -1116,6 +1135,69 @@ export class IMCoworkHandler extends EventEmitter {
     }
 
     return content;
+  }
+
+  private async buildImageAttachments(message: IMMessage): Promise<CoworkImageAttachment[]> {
+    if (!Array.isArray(message.attachments) || message.attachments.length === 0) {
+      return [];
+    }
+
+    const output: CoworkImageAttachment[] = [];
+    for (const attachment of message.attachments) {
+      if (attachment.type !== 'image') {
+        continue;
+      }
+
+      const localPath = attachment.localPath?.trim();
+      if (!localPath) {
+        continue;
+      }
+
+      const mimeType = this.resolveAttachmentImageMimeType(attachment);
+      if (!mimeType) {
+        continue;
+      }
+
+      try {
+        const stat = await fs.promises.stat(localPath);
+        if (!stat.isFile()) {
+          continue;
+        }
+        if (stat.size > IM_IMAGE_ATTACHMENT_MAX_BYTES) {
+          console.warn('[IMCoworkHandler] image attachment is too large, skip base64 upload', JSON.stringify({
+            path: localPath,
+            size: stat.size,
+            max: IM_IMAGE_ATTACHMENT_MAX_BYTES,
+          }));
+          continue;
+        }
+
+        const buffer = await fs.promises.readFile(localPath);
+        output.push({
+          name: attachment.fileName || path.basename(localPath),
+          mimeType,
+          base64Data: buffer.toString('base64'),
+        });
+      } catch (error) {
+        console.warn('[IMCoworkHandler] failed to load image attachment for model input', JSON.stringify({
+          path: localPath,
+          error: error instanceof Error ? error.message : String(error),
+        }));
+      }
+    }
+
+    return output;
+  }
+
+  private resolveAttachmentImageMimeType(attachment: IMMediaAttachment): string | null {
+    const rawMimeType = attachment.mimeType?.trim().toLowerCase() || '';
+    if (rawMimeType.startsWith('image/')) {
+      return rawMimeType;
+    }
+
+    const extension = path.extname(attachment.localPath || '').toLowerCase();
+    const inferred = ImageMimeTypeByExtension[extension];
+    return inferred || null;
   }
 
   /**
