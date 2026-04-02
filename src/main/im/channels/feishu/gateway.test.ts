@@ -155,6 +155,26 @@ describe('YdFeishuGateway', () => {
     expect(sendMediaLark).not.toHaveBeenCalled();
   });
 
+  test('sends plain text through lark sdk without loading deliver module', async () => {
+    const gateway = createConfiguredGateway();
+    const request = vi.fn().mockResolvedValue({ code: 0 });
+    const loadLarkDeliverModuleSpy = vi
+      .spyOn(gateway as any, 'loadLarkDeliverModule')
+      .mockResolvedValue({});
+    vi.spyOn(gateway as any, 'loadLarkSdkModule').mockResolvedValue({
+      AppType: { SelfBuild: 'self_build' },
+      Domain: { Feishu: 'feishu', Lark: 'lark' },
+      Client: class {
+        request = request;
+      },
+    });
+
+    await gateway.sendConversationNotification('chat-1', 'hello');
+
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(loadLarkDeliverModuleSpy).not.toHaveBeenCalled();
+  });
+
   test('rejects public remote media URL', async () => {
     const gateway = createConfiguredGateway();
     const sendTextLark = vi.fn().mockResolvedValue(undefined);

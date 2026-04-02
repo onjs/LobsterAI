@@ -48,6 +48,12 @@ const FeishuEvent = {
   MessageReceive: 'im.message.receive_v1',
 } as const;
 
+const FeishuApi = {
+  CreateMessage: '/open-apis/im/v1/messages',
+  ReceiveIdTypeChatId: 'chat_id',
+  MessageTypeText: 'text',
+} as const;
+
 const FeishuGatewayDefaults = {
   WebhookPath: '/feishu/event',
   WebhookHost: '127.0.0.1',
@@ -207,27 +213,25 @@ export class YdFeishuGateway extends EventEmitter {
       throw new Error('Feishu conversationId is empty');
     }
 
-    const deliver = await this.loadLarkDeliverModule();
-    const cfg = this.buildFeishuLarkConfig();
     const mediaMarkers = parseMediaMarkers(text);
     const plainText = stripMediaMarkers(text, mediaMarkers).trim();
 
     if (plainText) {
-      await deliver.sendTextLark({
-        cfg,
-        to: conversationId,
-        text: plainText,
-      });
+      await this.sendTextMessage(conversationId, plainText);
     }
 
-    for (const marker of mediaMarkers) {
-      const prepared = await this.prepareOutboundMedia(marker.path);
-      await deliver.sendMediaLark({
-        cfg,
-        to: conversationId,
-        mediaUrl: prepared.mediaUrl,
-        mediaLocalRoots: prepared.mediaLocalRoots,
-      });
+    if (mediaMarkers.length > 0) {
+      const deliver = await this.loadLarkDeliverModule();
+      const cfg = this.buildFeishuLarkConfig();
+      for (const marker of mediaMarkers) {
+        const prepared = await this.prepareOutboundMedia(marker.path);
+        await deliver.sendMediaLark({
+          cfg,
+          to: conversationId,
+          mediaUrl: prepared.mediaUrl,
+          mediaLocalRoots: prepared.mediaLocalRoots,
+        });
+      }
     }
 
     this.status = {
@@ -244,6 +248,31 @@ export class YdFeishuGateway extends EventEmitter {
     }
     this.larkSdkModule = await import('@larksuiteoapi/node-sdk');
     return this.larkSdkModule;
+  }
+
+  private async sendTextMessage(conversationId: string, text: string): Promise<void> {
+    const Lark = await this.loadLarkSdkModule();
+    const client = new Lark.Client({
+      appId: this.config?.appId,
+      appSecret: this.config?.appSecret,
+      appType: Lark.AppType.SelfBuild,
+      domain: this.resolveLarkDomain(this.config?.domain ?? 'feishu', Lark),
+    });
+    const response = await client.request({
+      method: 'POST',
+      url: FeishuApi.CreateMessage,
+      params: {
+        receive_id_type: FeishuApi.ReceiveIdTypeChatId,
+      },
+      data: {
+        receive_id: conversationId,
+        msg_type: FeishuApi.MessageTypeText,
+        content: JSON.stringify({ text }),
+      },
+    });
+    if (response?.code !== 0) {
+      throw new Error(`Feishu send text failed: ${response?.msg || response?.code || 'unknown'}`);
+    }
   }
 
   private async loadLarkDeliverModule(): Promise<any> {
