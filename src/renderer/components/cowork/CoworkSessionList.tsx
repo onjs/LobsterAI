@@ -12,6 +12,7 @@ import {
   EllipsisHorizontalIcon,
   PencilSquareIcon,
   TrashIcon,
+  XMarkIcon,
 } from '@heroicons/react/24/outline';
 
 interface CoworkSessionListProps {
@@ -96,6 +97,7 @@ type ImGroupMenuTarget = {
   type: typeof MenuTargetType.ImGroup;
   key: string;
   displayName: string;
+  platform: IMPlatform;
   sessions: CoworkSessionSummary[];
 };
 
@@ -138,18 +140,7 @@ function isImPlatform(value: string): value is IMPlatform {
   return IM_PLATFORM_SET.has(value as IMPlatform);
 }
 
-function resolveImGroupLabel(sessions: CoworkSessionSummary[], fallbackLabel: string): string {
-  if (sessions.length === 0) return fallbackLabel;
-  const normalizedTitles = sessions
-    .map((session) => session.title.trim())
-    .filter((title) => title.length > 0);
-  if (normalizedTitles.length !== sessions.length) return fallbackLabel;
-  const firstTitle = normalizedTitles[0];
-  if (normalizedTitles.every((title) => title === firstTitle)) {
-    return firstTitle;
-  }
-  return fallbackLabel;
-}
+const IM_GROUP_LABEL_STORAGE_KEY = 'cowork.imGroupDisplayNames';
 
 const CoworkSessionList: React.FC<CoworkSessionListProps> = ({
   sessions,
@@ -178,6 +169,26 @@ const CoworkSessionList: React.FC<CoworkSessionListProps> = ({
   const [isRenamingSaving, setIsRenamingSaving] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const renameInputRef = useRef<HTMLInputElement>(null);
+  const [imGroupDisplayNames, setImGroupDisplayNames] = useState<Partial<Record<IMPlatform, string>>>({});
+
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(IM_GROUP_LABEL_STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      const next: Partial<Record<IMPlatform, string>> = {};
+      Object.entries(parsed).forEach(([key, value]) => {
+        if (!isImPlatform(key)) return;
+        if (typeof value !== 'string') return;
+        const normalized = value.trim();
+        if (!normalized) return;
+        next[key] = normalized;
+      });
+      setImGroupDisplayNames(next);
+    } catch (error) {
+      console.warn('[CoworkSessionList] Failed to load IM group display names:', error);
+    }
+  }, []);
 
   const sortedSessions = useMemo(() => {
     const sortByRecentActivity = (a: CoworkSessionSummary, b: CoworkSessionSummary) => {
@@ -404,7 +415,15 @@ const CoworkSessionList: React.FC<CoworkSessionListProps> = ({
       if (renameTarget.type === MenuTargetType.Session) {
         await runRename(renameTarget.session.id, trimmedValue);
       } else if (renameTarget.type === MenuTargetType.ImGroup) {
-        await Promise.all(renameTarget.sessions.map((session) => runRename(session.id, trimmedValue)));
+        setImGroupDisplayNames((prev) => {
+          const next = { ...prev, [renameTarget.platform]: trimmedValue };
+          try {
+            window.localStorage.setItem(IM_GROUP_LABEL_STORAGE_KEY, JSON.stringify(next));
+          } catch (error) {
+            console.warn('[CoworkSessionList] Failed to persist IM group display name:', error);
+          }
+          return next;
+        });
       } else {
         const nextTitle = `${SCHEDULED_TITLE_PREFIX} ${trimmedValue}`;
         await Promise.all(renameTarget.sessions.map((session) => runRename(session.id, nextTitle)));
@@ -604,7 +623,7 @@ const CoworkSessionList: React.FC<CoworkSessionListProps> = ({
                 const targetSession = activeSessionInGroup ?? group.sessions[0];
                 const isActive = Boolean(activeSessionInGroup);
                 const defaultLabel = `${i18nService.t('coworkMyPrefix')}${i18nService.t(group.labelKey)}`;
-                const label = resolveImGroupLabel(group.sessions, defaultLabel);
+                const label = imGroupDisplayNames[group.platform]?.trim() || defaultLabel;
                 const logo = IM_PLATFORM_LOGOS[group.platform];
                 return (
                   <div
@@ -634,6 +653,7 @@ const CoworkSessionList: React.FC<CoworkSessionListProps> = ({
                       type: MenuTargetType.ImGroup,
                       key: `im-group:${group.platform}`,
                       displayName: label,
+                      platform: group.platform,
                       sessions: group.sessions,
                     })}
                   </div>
@@ -818,44 +838,57 @@ const CoworkSessionList: React.FC<CoworkSessionListProps> = ({
           onClick={closeRenameDialog}
         >
           <div
-            className="w-full max-w-lg mx-4 rounded-2xl dark:bg-claude-darkSurface bg-claude-surface border dark:border-claude-darkBorder border-claude-border shadow-2xl p-6"
+            className="relative w-full max-w-lg mx-4 max-h-[80vh] overflow-y-auto rounded-2xl dark:bg-claude-darkSurface bg-claude-surface border dark:border-claude-darkBorder border-claude-border shadow-2xl"
             onClick={(event) => event.stopPropagation()}
           >
-            <h2 className="text-2xl font-semibold dark:text-claude-darkText text-claude-text">
-              {i18nService.t('coworkRenameTaskTitle')}
-            </h2>
-            <input
-              ref={renameInputRef}
-              type="text"
-              value={renameValue}
-              onChange={(event) => setRenameValue(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') {
-                  event.preventDefault();
-                  void handleConfirmRename();
-                }
-              }}
-              className="mt-6 w-full px-4 py-3 text-base rounded-xl dark:bg-claude-darkBg bg-claude-bg dark:text-claude-darkText text-claude-text border dark:border-claude-darkBorder border-claude-border focus:outline-none focus:ring-2 focus:ring-claude-accent"
-              placeholder={i18nService.t('coworkRenameTaskPlaceholder')}
+            <button
+              type="button"
+              onClick={closeRenameDialog}
+              className="absolute right-4 top-4 z-10 p-1 rounded-lg dark:text-claude-darkTextSecondary text-claude-textSecondary hover:bg-claude-surfaceHover dark:hover:bg-claude-darkSurfaceHover transition-colors"
+              aria-label={i18nService.t('cancel')}
               disabled={isRenamingSaving}
-            />
-            <div className="mt-8 flex items-center justify-end gap-3">
-              <button
-                type="button"
-                onClick={closeRenameDialog}
-                className="px-5 py-2 text-sm font-medium rounded-lg dark:text-claude-darkTextSecondary text-claude-textSecondary hover:bg-claude-surfaceHover dark:hover:bg-claude-darkSurfaceHover transition-colors disabled:opacity-50"
-                disabled={isRenamingSaving}
-              >
-                {i18nService.t('cancel')}
-              </button>
-              <button
-                type="button"
-                onClick={() => void handleConfirmRename()}
-                className="px-6 py-2 text-sm font-medium rounded-full bg-black text-white hover:bg-black/90 transition-colors disabled:opacity-50"
-                disabled={isRenamingSaving}
-              >
-                {i18nService.t('save')}
-              </button>
+            >
+              <XMarkIcon className="h-5 w-5" />
+            </button>
+            <div className="p-6 space-y-4">
+              <h2 className="text-lg font-semibold dark:text-claude-darkText text-claude-text">
+                {i18nService.t('coworkRenameTaskTitle')}
+              </h2>
+              <div>
+                <input
+                  ref={renameInputRef}
+                  type="text"
+                  value={renameValue}
+                  onChange={(event) => setRenameValue(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      event.preventDefault();
+                      void handleConfirmRename();
+                    }
+                  }}
+                  className="w-full px-3 py-2 text-sm rounded-xl dark:bg-claude-darkBg bg-claude-bg dark:text-claude-darkText text-claude-text dark:placeholder-claude-darkTextSecondary placeholder-claude-textSecondary border dark:border-claude-darkBorder border-claude-border focus:outline-none focus:ring-2 focus:ring-claude-accent"
+                  placeholder={i18nService.t('coworkRenameTaskPlaceholder')}
+                  disabled={isRenamingSaving}
+                />
+              </div>
+              <div className="flex items-center justify-end gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={closeRenameDialog}
+                  className="px-3 py-1.5 text-xs rounded-lg border dark:border-claude-darkBorder border-claude-border dark:text-claude-darkTextSecondary text-claude-textSecondary dark:hover:bg-claude-darkSurfaceHover hover:bg-claude-surfaceHover transition-colors disabled:opacity-50"
+                  disabled={isRenamingSaving}
+                >
+                  {i18nService.t('cancel')}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleConfirmRename()}
+                  className="px-3 py-1.5 text-xs rounded-lg bg-claude-accent text-white hover:bg-claude-accent/90 transition-colors disabled:opacity-50"
+                  disabled={isRenamingSaving}
+                >
+                  {i18nService.t('save')}
+                </button>
+              </div>
             </div>
           </div>
         </div>
