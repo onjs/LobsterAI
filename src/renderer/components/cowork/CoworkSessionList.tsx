@@ -62,6 +62,18 @@ const IM_PLATFORM_LABEL_KEYS: Record<IMPlatform, string> = {
   popo: 'scheduledTasksFormNotifyPopo',
   weixin: 'scheduledTasksFormNotifyWeixin',
 };
+const IM_PLATFORM_LOGOS: Record<IMPlatform, string> = {
+  dingtalk: 'dingding.png',
+  feishu: 'feishu.png',
+  qq: 'qq_bot.jpeg',
+  telegram: 'telegram.svg',
+  discord: 'discord.svg',
+  nim: 'nim.png',
+  xiaomifeng: 'xiaomifeng.png',
+  weixin: 'weixin.png',
+  wecom: 'wecom.png',
+  popo: 'popo.png',
+};
 const IM_PLATFORM_SET = new Set<IMPlatform>(IM_PLATFORM_ORDER);
 
 const statusLabels: Record<CoworkSessionStatus, string> = {
@@ -313,6 +325,7 @@ const CoworkSessionList: React.FC<CoworkSessionListProps> = ({
                 const targetSession = activeSessionInGroup ?? group.sessions[0];
                 const isActive = Boolean(activeSessionInGroup);
                 const label = `${i18nService.t('coworkMyPrefix')}${i18nService.t(group.labelKey)}`;
+                const logo = IM_PLATFORM_LOGOS[group.platform];
                 return (
                   <div key={group.platform}>
                     <button
@@ -324,6 +337,9 @@ const CoworkSessionList: React.FC<CoworkSessionListProps> = ({
                           : 'hover:bg-claude-surfaceHover dark:hover:bg-claude-darkSurfaceHover'
                       }`}
                     >
+                      <div className="flex h-6 w-6 items-center justify-center">
+                        <img src={logo} alt={i18nService.t(group.platform)} className="h-5 w-5 object-contain rounded" />
+                      </div>
                       <span className="min-w-0 flex-1 truncate text-sm font-medium dark:text-claude-darkText text-claude-text">
                         {label}
                       </span>
