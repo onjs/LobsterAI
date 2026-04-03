@@ -1,20 +1,21 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { useSelector, useDispatch } from 'react-redux';
-import { PaperAirplaneIcon, StopIcon, FolderIcon } from '@heroicons/react/24/solid';
-import { PhotoIcon, ExclamationTriangleIcon } from '@heroicons/react/24/outline';
-import PaperClipIcon from '../icons/PaperClipIcon';
-import XMarkIcon from '../icons/XMarkIcon';
-import ModelSelector from '../ModelSelector';
-import FolderSelectorPopover from './FolderSelectorPopover';
-import { SkillsButton, ActiveSkillBadge } from '../skills';
+import { ExclamationTriangleIcon,PhotoIcon } from '@heroicons/react/24/outline';
+import { FolderIcon,PaperAirplaneIcon, StopIcon } from '@heroicons/react/24/solid';
+import React, { useCallback,useEffect, useRef, useState } from 'react';
+import { useDispatch,useSelector } from 'react-redux';
+
 import { i18nService } from '../../services/i18n';
 import { skillService } from '../../services/skill';
 import { RootState } from '../../store';
-import { setDraftPrompt, setDraftAttachments, clearDraftAttachments, type DraftAttachment } from '../../store/slices/coworkSlice';
+import { addDraftAttachment, clearDraftAttachments, type DraftAttachment,setDraftAttachments, setDraftPrompt } from '../../store/slices/coworkSlice';
 import { setSkills, toggleActiveSkill } from '../../store/slices/skillSlice';
-import { Skill } from '../../types/skill';
 import { CoworkImageAttachment } from '../../types/cowork';
+import { Skill } from '../../types/skill';
 import { getCompactFolderName } from '../../utils/path';
+import PaperClipIcon from '../icons/PaperClipIcon';
+import XMarkIcon from '../icons/XMarkIcon';
+import ModelSelector from '../ModelSelector';
+import { ActiveSkillBadge,SkillsButton } from '../skills';
+import FolderSelectorPopover from './FolderSelectorPopover';
 
 // CoworkAttachment is aliased from the Redux-persisted DraftAttachment type
 // so that attachment state survives view switches (cowork ↔ skills, etc.)
@@ -332,32 +333,30 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
 
   const addAttachment = useCallback((filePath: string, imageInfo?: { isImage: boolean; dataUrl?: string }) => {
     if (!filePath) return;
-    const current = attachments;
-    if (current.some((attachment) => attachment.path === filePath)) return;
-    dispatch(setDraftAttachments({
+    dispatch(addDraftAttachment({
       draftKey,
-      attachments: [...current, {
+      attachment: {
         path: filePath,
         name: getFileNameFromPath(filePath),
         isImage: imageInfo?.isImage,
         dataUrl: imageInfo?.dataUrl,
-      }],
+      },
     }));
-  }, [attachments, dispatch, draftKey]);
+  }, [dispatch, draftKey]);
 
   const addImageAttachmentFromDataUrl = useCallback((name: string, dataUrl: string) => {
     // Use the dataUrl as the unique key (no file path for inline images)
     const pseudoPath = `inline:${name}:${Date.now()}`;
-    dispatch(setDraftAttachments({
+    dispatch(addDraftAttachment({
       draftKey,
-      attachments: [...attachments, {
+      attachment: {
         path: pseudoPath,
         name,
         isImage: true,
         dataUrl,
-      }],
+      },
     }));
-  }, [attachments, dispatch, draftKey]);
+  }, [dispatch, draftKey]);
 
   const fileToDataUrl = useCallback((file: File): Promise<string> => {
     return new Promise((resolve, reject) => {

@@ -337,6 +337,13 @@ const coworkSlice = createSlice({
       }
     },
 
+    addDraftAttachment(state, action: PayloadAction<{ draftKey: string; attachment: DraftAttachment }>) {
+      const { draftKey, attachment } = action.payload;
+      const existing = state.draftAttachments[draftKey] || [];
+      if (existing.some(a => a.path === attachment.path)) return;
+      state.draftAttachments[draftKey] = [...existing, attachment];
+    },
+
     clearDraftAttachments(state, action: PayloadAction<string>) {
       delete state.draftAttachments[action.payload];
     },
@@ -350,6 +357,7 @@ export const {
   setCurrentSession,
   setDraftPrompt,
   setDraftAttachments,
+  addDraftAttachment,
   clearDraftAttachments,
   addSession,
   updateSessionStatus,
