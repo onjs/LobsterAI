@@ -420,7 +420,9 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
   // Add state for providers configuration
   const [providers, setProviders] = useState<ProvidersConfig>(() => getDefaultProviders());
 
-  const isBaseUrlLocked = (activeProvider === 'zhipu' && providers.zhipu.codingPlanEnabled) || (activeProvider === 'qwen' && providers.qwen.codingPlanEnabled) || (activeProvider === 'volcengine' && providers.volcengine.codingPlanEnabled) || (activeProvider === 'moonshot' && providers.moonshot.codingPlanEnabled) || (activeProvider === 'minimax' && providers.minimax.authType === 'oauth');
+  // authType defaults to undefined on first open, which should behave as OAuth mode
+  const minimaxIsOAuthMode = providers.minimax.authType !== 'apikey';
+  const isBaseUrlLocked = (activeProvider === 'zhipu' && providers.zhipu.codingPlanEnabled) || (activeProvider === 'qwen' && providers.qwen.codingPlanEnabled) || (activeProvider === 'volcengine' && providers.volcengine.codingPlanEnabled) || (activeProvider === 'moonshot' && providers.moonshot.codingPlanEnabled) || (activeProvider === 'minimax' && minimaxIsOAuthMode);
   
   // 创建引用来确保内容区域的滚动
   const contentRef = useRef<HTMLDivElement>(null);
@@ -1667,7 +1669,24 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
         effectiveApiFormat = resolved.effectiveFormat;
       }
       
-      const normalizedBaseUrl = effectiveBaseUrl.replace(/\/+$/, '');
+      let normalizedBaseUrl = effectiveBaseUrl.replace(/\/+$/, '');
+
+      // Determine effective API key
+      let effectiveApiKey = providerConfig.apiKey;
+
+      if (testingProvider === 'qwen') {
+        // Use regular API Key mode
+        effectiveApiKey = providerConfig.apiKey;
+        // Ensure model ID is not an OAuth-mapped name (vision-model/coder-model)
+        // This can happen if a previous OAuth test mutated the model in state and it got persisted
+        if (firstModel.id === 'vision-model' || firstModel.id === 'coder-model') {
+          // Restore from defaultConfig's first qwen model
+          const defaultQwenModel = defaultConfig.providers?.qwen?.models?.[0];
+          firstModel.id = defaultQwenModel?.id || 'qwen3.5-plus';
+        }
+      }
+
+      // Determine format after all overrides (OAuth may switch to openai)
       // 统一为两种协议格式：
       // - anthropic: /v1/messages
       // - openai provider: /v1/responses
