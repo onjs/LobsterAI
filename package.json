@@ -22,9 +22,9 @@
         "version": "2026.3.8"
       },
       {
-        "id": "qqbot",
-        "npm": "@sliverp/qqbot",
-        "version": "1.5.3"
+        "id": "openclaw-qqbot",
+        "npm": "@tencent-connect/openclaw-qqbot",
+        "version": "1.6.4"
       },
       {
         "id": "wecom-openclaw-plugin",
