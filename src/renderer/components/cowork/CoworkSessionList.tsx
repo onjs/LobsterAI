@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useSelector } from 'react-redux';
 import { RootState } from '../../store';
 import type { CoworkSessionStatus, CoworkSessionSummary } from '../../types/cowork';
@@ -9,6 +9,9 @@ import {
   ChevronDownIcon,
   ChevronRightIcon,
   ClockIcon,
+  EllipsisHorizontalIcon,
+  PencilSquareIcon,
+  TrashIcon,
 } from '@heroicons/react/24/outline';
 
 interface CoworkSessionListProps {
@@ -18,9 +21,9 @@ interface CoworkSessionListProps {
   selectedIds: Set<string>;
   showBatchOption?: boolean;
   onSelectSession: (sessionId: string) => void;
-  onDeleteSession: (sessionId: string) => void;
+  onDeleteSession: (sessionId: string) => void | Promise<void>;
   onTogglePin: (sessionId: string, pinned: boolean) => void;
-  onRenameSession: (sessionId: string, title: string) => void;
+  onRenameSession: (sessionId: string, title: string) => void | Promise<void>;
   onToggleSelection: (sessionId: string) => void;
   onEnterBatchMode: (sessionId: string) => void;
 }
@@ -75,6 +78,36 @@ const IM_PLATFORM_LOGOS: Record<IMPlatform, string> = {
   popo: 'popo.png',
 };
 const IM_PLATFORM_SET = new Set<IMPlatform>(IM_PLATFORM_ORDER);
+const MenuTargetType = {
+  Session: 'session',
+  ImGroup: 'im_group',
+  ScheduledGroup: 'scheduled_group',
+} as const;
+type MenuTargetType = typeof MenuTargetType[keyof typeof MenuTargetType];
+
+type SessionMenuTarget = {
+  type: typeof MenuTargetType.Session;
+  key: string;
+  displayName: string;
+  session: CoworkSessionSummary;
+};
+
+type ImGroupMenuTarget = {
+  type: typeof MenuTargetType.ImGroup;
+  key: string;
+  displayName: string;
+  sessions: CoworkSessionSummary[];
+};
+
+type ScheduledGroupMenuTarget = {
+  type: typeof MenuTargetType.ScheduledGroup;
+  key: string;
+  displayName: string;
+  taskName: string;
+  sessions: CoworkSessionSummary[];
+};
+
+type MenuTarget = SessionMenuTarget | ImGroupMenuTarget | ScheduledGroupMenuTarget;
 
 const statusLabels: Record<CoworkSessionStatus, string> = {
   idle: 'coworkStatusIdle',
@@ -105,6 +138,19 @@ function isImPlatform(value: string): value is IMPlatform {
   return IM_PLATFORM_SET.has(value as IMPlatform);
 }
 
+function resolveImGroupLabel(sessions: CoworkSessionSummary[], fallbackLabel: string): string {
+  if (sessions.length === 0) return fallbackLabel;
+  const normalizedTitles = sessions
+    .map((session) => session.title.trim())
+    .filter((title) => title.length > 0);
+  if (normalizedTitles.length !== sessions.length) return fallbackLabel;
+  const firstTitle = normalizedTitles[0];
+  if (normalizedTitles.every((title) => title === firstTitle)) {
+    return firstTitle;
+  }
+  return fallbackLabel;
+}
+
 const CoworkSessionList: React.FC<CoworkSessionListProps> = ({
   sessions,
   currentSessionId,
@@ -125,6 +171,13 @@ const CoworkSessionList: React.FC<CoworkSessionListProps> = ({
   const [imSessionPlatformMap, setImSessionPlatformMap] = useState<Record<string, IMPlatform>>({});
   const [scheduledExpanded, setScheduledExpanded] = useState(true);
   const [expandedTaskGroups, setExpandedTaskGroups] = useState<Set<string>>(new Set());
+  const [activeMenuTarget, setActiveMenuTarget] = useState<MenuTarget | null>(null);
+  const [renameTarget, setRenameTarget] = useState<MenuTarget | null>(null);
+  const [renameValue, setRenameValue] = useState('');
+  const [deleteTarget, setDeleteTarget] = useState<MenuTarget | null>(null);
+  const [isRenamingSaving, setIsRenamingSaving] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const renameInputRef = useRef<HTMLInputElement>(null);
 
   const sortedSessions = useMemo(() => {
     const sortByRecentActivity = (a: CoworkSessionSummary, b: CoworkSessionSummary) => {
@@ -265,6 +318,228 @@ const CoworkSessionList: React.FC<CoworkSessionListProps> = ({
     });
   };
 
+  const closeMenu = () => {
+    setActiveMenuTarget(null);
+  };
+
+  const closeRenameDialog = () => {
+    if (isRenamingSaving) return;
+    setRenameTarget(null);
+    setRenameValue('');
+  };
+
+  const closeDeleteDialog = () => {
+    if (isDeleting) return;
+    setDeleteTarget(null);
+  };
+
+  useEffect(() => {
+    if (!activeMenuTarget) return undefined;
+
+    const handleGlobalPointerDown = (event: MouseEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest('[data-cowork-session-menu-root="true"]')) return;
+      closeMenu();
+    };
+
+    const handleGlobalKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        closeMenu();
+      }
+    };
+
+    document.addEventListener('mousedown', handleGlobalPointerDown);
+    document.addEventListener('keydown', handleGlobalKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handleGlobalPointerDown);
+      document.removeEventListener('keydown', handleGlobalKeyDown);
+    };
+  }, [activeMenuTarget]);
+
+  const openMenu = (event: React.MouseEvent | React.KeyboardEvent, target: MenuTarget) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setActiveMenuTarget((prev) => (prev?.key === target.key ? null : target));
+  };
+
+  const getRenameInitialValue = (target: MenuTarget): string => {
+    if (target.type === MenuTargetType.Session) return target.session.title;
+    if (target.type === MenuTargetType.ImGroup) return target.displayName;
+    return target.taskName;
+  };
+
+  const handleMenuRename = (event: React.MouseEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!activeMenuTarget) return;
+    setRenameTarget(activeMenuTarget);
+    setRenameValue(getRenameInitialValue(activeMenuTarget));
+    closeMenu();
+  };
+
+  const runRename = async (sessionId: string, title: string) => {
+    const result = await Promise.resolve(onRenameSession(sessionId, title) as unknown);
+    if (result === false) {
+      throw new Error('rename session returned false');
+    }
+  };
+
+  const handleConfirmRename = async () => {
+    if (!renameTarget) return;
+
+    const trimmedValue = renameValue.trim();
+    if (!trimmedValue) {
+      closeRenameDialog();
+      return;
+    }
+
+    const previousValue = getRenameInitialValue(renameTarget).trim();
+    if (trimmedValue === previousValue) {
+      closeRenameDialog();
+      return;
+    }
+
+    setIsRenamingSaving(true);
+    try {
+      if (renameTarget.type === MenuTargetType.Session) {
+        await runRename(renameTarget.session.id, trimmedValue);
+      } else if (renameTarget.type === MenuTargetType.ImGroup) {
+        await Promise.all(renameTarget.sessions.map((session) => runRename(session.id, trimmedValue)));
+      } else {
+        const nextTitle = `${SCHEDULED_TITLE_PREFIX} ${trimmedValue}`;
+        await Promise.all(renameTarget.sessions.map((session) => runRename(session.id, nextTitle)));
+      }
+      closeRenameDialog();
+    } catch (error) {
+      console.error('[CoworkSessionList] Failed to rename session target:', error);
+      window.dispatchEvent(new CustomEvent('app:showToast', { detail: i18nService.t('failedToSaveSettings') }));
+    } finally {
+      setIsRenamingSaving(false);
+    }
+  };
+
+  const handleMenuDelete = (event: React.MouseEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!activeMenuTarget) return;
+    setDeleteTarget(activeMenuTarget);
+    closeMenu();
+  };
+
+  const runDelete = async (sessionId: string) => {
+    const result = await Promise.resolve(onDeleteSession(sessionId) as unknown);
+    if (result === false) {
+      throw new Error('delete session returned false');
+    }
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!deleteTarget) return;
+
+    setIsDeleting(true);
+    try {
+      if (deleteTarget.type === MenuTargetType.Session) {
+        await runDelete(deleteTarget.session.id);
+      } else {
+        await Promise.all(deleteTarget.sessions.map((session) => runDelete(session.id)));
+      }
+      closeDeleteDialog();
+    } catch (error) {
+      console.error('[CoworkSessionList] Failed to delete session target:', error);
+      window.dispatchEvent(new CustomEvent('app:showToast', { detail: i18nService.t('failedToSaveSettings') }));
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!renameTarget) return;
+    requestAnimationFrame(() => {
+      renameInputRef.current?.focus();
+      renameInputRef.current?.select();
+    });
+  }, [renameTarget]);
+
+  useEffect(() => {
+    if (!renameTarget) return undefined;
+    const handleEsc = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        closeRenameDialog();
+      }
+    };
+    document.addEventListener('keydown', handleEsc);
+    return () => {
+      document.removeEventListener('keydown', handleEsc);
+    };
+  }, [renameTarget, isRenamingSaving]);
+
+  useEffect(() => {
+    if (!deleteTarget) return undefined;
+    const handleEsc = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        closeDeleteDialog();
+      }
+    };
+    document.addEventListener('keydown', handleEsc);
+    return () => {
+      document.removeEventListener('keydown', handleEsc);
+    };
+  }, [deleteTarget, isDeleting]);
+
+  const getDeleteDialogMessage = (): string => {
+    if (!deleteTarget) return '';
+    if (deleteTarget.type === MenuTargetType.Session) {
+      return i18nService.t('confirmDeleteMessage');
+    }
+    return i18nService
+      .t('coworkDeleteGroupConfirmMessage')
+      .replace('{name}', deleteTarget.displayName)
+      .replace('{count}', String(deleteTarget.sessions.length));
+  };
+
+  const renderItemMenu = (target: MenuTarget) => {
+    const isOpen = activeMenuTarget?.key === target.key;
+    return (
+      <div className="relative shrink-0" data-cowork-session-menu-root="true">
+        <button
+          type="button"
+          onClick={(event) => openMenu(event, target)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              openMenu(event, target);
+            }
+          }}
+          className={`h-6 w-6 inline-flex items-center justify-center rounded-md dark:hover:bg-claude-darkSurfaceHover hover:bg-claude-surfaceHover transition-opacity ${
+            isOpen ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+          }`}
+          aria-label={i18nService.t('scheduledTasksListColMore')}
+        >
+          <EllipsisHorizontalIcon className="h-4 w-4 dark:text-claude-darkTextSecondary text-claude-textSecondary" />
+        </button>
+        {isOpen && (
+          <div className="absolute right-0 top-full z-30 mt-0.5 w-36 rounded-xl border dark:border-claude-darkBorder border-claude-border dark:bg-claude-darkSurface bg-claude-surface shadow-xl py-1.5">
+            <button
+              type="button"
+              onClick={handleMenuRename}
+              className="w-full flex items-center gap-2 px-3 py-2 text-left text-sm dark:text-claude-darkText text-claude-text dark:hover:bg-claude-darkSurfaceHover hover:bg-claude-surfaceHover transition-colors"
+            >
+              <PencilSquareIcon className="h-4 w-4" />
+              <span>{i18nService.t('renameConversation')}</span>
+            </button>
+            <button
+              type="button"
+              onClick={handleMenuDelete}
+              className="w-full flex items-center gap-2 px-3 py-2 text-left text-sm text-red-500 dark:text-red-400 dark:hover:bg-claude-darkSurfaceHover hover:bg-claude-surfaceHover transition-colors"
+            >
+              <TrashIcon className="h-4 w-4" />
+              <span>{i18nService.t('scheduledTasksDelete')}</span>
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  };
+
   if (sessions.length === 0) {
     return (
       <div className="text-center py-8">
@@ -300,12 +575,16 @@ const CoworkSessionList: React.FC<CoworkSessionListProps> = ({
   }
 
   return (
-    <div className="space-y-3">
+    <>
+      <div className="space-y-3">
       {imGroups.length > 0 && (
         <div>
           <button
             type="button"
-            onClick={() => setImExpanded((prev) => !prev)}
+            onClick={() => {
+              closeMenu();
+              setImExpanded((prev) => !prev);
+            }}
             className="w-full flex items-center gap-1.5 px-2 py-1 rounded-lg hover:bg-claude-surfaceHover dark:hover:bg-claude-darkSurfaceHover transition-colors"
           >
             {imExpanded ? (
@@ -324,18 +603,25 @@ const CoworkSessionList: React.FC<CoworkSessionListProps> = ({
                 const activeSessionInGroup = group.sessions.find((session) => session.id === currentSessionId) ?? null;
                 const targetSession = activeSessionInGroup ?? group.sessions[0];
                 const isActive = Boolean(activeSessionInGroup);
-                const label = `${i18nService.t('coworkMyPrefix')}${i18nService.t(group.labelKey)}`;
+                const defaultLabel = `${i18nService.t('coworkMyPrefix')}${i18nService.t(group.labelKey)}`;
+                const label = resolveImGroupLabel(group.sessions, defaultLabel);
                 const logo = IM_PLATFORM_LOGOS[group.platform];
                 return (
-                  <div key={group.platform}>
+                  <div
+                    key={group.platform}
+                    className={`group w-full flex items-center gap-2 rounded-lg px-2 py-1.5 text-left transition-colors ${
+                      isActive
+                        ? 'bg-black/[0.06] dark:bg-white/[0.08]'
+                        : 'hover:bg-claude-surfaceHover dark:hover:bg-claude-darkSurfaceHover'
+                    }`}
+                  >
                     <button
                       type="button"
-                      onClick={() => onSelectSession(targetSession.id)}
-                      className={`w-full flex items-center gap-2 rounded-lg px-2 py-1.5 text-left transition-colors ${
-                        isActive
-                          ? 'bg-black/[0.06] dark:bg-white/[0.08]'
-                          : 'hover:bg-claude-surfaceHover dark:hover:bg-claude-darkSurfaceHover'
-                      }`}
+                      onClick={() => {
+                        closeMenu();
+                        onSelectSession(targetSession.id);
+                      }}
+                      className="min-w-0 flex-1 flex items-center gap-2 text-left"
                     >
                       <div className="flex h-6 w-6 items-center justify-center">
                         <img src={logo} alt={i18nService.t(group.platform)} className="h-5 w-5 object-contain rounded" />
@@ -344,6 +630,12 @@ const CoworkSessionList: React.FC<CoworkSessionListProps> = ({
                         {label}
                       </span>
                     </button>
+                    {renderItemMenu({
+                      type: MenuTargetType.ImGroup,
+                      key: `im-group:${group.platform}`,
+                      displayName: label,
+                      sessions: group.sessions,
+                    })}
                   </div>
                 );
               })}
@@ -356,7 +648,10 @@ const CoworkSessionList: React.FC<CoworkSessionListProps> = ({
         <div>
           <button
             type="button"
-            onClick={() => setScheduledExpanded((prev) => !prev)}
+            onClick={() => {
+              closeMenu();
+              setScheduledExpanded((prev) => !prev);
+            }}
             className="w-full flex items-center gap-1.5 px-2 py-1 rounded-lg hover:bg-claude-surfaceHover dark:hover:bg-claude-darkSurfaceHover transition-colors"
           >
             {scheduledExpanded ? (
@@ -375,47 +670,72 @@ const CoworkSessionList: React.FC<CoworkSessionListProps> = ({
                 const isExpanded = expandedTaskGroups.has(group.taskName);
                 return (
                   <div key={group.taskName}>
-                    <button
-                      type="button"
-                      onClick={() => toggleTaskGroup(group.taskName)}
-                      className="w-full flex items-center gap-2 rounded-lg px-2 py-1.5 text-left hover:bg-claude-surfaceHover dark:hover:bg-claude-darkSurfaceHover transition-colors"
-                    >
-                      {isExpanded ? (
-                        <ChevronDownIcon className="h-3.5 w-3.5 dark:text-claude-darkTextSecondary text-claude-textSecondary" />
-                      ) : (
-                        <ChevronRightIcon className="h-3.5 w-3.5 dark:text-claude-darkTextSecondary text-claude-textSecondary" />
-                      )}
-                      <ClockIcon className="h-4 w-4 dark:text-claude-darkTextSecondary text-claude-textSecondary" />
-                      <span className="min-w-0 flex-1 truncate text-sm font-medium dark:text-claude-darkText text-claude-text">
-                        {group.taskName}
-                      </span>
-                      <span className="inline-flex h-6 min-w-6 items-center justify-center rounded-full px-2 text-xs dark:bg-claude-darkSurfaceHover bg-claude-surfaceHover dark:text-claude-darkTextSecondary text-claude-textSecondary">
-                        {group.sessions.length}
-                      </span>
-                    </button>
+                    <div className="group w-full flex items-center gap-2 rounded-lg px-2 py-1.5 text-left hover:bg-claude-surfaceHover dark:hover:bg-claude-darkSurfaceHover transition-colors">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          closeMenu();
+                          toggleTaskGroup(group.taskName);
+                        }}
+                        className="min-w-0 flex-1 flex items-center gap-2 text-left"
+                      >
+                        {isExpanded ? (
+                          <ChevronDownIcon className="h-3.5 w-3.5 dark:text-claude-darkTextSecondary text-claude-textSecondary" />
+                        ) : (
+                          <ChevronRightIcon className="h-3.5 w-3.5 dark:text-claude-darkTextSecondary text-claude-textSecondary" />
+                        )}
+                        <ClockIcon className="h-4 w-4 dark:text-claude-darkTextSecondary text-claude-textSecondary" />
+                        <span className="min-w-0 flex-1 truncate text-sm font-medium dark:text-claude-darkText text-claude-text">
+                          {group.taskName}
+                        </span>
+                        <span className="inline-flex h-6 min-w-6 items-center justify-center rounded-full px-2 text-xs dark:bg-claude-darkSurfaceHover bg-claude-surfaceHover dark:text-claude-darkTextSecondary text-claude-textSecondary">
+                          {group.sessions.length}
+                        </span>
+                      </button>
+                      {renderItemMenu({
+                        type: MenuTargetType.ScheduledGroup,
+                        key: `scheduled-group:${group.taskName}`,
+                        displayName: group.taskName,
+                        taskName: group.taskName,
+                        sessions: group.sessions,
+                      })}
+                    </div>
 
                     {isExpanded && (
                       <div className="ml-7 mt-1 border-l dark:border-claude-darkBorder border-claude-border pl-3 space-y-1">
                         {group.sessions.map((session) => {
                           const isActive = session.id === currentSessionId;
                           return (
-                            <button
+                            <div
                               key={session.id}
-                              type="button"
-                              onClick={() => onSelectSession(session.id)}
-                              className={`w-full text-left rounded-lg px-2 py-1.5 transition-colors ${
+                              className={`group w-full flex items-start gap-2 rounded-lg px-2 py-1.5 transition-colors ${
                                 isActive
                                   ? 'bg-black/[0.06] dark:bg-white/[0.08]'
                                   : 'hover:bg-black/[0.04] dark:hover:bg-white/[0.05]'
                               }`}
                             >
-                              <div className="text-sm dark:text-claude-darkTextSecondary text-claude-textSecondary truncate">
-                                {formatRunTime(session.updatedAt)}
-                              </div>
-                              <div className="mt-0.5 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
-                                {i18nService.t(statusLabels[session.status])}
-                              </div>
-                            </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  closeMenu();
+                                  onSelectSession(session.id);
+                                }}
+                                className="min-w-0 flex-1 text-left"
+                              >
+                                <div className="text-sm dark:text-claude-darkTextSecondary text-claude-textSecondary truncate">
+                                  {formatRunTime(session.updatedAt)}
+                                </div>
+                                <div className="mt-0.5 text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
+                                  {i18nService.t(statusLabels[session.status])}
+                                </div>
+                              </button>
+                              {renderItemMenu({
+                                type: MenuTargetType.Session,
+                                key: `scheduled-run:${session.id}`,
+                                displayName: session.title,
+                                session,
+                              })}
+                            </div>
                           );
                         })}
                       </div>
@@ -431,7 +751,10 @@ const CoworkSessionList: React.FC<CoworkSessionListProps> = ({
       <div>
         <button
           type="button"
-          onClick={() => setManualExpanded((prev) => !prev)}
+          onClick={() => {
+            closeMenu();
+            setManualExpanded((prev) => !prev);
+          }}
           className="w-full flex items-center gap-1.5 px-2 py-1 rounded-lg hover:bg-claude-surfaceHover dark:hover:bg-claude-darkSurfaceHover transition-colors"
         >
           {manualExpanded ? (
@@ -454,20 +777,32 @@ const CoworkSessionList: React.FC<CoworkSessionListProps> = ({
               {manualSessions.map((session) => {
                 const isActive = session.id === currentSessionId;
                 return (
-                  <div key={session.id}>
-                    <button
-                      type="button"
-                      onClick={() => onSelectSession(session.id)}
-                      className={`w-full flex items-center gap-2 rounded-lg px-2 py-1.5 text-left transition-colors ${
+                  <div
+                    key={session.id}
+                    className={`group w-full flex items-center gap-2 rounded-lg px-2 py-1.5 text-left transition-colors ${
                         isActive
                           ? 'bg-black/[0.06] dark:bg-white/[0.08]'
                           : 'hover:bg-claude-surfaceHover dark:hover:bg-claude-darkSurfaceHover'
-                      }`}
+                    }`}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => {
+                        closeMenu();
+                        onSelectSession(session.id);
+                      }}
+                      className="min-w-0 flex-1 text-left"
                     >
-                      <span className="min-w-0 flex-1 truncate text-sm font-medium dark:text-claude-darkText text-claude-text">
+                      <span className="min-w-0 truncate text-sm font-medium dark:text-claude-darkText text-claude-text block">
                         {session.title}
                       </span>
                     </button>
+                    {renderItemMenu({
+                      type: MenuTargetType.Session,
+                      key: `manual:${session.id}`,
+                      displayName: session.title,
+                      session,
+                    })}
                   </div>
                 );
               })}
@@ -475,7 +810,94 @@ const CoworkSessionList: React.FC<CoworkSessionListProps> = ({
           )
         )}
       </div>
-    </div>
+      </div>
+
+      {renameTarget && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
+          onClick={closeRenameDialog}
+        >
+          <div
+            className="w-full max-w-lg mx-4 rounded-2xl dark:bg-claude-darkSurface bg-claude-surface border dark:border-claude-darkBorder border-claude-border shadow-2xl p-6"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h2 className="text-2xl font-semibold dark:text-claude-darkText text-claude-text">
+              {i18nService.t('coworkRenameTaskTitle')}
+            </h2>
+            <input
+              ref={renameInputRef}
+              type="text"
+              value={renameValue}
+              onChange={(event) => setRenameValue(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  event.preventDefault();
+                  void handleConfirmRename();
+                }
+              }}
+              className="mt-6 w-full px-4 py-3 text-base rounded-xl dark:bg-claude-darkBg bg-claude-bg dark:text-claude-darkText text-claude-text border dark:border-claude-darkBorder border-claude-border focus:outline-none focus:ring-2 focus:ring-claude-accent"
+              placeholder={i18nService.t('coworkRenameTaskPlaceholder')}
+              disabled={isRenamingSaving}
+            />
+            <div className="mt-8 flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={closeRenameDialog}
+                className="px-5 py-2 text-sm font-medium rounded-lg dark:text-claude-darkTextSecondary text-claude-textSecondary hover:bg-claude-surfaceHover dark:hover:bg-claude-darkSurfaceHover transition-colors disabled:opacity-50"
+                disabled={isRenamingSaving}
+              >
+                {i18nService.t('cancel')}
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleConfirmRename()}
+                className="px-6 py-2 text-sm font-medium rounded-full bg-black text-white hover:bg-black/90 transition-colors disabled:opacity-50"
+                disabled={isRenamingSaving}
+              >
+                {i18nService.t('save')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {deleteTarget && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
+          onClick={closeDeleteDialog}
+        >
+          <div
+            className="w-full max-w-sm mx-4 rounded-2xl dark:bg-claude-darkSurface bg-claude-surface border dark:border-claude-darkBorder border-claude-border shadow-2xl p-5"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h2 className="text-base font-semibold dark:text-claude-darkText text-claude-text">
+              {i18nService.t('confirmDelete')}
+            </h2>
+            <p className="mt-3 text-sm dark:text-claude-darkTextSecondary text-claude-textSecondary">
+              {getDeleteDialogMessage()}
+            </p>
+            <div className="mt-6 flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={closeDeleteDialog}
+                className="px-4 py-2 text-sm font-medium rounded-lg dark:text-claude-darkTextSecondary text-claude-textSecondary hover:bg-claude-surfaceHover dark:hover:bg-claude-darkSurfaceHover transition-colors disabled:opacity-50"
+                disabled={isDeleting}
+              >
+                {i18nService.t('cancel')}
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleConfirmDelete()}
+                className="px-4 py-2 text-sm font-medium rounded-lg bg-red-500 hover:bg-red-600 text-white transition-colors disabled:opacity-50"
+                disabled={isDeleting}
+              >
+                {i18nService.t('scheduledTasksDelete')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 };
 
