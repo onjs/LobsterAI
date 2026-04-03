@@ -397,7 +397,8 @@ const findFallbackPathFromContext = (
 };
 
 const createMarkdownComponents = (
-  resolveLocalFilePath?: (href: string, text: string) => string | null
+  resolveLocalFilePath?: (href: string, text: string) => string | null,
+  onImagePreview?: (src: string, alt?: string) => void
 ) => ({
   p: ({ node, className, children, ...props }: any) => (
     <p className="my-1 first:mt-0 last:mb-0 leading-6 dark:text-claude-darkText text-claude-text" {...props}>
@@ -481,7 +482,22 @@ const createMarkdownComponents = (
     const resolvedSrc = typeof src === 'string' && src.startsWith('file://')
       ? src.replace(/^file:\/\//, 'localfile://')
       : src;
-    return <img className="max-w-full h-auto rounded-xl my-4" src={resolvedSrc} alt={alt} {...props} />;
+    const canPreview = typeof resolvedSrc === 'string' && resolvedSrc.length > 0;
+    return (
+      <img
+        className={`h-auto max-h-44 w-auto max-w-[14rem] my-3 object-contain ${
+          canPreview ? 'cursor-zoom-in' : ''
+        }`}
+        src={resolvedSrc}
+        alt={alt}
+        onClick={() => {
+          if (canPreview && onImagePreview) {
+            onImagePreview(resolvedSrc, alt);
+          }
+        }}
+        {...props}
+      />
+    );
   },
   hr: ({ node, ...props }: any) => (
     <hr className="my-5 dark:border-claude-darkBorder border-claude-border" {...props} />
@@ -603,19 +619,66 @@ const MarkdownContent: React.FC<MarkdownContentProps> = ({
   className = '',
   resolveLocalFilePath,
 }) => {
-  const components = useMemo(() => createMarkdownComponents(resolveLocalFilePath), [resolveLocalFilePath]);
+  const [previewImage, setPreviewImage] = useState<{ src: string; alt?: string } | null>(null);
+  const closePreview = useCallback(() => setPreviewImage(null), []);
+
+  useEffect(() => {
+    if (!previewImage) {
+      return;
+    }
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        closePreview();
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [previewImage, closePreview]);
+
+  const components = useMemo(
+    () => createMarkdownComponents(resolveLocalFilePath, (src, alt) => setPreviewImage({ src, alt })),
+    [resolveLocalFilePath],
+  );
   const normalizedContent = useMemo(() => normalizeDisplayMath(encodeFileUrlsInMarkdown(content)), [content]);
   return (
-    <div className={`markdown-content text-[15px] leading-6 ${className}`}>
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkMath]}
-        rehypePlugins={[rehypeKatex]}
-        urlTransform={safeUrlTransform}
-        components={components}
-      >
-        {normalizedContent}
-      </ReactMarkdown>
-    </div>
+    <>
+      <div className={`markdown-content text-[15px] leading-6 ${className}`}>
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm, remarkMath]}
+          rehypePlugins={[rehypeKatex]}
+          urlTransform={safeUrlTransform}
+          components={components}
+        >
+          {normalizedContent}
+        </ReactMarkdown>
+      </div>
+      {previewImage && (
+        <div
+          className="fixed inset-0 z-[9999] bg-black/75 p-4 md:p-8 flex items-center justify-center"
+          onClick={closePreview}
+        >
+          <img
+            src={previewImage.src}
+            alt={previewImage.alt}
+            className="max-h-[90vh] max-w-[90vw] rounded-lg object-contain shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          />
+          <button
+            type="button"
+            className="absolute top-4 right-4 rounded-md px-2.5 py-1.5 text-sm font-medium text-white bg-black/40 hover:bg-black/60 transition-colors"
+            onClick={closePreview}
+            aria-label={i18nService.t('close')}
+            title={i18nService.t('close')}
+          >
+            {i18nService.t('close')}
+          </button>
+        </div>
+      )}
+    </>
   );
 };
 

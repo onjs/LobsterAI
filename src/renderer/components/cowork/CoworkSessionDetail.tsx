@@ -13,7 +13,6 @@ import {
   ShareIcon,
   ExclamationTriangleIcon,
   ChevronRightIcon,
-  PhotoIcon,
 } from '@heroicons/react/24/outline';
 import { FolderIcon } from '@heroicons/react/24/solid';
 import { coworkService } from '../../services/cowork';
@@ -43,6 +42,8 @@ const AUTO_SCROLL_THRESHOLD = 120;
 const NAV_SCROLL_LOCK_DURATION = 800;
 const NAV_BOTTOM_SNAP_THRESHOLD = 20;
 const INVALID_FILE_NAME_PATTERN = /[<>:"/\\|?*\u0000-\u001F]/g;
+const ATTACHMENT_INFO_BLOCK_PATTERN = /\n\n\[附件信息\]\n(?:- .*(?:\n|$))+/g;
+const ATTACHMENT_INFO_ONLY_PATTERN = /^\[附件信息\]\n(?:- .*(?:\n|$))+$/;
 
 const sanitizeExportFileName = (value: string): string => {
   const sanitized = value.replace(INVALID_FILE_NAME_PATTERN, ' ').replace(/\s+/g, ' ').trim();
@@ -52,6 +53,32 @@ const sanitizeExportFileName = (value: string): string => {
 const formatExportTimestamp = (value: Date): string => {
   const pad = (num: number): string => String(num).padStart(2, '0');
   return `${value.getFullYear()}${pad(value.getMonth() + 1)}${pad(value.getDate())}-${pad(value.getHours())}${pad(value.getMinutes())}${pad(value.getSeconds())}`;
+};
+
+const stripAttachmentInfoForDisplay = (value: string): string => {
+  if (!value.trim()) {
+    return '';
+  }
+
+  const cleaned = value
+    .replace(ATTACHMENT_INFO_BLOCK_PATTERN, '\n')
+    .replace(ATTACHMENT_INFO_ONLY_PATTERN, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+
+  return cleaned;
+};
+
+const isImageOnlyMessageContent = (value: string): boolean => {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return false;
+  }
+
+  const withoutMarkdownImages = trimmed.replace(/!\[[^\]]*]\([^)]+\)/g, '');
+  const withoutHtmlImages = withoutMarkdownImages.replace(/<img\b[^>]*>/gi, '');
+  const remaining = withoutHtmlImages.replace(/\s+/g, '');
+  return remaining.length === 0;
 };
 
 type CaptureRect = { x: number; y: number; width: number; height: number };
@@ -953,16 +980,20 @@ const CopyButton: React.FC<{
 
 export const UserMessageItem: React.FC<{ message: CoworkMessage; skills: Skill[] }> = React.memo(({ message, skills }) => {
   const [isHovered, setIsHovered] = useState(false);
-  const [expandedImage, setExpandedImage] = useState<string | null>(null);
+  const displayContent = useMemo(
+    () => stripAttachmentInfoForDisplay(message.content ?? ''),
+    [message.content],
+  );
+  const isImageOnlyMessage = useMemo(
+    () => isImageOnlyMessageContent(displayContent),
+    [displayContent],
+  );
 
   // Get skills used for this message
   const messageSkillIds = (message.metadata as CoworkMessageMetadata)?.skillIds || [];
   const messageSkills = messageSkillIds
     .map(id => skills.find(s => s.id === id))
     .filter((s): s is NonNullable<typeof s> => s !== undefined);
-
-  // Get image attachments from metadata
-  const imageAttachments = ((message.metadata as CoworkMessageMetadata)?.imageAttachments ?? []) as CoworkImageAttachment[];
 
   return (
     <div
@@ -974,31 +1005,16 @@ export const UserMessageItem: React.FC<{ message: CoworkMessage; skills: Skill[]
         <div className="pl-4 sm:pl-8 md:pl-12">
           <div className="flex items-start gap-3 flex-row-reverse">
             <div className="w-full min-w-0 flex flex-col items-end">
-              <div className="w-fit max-w-[42rem] rounded-2xl px-4 py-2.5 dark:bg-claude-darkSurface bg-claude-surface dark:text-claude-darkText text-claude-text shadow-subtle">
-                {message.content?.trim() && (
+              <div
+                className={isImageOnlyMessage
+                  ? 'w-fit max-w-[42rem] dark:text-claude-darkText text-claude-text'
+                  : 'w-fit max-w-[42rem] rounded-2xl px-4 py-2.5 dark:bg-claude-darkSurface bg-claude-surface dark:text-claude-darkText text-claude-text shadow-subtle'}
+              >
+                {displayContent.trim() && (
                   <MarkdownContent
-                    content={message.content}
+                    content={displayContent}
                     className="max-w-none whitespace-pre-wrap break-words"
                   />
-                )}
-                {imageAttachments.length > 0 && (
-                  <div className={`flex flex-wrap gap-2 ${message.content?.trim() ? 'mt-2' : ''}`}>
-                    {imageAttachments.map((img, idx) => (
-                      <div key={idx} className="relative group">
-                        <img
-                          src={`data:${img.mimeType};base64,${img.base64Data}`}
-                          alt={img.name}
-                          className="max-h-48 max-w-[16rem] rounded-lg object-contain cursor-pointer border dark:border-claude-darkBorder/50 border-claude-border/50 hover:border-claude-accent/50 transition-colors"
-                          title={img.name}
-                          onClick={() => setExpandedImage(`data:${img.mimeType};base64,${img.base64Data}`)}
-                        />
-                        <div className="absolute bottom-1 left-1 right-1 flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-black/50 text-white text-[10px] opacity-0 group-hover:opacity-100 transition-opacity truncate pointer-events-none">
-                          <PhotoIcon className="h-3 w-3 flex-shrink-0" />
-                          <span className="truncate">{img.name}</span>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
                 )}
               </div>
               <div className="flex items-center justify-end gap-1.5 mt-1">
@@ -1015,7 +1031,7 @@ export const UserMessageItem: React.FC<{ message: CoworkMessage; skills: Skill[]
                   </div>
                 ))}
                 <CopyButton
-                  content={message.content}
+                  content={displayContent}
                   visible={isHovered}
                 />
               </div>
@@ -1023,20 +1039,6 @@ export const UserMessageItem: React.FC<{ message: CoworkMessage; skills: Skill[]
           </div>
         </div>
       </div>
-      {/* Image lightbox overlay */}
-      {expandedImage && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 cursor-pointer"
-          onClick={() => setExpandedImage(null)}
-        >
-          <img
-            src={expandedImage}
-            alt="Preview"
-            className="max-h-[90vh] max-w-[90vw] object-contain rounded-lg shadow-2xl"
-            onClick={(e) => e.stopPropagation()}
-          />
-        </div>
-      )}
     </div>
   );
 });
