@@ -608,8 +608,11 @@ const initStore = async (): Promise<SqliteStore> => {
     if (!app.isReady()) {
       throw new Error('Store accessed before app is ready.');
     }
+    // better-sqlite3 opens the database synchronously, so Promise.resolve() resolves
+    // immediately. The timeout acts as a safety net for future async changes or
+    // unexpected OS-level blocking (e.g., file lock on startup).
     storeInitPromise = Promise.race([
-      SqliteStore.create(app.getPath('userData')),
+      Promise.resolve(SqliteStore.create(app.getPath('userData'))),
       new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error('Store initialization timed out after 15s')), 15_000)
       ),
@@ -833,7 +836,7 @@ const ensureOpenClawRunningForCowork = async () => {
 const getCoworkStore = () => {
   if (!coworkStore) {
     const sqliteStore = getStore();
-    coworkStore = new CoworkStore(sqliteStore.getDatabase(), sqliteStore.getSaveFunction());
+    coworkStore = new CoworkStore(sqliteStore.getDatabase());
     const cleaned = coworkStore.autoDeleteNonPersonalMemories();
     if (cleaned > 0) {
       console.info(`[cowork-memory] Auto-deleted ${cleaned} non-personal/procedural memories`);
@@ -1261,7 +1264,7 @@ const getSkillManager = () => {
 const getMcpStore = () => {
   if (!mcpStore) {
     const sqliteStore = getStore();
-    mcpStore = new McpStore(sqliteStore.getDatabase(), sqliteStore.getSaveFunction());
+    mcpStore = new McpStore(sqliteStore.getDatabase());
   }
   return mcpStore;
 };
@@ -1446,7 +1449,6 @@ const getIMGatewayManager = () => {
 
     imGatewayManager = new IMGatewayManager(
       sqliteStore.getDatabase(),
-      sqliteStore.getSaveFunction(),
       {
         coworkRuntime: runtime,
         coworkStore: store,
@@ -4789,6 +4791,16 @@ if (!gotTheLock) {
       });
     }
     stopScheduledTaskPollingForBackend(STBackend.OpenClaw);
+    try {
+      getCronJobService().stopPolling();
+    } catch {
+      // CronJobService may not have been initialized — safe to ignore.
+    }
+    try {
+      getStore().close();
+    } catch {
+      // Store may not have been initialized — safe to ignore.
+    }
   };
 
   app.on('before-quit', (e) => {
