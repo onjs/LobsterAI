@@ -175,7 +175,7 @@ LobsterAI uses Electron's strict process isolation. All cross-process communicat
 **Main Process** (`src/main/main.ts`):
 - Window lifecycle management
 - SQLite persistence
-- CoworkRunner — Claude Agent SDK execution engine
+- OpenClaw agent engine (primary) + CoworkEngineRouter dispatch layer
 - IM Gateways — DingTalk, Feishu, Telegram, Discord remote access
 - 40+ IPC channel handlers
 - Security: context isolation enabled, node integration disabled, sandbox enabled
@@ -201,7 +201,13 @@ src/
 │   ├── skillManager.ts             # Skill management
 │   ├── im/                         # IM gateways (DingTalk/Feishu/Telegram/Discord)
 │   └── libs/
-│       ├── coworkRunner.ts         # Agent SDK executor
+│       ├── agentEngine/
+│       │   ├── coworkEngineRouter.ts    # Dispatch layer (routes sessions to the active engine)
+│       │   ├── openclawRuntimeAdapter.ts # Primary OpenClaw gateway adapter
+│       │   └── claudeRuntimeAdapter.ts  # Legacy built-in adapter (deprecated)
+│       ├── coworkRunner.ts          # Legacy built-in executor (deprecated)
+│       ├── openclawEngineManager.ts # OpenClaw runtime lifecycle (install/start/status)
+│       ├── openclawConfigSync.ts    # Syncs cowork config → OpenClaw config files
 │       └── coworkMemoryExtractor.ts # Memory extraction
 │
 ├── renderer/                        # React frontend
@@ -230,7 +236,7 @@ SKILLs/                              # Skill definitions
 
 ## Cowork System
 
-Cowork is the core feature of LobsterAI — an AI working session system built on the Claude Agent SDK. Designed for productivity scenarios, it can autonomously complete complex tasks like data analysis, document generation, and information retrieval.
+Cowork is the core feature of LobsterAI — an AI working session system powered by OpenClaw as the primary agent engine. Designed for productivity scenarios, it can autonomously complete complex tasks like data analysis, document generation, and information retrieval.
 
 ### Execution Modes
 
@@ -379,7 +385,7 @@ LobsterAI enforces security at multiple layers:
 | Build | Vite 5 |
 | Styling | Tailwind CSS 3 |
 | State | Redux Toolkit |
-| AI Engine | Claude Agent SDK (Anthropic) |
+| AI Engine | OpenClaw (primary) |
 | Storage | sql.js |
 | Markdown | react-markdown + remark-gfm + rehype-katex |
 | Diagrams | Mermaid |
@@ -460,7 +466,7 @@ npm test -- logger
 npm test -- cowork
 ```
 
-New test files go next to the source file they test, using the `.test.mjs` extension:
+New test files go next to the source file they test, using the `.test.ts` extension:
 
 ```
 src/main/
@@ -481,6 +487,14 @@ test('log file pattern matches daily name', () => {
 Avoid importing Electron-only APIs (e.g. `electron-log`) in tests — inline any logic that depends on them instead.
 
 
+
+## Community
+
+Join our WeChat group to get help, share feedback, and stay up to date:
+
+<p align="center">
+  <img src="https://shared.ydstatic.com/market/souti/fihserChatWeb/online/1.3.5/dist/assets/wechat_group-ButC0ZCl.jpg" alt="WeChat Community QR Code" width="200">
+</p>
 
 ## Contributing
 

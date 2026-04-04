@@ -176,7 +176,7 @@ LobsterAI 采用 Electron 严格进程隔离架构，所有跨进程通信通过
 **Main Process**（`src/main/main.ts`）：
 - 窗口生命周期管理
 - SQLite 数据持久化
-- CoworkRunner — Claude Agent SDK 执行引擎
+- OpenClaw Agent 引擎（主引擎）+ CoworkEngineRouter 调度层
 - IM 网关 — 钉钉、飞书、Telegram、Discord 远程接入
 - 40+ IPC 通道处理
 - 安全：context isolation 启用，node integration 禁用，sandbox 启用
@@ -202,7 +202,13 @@ src/
 │   ├── skillManager.ts             # 技能管理
 │   ├── im/                         # IM 网关（钉钉/飞书/Telegram/Discord）
 │   └── libs/
-│       ├── coworkRunner.ts         # Agent SDK 执行器
+│       ├── agentEngine/
+│       │   ├── coworkEngineRouter.ts    # 调度层（将会话路由到当前激活的引擎）
+│       │   ├── openclawRuntimeAdapter.ts # 主引擎 OpenClaw 网关适配器
+│       │   └── claudeRuntimeAdapter.ts  # 旧内置适配器（已废弃）
+│       ├── coworkRunner.ts          # 旧内置执行器（已废弃）
+│       ├── openclawEngineManager.ts # OpenClaw 运行时生命周期管理
+│       ├── openclawConfigSync.ts    # 同步 cowork 配置到 OpenClaw 配置文件
 │       └── coworkMemoryExtractor.ts # 记忆提取
 │
 ├── renderer/                        # React 前端
@@ -231,7 +237,7 @@ SKILLs/                              # 技能定义目录
 
 ## Cowork 系统
 
-Cowork 是 LobsterAI 的核心功能 —— 基于 Claude Agent SDK 的 AI 工作会话系统。它面向办公场景设计，能够自主完成数据分析、文档生成、信息检索等复杂任务。
+Cowork 是 LobsterAI 的核心功能 —— 以 OpenClaw 为主引擎的 AI 工作会话系统。它面向办公场景设计，能够自主完成数据分析、文档生成、信息检索等复杂任务。
 
 ### 执行模式
 
@@ -380,7 +386,7 @@ LobsterAI 在多个层面实施安全控制：
 | 构建 | Vite 5 |
 | 样式 | Tailwind CSS 3 |
 | 状态 | Redux Toolkit |
-| AI 引擎 | Claude Agent SDK (Anthropic) |
+| AI 引擎 | OpenClaw（主引擎） |
 | 存储 | sql.js |
 | Markdown | react-markdown + remark-gfm + rehype-katex |
 | 图表 | Mermaid |
@@ -453,7 +459,7 @@ npm test -- logger
 npm test -- cowork
 ```
 
-新增测试文件放在对应源文件旁边，使用 `.test.mjs` 扩展名：
+新增测试文件放在对应源文件旁边，使用 `.test.ts` 扩展名：
 
 ```
 src/main/
@@ -480,6 +486,14 @@ test('log file pattern matches daily name', () => {
 - 组件 `PascalCase`，函数/变量 `camelCase`，Redux 切片 `*Slice.ts`
 - Tailwind CSS 优先，避免自定义 CSS
 - 提交信息遵循 `type: short imperative summary` 格式（如 `feat: add artifact toolbar`）
+
+## 微信社群
+
+扫码加入微信交流群，获取帮助、反馈问题、了解最新动态：
+
+<p align="center">
+  <img src="https://shared.ydstatic.com/market/souti/fihserChatWeb/online/1.3.5/dist/assets/wechat_group-ButC0ZCl.jpg" alt="微信社群二维码" width="200">
+</p>
 
 ## 贡献
 

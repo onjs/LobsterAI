@@ -1,4 +1,4 @@
-# CLAUDE.md
+# AGENTS.md
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
@@ -39,7 +39,7 @@ npm run openclaw:runtime:host   # current platform
 ## Architecture Overview
 
 LobsterAI is an Electron + React desktop application with two primary modes:
-1. **Cowork Mode** - AI-assisted coding sessions using Claude Agent SDK with tool execution
+1. **Cowork Mode** - AI-assisted coding sessions powered by OpenClaw as the primary agent engine
 2. **Artifacts System** - Rich preview of code outputs (HTML, SVG, React, Mermaid)
 
 Uses strict process isolation with IPC communication.
@@ -128,8 +128,8 @@ SKILLs/                  # Custom skill definitions for cowork sessions
 ### Data Flow
 
 1. **Initialization**: `src/renderer/App.tsx` → `coworkService.init()` → loads config/sessions via IPC → sets up stream listeners
-2. **Cowork Session**: User sends prompt → `coworkService.startSession()` → IPC to main → `CoworkRunner.startSession()` → Claude Agent SDK execution → streaming events back to renderer via IPC → Redux updates
-3. **Tool Permissions**: Claude requests tool use → `CoworkRunner` emits `permissionRequest` → UI shows `CoworkPermissionModal` → user approves/denies → result sent back to SDK
+2. **Cowork Session**: User sends prompt → `coworkService.startSession()` → IPC to main → `CoworkEngineRouter` → OpenClaw gateway (primary) → streaming events back to renderer via IPC → Redux updates
+3. **Tool Permissions**: Agent requests tool use → `CoworkEngineRouter` emits `permissionRequest` → UI shows `CoworkPermissionModal` → user approves/denies → result sent back to engine
 4. **Persistence**: Cowork sessions stored in SQLite (`cowork_sessions`, `cowork_messages` tables)
 
 ### Cowork System
@@ -137,13 +137,12 @@ SKILLs/                  # Custom skill definitions for cowork sessions
 The Cowork feature provides AI-assisted coding sessions:
 
 **Execution Modes** (`CoworkExecutionMode`):
-- `auto` - Automatically choose based on context (OpenClaw: `sandbox.mode=non-main`)
-- `local` - Run tools directly on the local machine (OpenClaw: `sandbox.mode=off`)
-- `sandbox` - Full sandbox isolation (OpenClaw: `sandbox.mode=all`)
+- `auto` - Automatically choose based on context
+- `local` - Run tools directly on the local machine
 
 **Agent Engines** (configured via `agentEngine` in cowork config):
-- `yd_cowork` - Built-in Claude Agent SDK runner (`claudeRuntimeAdapter.ts`)
-- `openclaw` - OpenClaw gateway (`openclawRuntimeAdapter.ts`); requires the bundled OpenClaw runtime to be running. Engine lifecycle managed by `OpenClawEngineManager` with states: `not_installed → ready → starting → running | error`
+- `openclaw` - **Primary engine**. OpenClaw gateway (`openclawRuntimeAdapter.ts`); requires the bundled OpenClaw runtime to be running. Engine lifecycle managed by `OpenClawEngineManager` with states: `not_installed → ready → starting → running | error`
+- `yd_cowork` - **Deprecated**. Legacy built-in adapter wrapping the Claude Agent SDK (`claudeRuntimeAdapter.ts`). Code still present but no longer the recommended engine.
 
 Both engines expose identical stream events through `CoworkEngineRouter`, so the renderer is engine-agnostic. Engine-specific IPC: `openclaw:engine:*` channels manage runtime lifecycle separately from `cowork:*` session channels.
 
@@ -215,7 +214,8 @@ The Artifacts feature provides rich preview of code outputs similar to Claude's 
 
 ### Key Dependencies
 
-- `@anthropic-ai/claude-agent-sdk` - Claude Agent SDK for cowork sessions
+- OpenClaw (bundled runtime under `Resources/cfmind`) - Primary agent engine for cowork sessions
+- `@anthropic-ai/claude-agent-sdk` - Legacy built-in engine dependency (deprecated, code still present)
 - `sql.js` - SQLite database for persistence
 - `react-markdown`, `remark-gfm`, `rehype-katex` - Markdown rendering with math support
 - `mermaid` - Diagram rendering
