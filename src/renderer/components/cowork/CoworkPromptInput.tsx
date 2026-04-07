@@ -452,16 +452,28 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
             // Fallback: add as regular file attachment
             addAttachment(nativePath);
           } else {
-            // No native path (clipboard/drag from browser) - read via FileReader
+            // No native path (clipboard/drag from browser):
+            // 1. Read as dataUrl for preview + base64 vision
+            // 2. Save to disk so the agent can access the file in later turns
+            let dataUrl: string | null = null;
             try {
-              const dataUrl = await fileToDataUrl(file);
-              addImageAttachmentFromDataUrl(file.name, dataUrl);
+              dataUrl = await fileToDataUrl(file);
             } catch (error) {
-              console.error('Failed to read image from clipboard:', error);
-              const stagedPath = await saveInlineFile(file);
-              if (stagedPath) {
-                addAttachment(stagedPath);
-              }
+              console.error('Failed to read clipboard image as data URL:', error);
+            }
+
+            const stagedPath = await saveInlineFile(file);
+
+            if (stagedPath) {
+              addAttachment(stagedPath, {
+                isImage: true,
+                dataUrl: dataUrl ?? undefined,
+              });
+            } else if (dataUrl) {
+              console.warn('Clipboard image saved only in memory (disk save failed)');
+              addImageAttachmentFromDataUrl(file.name, dataUrl);
+            } else {
+              console.error('Failed to process clipboard image: both dataUrl and disk save failed');
             }
           }
           continue;
