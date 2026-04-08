@@ -4,6 +4,7 @@ import { useSelector } from 'react-redux';
 import { RootState } from '../../store';
 import { i18nService } from '../../services/i18n';
 import type { CoworkMessage, CoworkMessageMetadata, CoworkImageAttachment } from '../../types/cowork';
+import type { IMPlatform } from '../../types/im';
 import type { Skill } from '../../types/skill';
 import CoworkPromptInput from './CoworkPromptInput';
 import MarkdownContent from '../MarkdownContent';
@@ -44,6 +45,42 @@ const NAV_BOTTOM_SNAP_THRESHOLD = 20;
 const INVALID_FILE_NAME_PATTERN = /[<>:"/\\|?*\u0000-\u001F]/g;
 const ATTACHMENT_INFO_BLOCK_PATTERN = /\n\n\[附件信息\]\n(?:- .*(?:\n|$))+/g;
 const ATTACHMENT_INFO_ONLY_PATTERN = /^\[附件信息\]\n(?:- .*(?:\n|$))+$/;
+const SCHEDULED_TITLE_PREFIX = '[Scheduled]';
+const IM_GROUP_LABEL_STORAGE_KEY = 'cowork.imGroupDisplayNames';
+const IM_SESSION_CHANNELS = [
+  'dingtalk',
+  'feishu',
+  'telegram',
+  'discord',
+  'qqbot',
+  'wecom',
+  'popo',
+  'nim',
+  'openclaw-weixin',
+  'xiaomifeng',
+] as const;
+const IM_PLATFORM_LABEL_KEYS: Record<IMPlatform, string> = {
+  dingtalk: 'scheduledTasksFormNotifyDingtalk',
+  feishu: 'scheduledTasksFormNotifyFeishu',
+  qq: 'scheduledTasksFormNotifyQq',
+  telegram: 'scheduledTasksFormNotifyTelegram',
+  discord: 'scheduledTasksFormNotifyDiscord',
+  nim: 'scheduledTasksFormNotifyNim',
+  xiaomifeng: 'scheduledTasksFormNotifyXiaomifeng',
+  wecom: 'scheduledTasksFormNotifyWecom',
+  popo: 'scheduledTasksFormNotifyPopo',
+  weixin: 'scheduledTasksFormNotifyWeixin',
+};
+
+const isImPlatform = (value: string): value is IMPlatform =>
+  Object.prototype.hasOwnProperty.call(IM_PLATFORM_LABEL_KEYS, value);
+
+const parseScheduledTaskName = (title: string): string | null => {
+  const trimmed = title.trim();
+  if (!trimmed.startsWith(SCHEDULED_TITLE_PREFIX)) return null;
+  const name = trimmed.slice(SCHEDULED_TITLE_PREFIX.length).trim();
+  return name || null;
+};
 
 const sanitizeExportFileName = (value: string): string => {
   const sanitized = value.replace(INVALID_FILE_NAME_PATTERN, ' ').replace(/\s+/g, ' ').trim();
@@ -1361,7 +1398,6 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
   const isMac = window.electron.platform === 'darwin';
   const currentSession = useSelector((state: RootState) => state.cowork.currentSession);
   const isStreaming = useSelector((state: RootState) => state.cowork.isStreaming);
-  const remoteManaged = useSelector((state: RootState) => state.cowork.remoteManaged);
   const skills = useSelector((state: RootState) => state.skill.skills);
   const detailRootRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -1394,6 +1430,8 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
   const actionButtonRef = useRef<HTMLButtonElement>(null);
   const [showConfirmDelete, setShowConfirmDelete] = useState(false);
   const [isExportingImage, setIsExportingImage] = useState(false);
+  const [currentSessionImPlatform, setCurrentSessionImPlatform] = useState<IMPlatform | null>(null);
+  const [imGroupDisplayNames, setImGroupDisplayNames] = useState<Partial<Record<IMPlatform, string>>>({});
 
   // Rename states
   const [isRenaming, setIsRenaming] = useState(false);
@@ -1408,6 +1446,90 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
       ignoreNextBlurRef.current = false;
     }
   }, [isRenaming, currentSession?.title]);
+
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(IM_GROUP_LABEL_STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      const next: Partial<Record<IMPlatform, string>> = {};
+      Object.entries(parsed).forEach(([key, value]) => {
+        if (!isImPlatform(key)) return;
+        if (typeof value !== 'string') return;
+        const normalized = value.trim();
+        if (!normalized) return;
+        next[key] = normalized;
+      });
+      setImGroupDisplayNames(next);
+    } catch (error) {
+      console.warn('[CoworkSessionDetail] Failed to load IM group display names:', error);
+    }
+  }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    const resolveCurrentSessionPlatform = async () => {
+      if (!currentSession?.id) {
+        if (!disposed) setCurrentSessionImPlatform(null);
+        return;
+      }
+
+      const listConversations = window.electron?.scheduledTasks?.listChannelConversations;
+      if (!listConversations) {
+        if (!disposed) setCurrentSessionImPlatform(null);
+        return;
+      }
+
+      try {
+        const results = await Promise.all(
+          IM_SESSION_CHANNELS.map((channel) => listConversations(channel)),
+        );
+        if (disposed) return;
+
+        let matchedPlatform: IMPlatform | null = null;
+        for (const result of results) {
+          if (!result?.success || !Array.isArray(result.conversations)) continue;
+          const matchedConversation = result.conversations.find((conversation) => (
+            conversation?.coworkSessionId === currentSession.id
+            && typeof conversation?.platform === 'string'
+            && isImPlatform(conversation.platform)
+          ));
+          if (matchedConversation && isImPlatform(matchedConversation.platform)) {
+            matchedPlatform = matchedConversation.platform;
+            break;
+          }
+        }
+        setCurrentSessionImPlatform(matchedPlatform);
+      } catch (error) {
+        console.warn('[CoworkSessionDetail] Failed to resolve IM session platform:', error);
+        if (!disposed) setCurrentSessionImPlatform(null);
+      }
+    };
+
+    void resolveCurrentSessionPlatform();
+    return () => {
+      disposed = true;
+    };
+  }, [currentSession?.id]);
+
+  const displaySessionTitle = useMemo(() => {
+    if (!currentSession) return i18nService.t('coworkNewSession');
+
+    const scheduledTaskName = parseScheduledTaskName(currentSession.title);
+    if (scheduledTaskName) {
+      return scheduledTaskName;
+    }
+
+    if (currentSessionImPlatform) {
+      const customLabel = imGroupDisplayNames[currentSessionImPlatform]?.trim();
+      if (customLabel) {
+        return customLabel;
+      }
+      return `${i18nService.t('coworkMyPrefix')}${i18nService.t(IM_PLATFORM_LABEL_KEYS[currentSessionImPlatform])}`;
+    }
+
+    return currentSession.title || i18nService.t('coworkNewSession');
+  }, [currentSession, currentSessionImPlatform, imGroupDisplayNames]);
 
   useEffect(() => {
     setShouldAutoScroll(true);
@@ -2074,7 +2196,7 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
             />
           ) : (
             <h1 className="text-sm leading-none font-medium dark:text-claude-darkText text-claude-text truncate max-w-[360px]">
-              {currentSession.title || i18nService.t('coworkNewSession')}
+              {displaySessionTitle}
             </h1>
           )}
           {currentSession.executionMode === 'sandbox' && (
@@ -2441,12 +2563,12 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
             onSubmit={onContinue}
             onStop={onStop}
             isStreaming={isStreaming}
-            placeholder={i18nService.t(remoteManaged ? 'coworkRemoteManagedPlaceholder' : 'coworkContinuePlaceholder')}
-            disabled={remoteManaged}
+            placeholder={i18nService.t('coworkContinuePlaceholder')}
+            disabled={false}
             size="large"
-            remoteManaged={remoteManaged}
-            onManageSkills={remoteManaged ? undefined : onManageSkills}
-            showModelSelector={!remoteManaged}
+            remoteManaged={false}
+            onManageSkills={onManageSkills}
+            showModelSelector
             sessionId={currentSession?.id}
           />
         </div>
