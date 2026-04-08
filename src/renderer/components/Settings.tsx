@@ -591,6 +591,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
   const [coworkExecutionMode, setCoworkExecutionMode] = useState<CoworkExecutionMode>(coworkConfig.executionMode || 'local');
   const [coworkMemoryEnabled, setCoworkMemoryEnabled] = useState<boolean>(coworkConfig.memoryEnabled ?? true);
   const [coworkMemoryLlmJudgeEnabled, setCoworkMemoryLlmJudgeEnabled] = useState<boolean>(coworkConfig.memoryLlmJudgeEnabled ?? false);
+  const [skipMissedJobs, setSkipMissedJobs] = useState<boolean>(coworkConfig.skipMissedJobs ?? false);
   const [coworkMemoryEntries, setCoworkMemoryEntries] = useState<CoworkUserMemoryEntry[]>([]);
   const [coworkMemoryStats, setCoworkMemoryStats] = useState<CoworkMemoryStats | null>(null);
   const [coworkMemoryListLoading, setCoworkMemoryListLoading] = useState<boolean>(false);
@@ -611,12 +612,14 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
     setCoworkExecutionMode(coworkConfig.executionMode || 'local');
     setCoworkMemoryEnabled(coworkConfig.memoryEnabled ?? true);
     setCoworkMemoryLlmJudgeEnabled(coworkConfig.memoryLlmJudgeEnabled ?? false);
+    setSkipMissedJobs(coworkConfig.skipMissedJobs ?? false);
   }, [
     coworkConfig.agentEngine,
     coworkConfig.scheduledTaskBackend,
     coworkConfig.executionMode,
     coworkConfig.memoryEnabled,
     coworkConfig.memoryLlmJudgeEnabled,
+    coworkConfig.skipMissedJobs,
   ]);
 
   useEffect(() => () => {
@@ -1224,7 +1227,8 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
     || coworkScheduledTaskBackend !== coworkConfig.scheduledTaskBackend
     || coworkExecutionMode !== coworkConfig.executionMode
     || coworkMemoryEnabled !== coworkConfig.memoryEnabled
-    || coworkMemoryLlmJudgeEnabled !== coworkConfig.memoryLlmJudgeEnabled;
+    || coworkMemoryLlmJudgeEnabled !== coworkConfig.memoryLlmJudgeEnabled
+    || skipMissedJobs !== (coworkConfig.skipMissedJobs ?? false);
   const effectiveCoworkAgentEngine = coworkCapabilities.agentEngines.includes(coworkAgentEngine)
     ? coworkAgentEngine
     : (coworkCapabilities.agentEngines[0] ?? 'openclaw');
@@ -1504,6 +1508,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
           executionMode: coworkExecutionMode,
           memoryEnabled: coworkMemoryEnabled,
           memoryLlmJudgeEnabled: coworkMemoryLlmJudgeEnabled,
+          skipMissedJobs,
         });
         if (!updated) {
           throw new Error(i18nService.t('coworkConfigSaveFailed'));
@@ -2288,7 +2293,38 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
               </label>
             </div>
 
-            {/* Appearance Section */}
+            {/* Skip Missed Jobs Section */}
+            <div>
+              <h4 className="text-sm font-medium text-foreground mb-3">
+                {i18nService.t('skipMissedJobs')}
+              </h4>
+              <label className="flex items-center justify-between cursor-pointer">
+                <span className="text-sm text-secondary">
+                  {i18nService.t('skipMissedJobsDescription')}
+                </span>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={skipMissedJobs}
+                  onClick={() => {
+                    setSkipMissedJobs((prev) => !prev);
+                  }}
+                  className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors ${
+                    skipMissedJobs
+                      ? 'bg-primary'
+                      : 'bg-gray-300 dark:bg-gray-600'
+                  }`}
+                >
+                  <span
+                    className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                      skipMissedJobs ? 'translate-x-6' : 'translate-x-1'
+                    }`}
+                  />
+                </button>
+              </label>
+            </div>
+
+            {/* Appearance Section — mode selector + theme gallery */}
             <div>
               <h4 className="text-sm font-medium dark:text-claude-darkText text-claude-text mb-3">
                 {i18nService.t('appearance')}

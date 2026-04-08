@@ -496,10 +496,11 @@ export interface CoworkConfig {
   memoryLlmJudgeEnabled: boolean;
   memoryGuardLevel: CoworkMemoryGuardLevel;
   memoryUserMemoriesMaxItems: number;
+  skipMissedJobs: boolean;
 }
 
 export type CoworkConfigUpdate = Partial<Pick<
-  CoworkConfig,
+CoworkConfig,
   | 'workingDirectory'
   | 'executionMode'
   | 'agentEngine'
@@ -509,6 +510,7 @@ export type CoworkConfigUpdate = Partial<Pick<
   | 'memoryLlmJudgeEnabled'
   | 'memoryGuardLevel'
   | 'memoryUserMemoriesMaxItems'
+  | 'skipMissedJobs'
 >>;
 
 export interface ApplyTurnMemoryUpdatesOptions {
@@ -1090,6 +1092,7 @@ export class CoworkStore {
     const memoryLlmJudgeEnabledRow = this.getOne<ConfigRow>('SELECT value FROM cowork_config WHERE key = ?', ['memoryLlmJudgeEnabled']);
     const memoryGuardLevelRow = this.getOne<ConfigRow>('SELECT value FROM cowork_config WHERE key = ?', ['memoryGuardLevel']);
     const memoryUserMemoriesMaxItemsRow = this.getOne<ConfigRow>('SELECT value FROM cowork_config WHERE key = ?', ['memoryUserMemoriesMaxItems']);
+    const skipMissedJobsRow = this.getOne<ConfigRow>('SELECT value FROM cowork_config WHERE key = ?', ['skipMissedJobs']);
 
     const normalizedExecutionMode =
       executionModeRow?.value === 'container' ? 'sandbox' : (executionModeRow?.value as CoworkExecutionMode);
@@ -1115,6 +1118,7 @@ export class CoworkStore {
       ),
       memoryGuardLevel: normalizeMemoryGuardLevel(memoryGuardLevelRow?.value),
       memoryUserMemoriesMaxItems: clampMemoryUserMemoriesMaxItems(Number(memoryUserMemoriesMaxItemsRow?.value)),
+      skipMissedJobs: parseBooleanConfig(skipMissedJobsRow?.value, false),
     };
   }
 
@@ -1203,6 +1207,20 @@ export class CoworkStore {
           value = excluded.value,
           updated_at = excluded.updated_at
       `, [String(clampMemoryUserMemoriesMaxItems(config.memoryUserMemoriesMaxItems)), now]);
+    }
+
+    if (config.skipMissedJobs !== undefined) {
+      this.db
+        .prepare(
+          `
+        INSERT INTO cowork_config (key, value, updated_at)
+        VALUES ('skipMissedJobs', ?, ?)
+        ON CONFLICT(key) DO UPDATE SET
+          value = excluded.value,
+          updated_at = excluded.updated_at
+      `,
+        )
+        .run(config.skipMissedJobs ? '1' : '0', now);
     }
 
     this.saveDb();
