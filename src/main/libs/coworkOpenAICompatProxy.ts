@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import http from 'http';
 import { session } from 'electron';
 import {
@@ -73,11 +74,41 @@ const GEMINI_FALLBACK_THOUGHT_SIGNATURE = 'skip_thought_signature_validator';
 
 let proxyServer: http.Server | null = null;
 let proxyPort: number | null = null;
+let proxyAuthToken: string | null = null;
 let upstreamConfig: OpenAICompatUpstreamConfig | null = null;
 let lastProxyError: string | null = null;
 let tokenRefresher: (() => Promise<string | null>) | null = null;
 let currentCoworkSessionId: string | null = null;
 const toolCallExtraContentById = new Map<string, unknown>();
+
+const ALLOWED_PROXY_HOSTS = new Set([
+  '127.0.0.1',
+  'localhost',
+  '[::1]',
+  '::1',
+]);
+
+export function isAllowedProxyHost(req: http.IncomingMessage): boolean {
+  const hostHeader = req.headers.host;
+  if (!hostHeader) {
+    return true;
+  }
+
+  let hostName: string;
+  if (hostHeader.startsWith('[')) {
+    const bracketEnd = hostHeader.indexOf(']');
+    hostName = bracketEnd >= 0
+      ? hostHeader.slice(0, bracketEnd + 1)
+      : hostHeader;
+  } else {
+    const colonIndex = hostHeader.lastIndexOf(':');
+    hostName = colonIndex >= 0
+      ? hostHeader.slice(0, colonIndex)
+      : hostHeader;
+  }
+
+  return ALLOWED_PROXY_HOSTS.has(hostName);
+}
 
 export function setCoworkProxySessionId(sessionId: string | null): void {
   currentCoworkSessionId = sessionId;
@@ -2161,17 +2192,33 @@ async function handleRequest(
   req: http.IncomingMessage,
   res: http.ServerResponse
 ): Promise<void> {
+  if (!isAllowedProxyHost(req)) {
+    console.warn(`[CoworkProxy] Rejected request with disallowed Host header: ${req.headers.host}`);
+    res.writeHead(403, { 'Content-Type': 'text/plain' });
+    res.end('Forbidden');
+    return;
+  }
+
   const method = (req.method || 'GET').toUpperCase();
   const url = new URL(req.url || '/', `http://${LOCAL_HOST}`);
 
   if (method === 'GET' && url.pathname === '/healthz') {
-    writeJSON(res, 200, {
-      ok: true,
-      running: Boolean(proxyServer),
-      hasUpstream: Boolean(upstreamConfig),
-      lastError: lastProxyError,
-    });
+    writeJSON(res, 200, { ok: true, status: 'live' });
     return;
+  }
+
+  if (proxyAuthToken) {
+    const authHeader = req.headers.authorization || '';
+    const bearerToken = authHeader.startsWith('Bearer ')
+      ? authHeader.slice(7).trim()
+      : '';
+    if (bearerToken !== proxyAuthToken) {
+      writeJSON(res, 401, createAnthropicErrorBody(
+        'Unauthorized: invalid or missing proxy token',
+        'authentication_error'
+      ));
+      return;
+    }
   }
 
   console.log(`[CoworkProxy] ${method} ${url.pathname}`);
@@ -2502,6 +2549,8 @@ export async function startCoworkOpenAICompatProxy(): Promise<void> {
     return;
   }
 
+  proxyAuthToken = crypto.randomBytes(24).toString('hex');
+
   await new Promise<void>((resolve, reject) => {
     const server = http.createServer((req, res) => {
       void handleRequest(req, res).catch((error) => {
@@ -2530,6 +2579,7 @@ export async function startCoworkOpenAICompatProxy(): Promise<void> {
       proxyServer = server;
       proxyPort = addr.port;
       lastProxyError = null;
+      console.log(`[CoworkProxy] Proxy server started on port ${addr.port}`);
       resolve();
     });
   });
@@ -2543,6 +2593,7 @@ export async function stopCoworkOpenAICompatProxy(): Promise<void> {
   const server = proxyServer;
   proxyServer = null;
   proxyPort = null;
+  proxyAuthToken = null;
 
   await new Promise<void>((resolve, reject) => {
     server.close((error) => {
@@ -2578,6 +2629,10 @@ export function getCoworkOpenAICompatProxyBaseURL(target: OpenAICompatProxyTarge
   }
   const host = target === 'sandbox' ? SANDBOX_HOST : LOCAL_HOST;
   return `http://${host}:${proxyPort}`;
+}
+
+export function getCoworkOpenAICompatProxyToken(): string | null {
+  return proxyAuthToken;
 }
 
 export function getCoworkOpenAICompatProxyStatus(): OpenAICompatProxyStatus {
