@@ -6,15 +6,12 @@
 export * from './types';
 export { IMStore } from './imStore';
 export { NimGateway } from './nimGateway';
-export { YdFeishuGateway } from './channels/feishu';
-export { YdWeixinGateway, YdWeixinAuth, WeixinAuthErrorCodes, WeixinAuthDefaultsConfig } from './channels/weixin';
 export { IMChatHandler } from './imChatHandler';
 export { IMCoworkHandler, type IMCoworkHandlerOptions } from './imCoworkHandler';
 export { IMGatewayManager, type IMGatewayManagerOptions } from './imGatewayManager';
 export {
   IMGatewayProviderId,
   IMGatewayProviderSource,
-  IMGatewayProviderEnvKey,
   resolveIMGatewayProvider,
 } from './imGatewayProviderRouter';
 export {

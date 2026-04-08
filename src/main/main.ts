@@ -4,22 +4,19 @@ import path from 'path';
 import fs from 'fs';
 import os from 'os';
 import { SqliteStore } from './sqliteStore';
-import { CoworkStore } from './coworkStore';
+import { CoworkStore, type CoworkExecutionMode } from './coworkStore';
 import { AgentManager } from './agentManager';
-import { CoworkRunner } from './libs/coworkRunner';
 import {
-  ClaudeRuntimeAdapter,
   CoworkEngineRouter,
   OpenClawRuntimeAdapter,
   type CoworkAgentEngine,
 } from './libs/agentEngine';
-import { SkillManager } from './skillManager';
-import type { PermissionResult } from '@anthropic-ai/claude-agent-sdk';
+import { SkillManager, type SkillRecord } from './skillManager';
+import type { PermissionResult } from './libs/permissionTypes';
 import { getCurrentApiConfig, resolveCurrentApiConfig, setStoreGetter, setAuthTokensGetter, setServerBaseUrlGetter, updateServerModelMetadata, clearServerModelMetadata } from './libs/claudeSettings';
 import { saveCoworkApiConfig } from './libs/coworkConfigStore';
 import { generateSessionTitle, probeCoworkModelReadiness } from './libs/coworkUtil';
 import { startCoworkOpenAICompatProxy, stopCoworkOpenAICompatProxy, setProxyTokenRefresher } from './libs/coworkOpenAICompatProxy';
-import { ensureSandboxReady, getSandboxStatus, onSandboxProgress } from './libs/coworkSandboxRuntime';
 import { OpenClawEngineManager, type OpenClawEngineStatus } from './libs/openclawEngineManager';
 import {
   listPairingRequests,
@@ -51,7 +48,6 @@ import {
 import { IMGatewayManager, IMPlatform, IMGatewayConfig } from './im';
 import {
   IMGatewayBuildProfile,
-  IMGatewayProviderEnvKey,
   IMGatewayProviderId,
   resolveIMGatewayBuildProfile,
 } from './im/imGatewayProviderRouter';
@@ -65,8 +61,6 @@ import { McpStore } from './mcpStore';
 import { CronJobService } from '../scheduled-task/cronJobService';
 import type { ScheduledTaskBackendService } from '../scheduled-task/backendService';
 import type { ScheduledTask } from '../scheduled-task/types';
-import { YdCoworkTaskRepository } from '../scheduled-task/ydCoworkTaskRepository';
-import { YdCoworkCronJobService, type YdCoworkRunResult } from '../scheduled-task/ydCoworkCronJobService';
 import { migrateScheduledTasksToOpenclaw, migrateScheduledTaskRunsToOpenclaw } from '../scheduled-task/migrate';
 import { buildScheduledTaskEnginePrompt } from '../scheduled-task/enginePrompt';
 import {
@@ -135,6 +129,8 @@ const MIME_EXTENSION_MAP: Record<string, string> = {
   'application/json': '.json',
   'text/csv': '.csv',
 };
+const COWORK_SESSION_CONTEXT_DIR_SEGMENTS = ['cowork-runtime', 'session-context'] as const;
+const COWORK_RUNTIME_AUDIT_DIR_SEGMENTS = ['cowork-runtime', 'audit'] as const;
 
 const sanitizeExportFileName = (value: string): string => {
   const sanitized = value.replace(INVALID_FILE_NAME_PATTERN, ' ').replace(/\s+/g, ' ').trim();
@@ -588,8 +584,6 @@ process.on('exit', (code) => {
 
 let store: SqliteStore | null = null;
 let coworkStore: CoworkStore | null = null;
-let coworkRunner: CoworkRunner | null = null;
-let claudeRuntimeAdapter: ClaudeRuntimeAdapter | null = null;
 let openClawRuntimeAdapter: OpenClawRuntimeAdapter | null = null;
 let coworkEngineRouter: CoworkEngineRouter | null = null;
 let skillManager: SkillManager | null = null;
@@ -600,8 +594,6 @@ let mcpBridgeSecret: string | null = null;
 let mcpBridgeStartPromise: Promise<McpBridgeConfig | null> | null = null;
 let imGatewayManager: IMGatewayManager | null = null;
 let cronJobService: CronJobService | null = null;
-let ydCoworkTaskRepository: YdCoworkTaskRepository | null = null;
-let ydCoworkCronJobService: YdCoworkCronJobService | null = null;
 let storeInitPromise: Promise<SqliteStore> | null = null;
 let openClawEngineManager: OpenClawEngineManager | null = null;
 let openClawConfigSync: OpenClawConfigSync | null = null;
@@ -742,50 +734,32 @@ const bootstrapOpenClawEngine = async (options: { forceReinstall?: boolean; reas
 let pendingTokenRefresh: Promise<string | null> | null = null;
 
 const resolveIMGatewayBuildProfileFromEnv = (): IMGatewayBuildProfile => {
-  const envBuildProfile = process.env[IMGatewayProviderEnvKey.BuildProfile]
-    ?? process.env[IMGatewayProviderEnvKey.BuildProfilePrefixed]
-    ?? null;
-  return resolveIMGatewayBuildProfile({ envBuildProfile });
+  return IMGatewayBuildProfile.OpenClawOnly;
 };
 
-const isOpenClawRuntimeAllowedByBuildProfile = (): boolean => (
-  resolveIMGatewayBuildProfileFromEnv() !== IMGatewayBuildProfile.YdOnly
-);
-
-const isYdCoworkRuntimeAllowedByBuildProfile = (): boolean => (
-  resolveIMGatewayBuildProfileFromEnv() !== IMGatewayBuildProfile.OpenClawOnly
-);
+const isOpenClawRuntimeAllowedByBuildProfile = (): boolean => true;
 
 const resolveAllowedCoworkAgentEnginesByBuildProfile = (): CoworkAgentEngine[] => {
-  const buildProfile = resolveIMGatewayBuildProfileFromEnv();
-  if (buildProfile === IMGatewayBuildProfile.YdOnly) {
-    return ['yd_cowork'];
-  }
-  if (buildProfile === IMGatewayBuildProfile.OpenClawOnly) {
-    return ['openclaw'];
-  }
-  return ['yd_cowork', 'openclaw'];
+  return ['openclaw'];
 };
 
 const resolveDefaultCoworkAgentEngineForBuildProfile = (): CoworkAgentEngine => (
-  resolveAllowedCoworkAgentEnginesByBuildProfile()[0] ?? 'yd_cowork'
+  resolveAllowedCoworkAgentEnginesByBuildProfile()[0] ?? 'openclaw'
 );
 
 const resolveCoworkCapabilities = (): {
   buildProfile: IMGatewayBuildProfile;
   openClawRuntimeAllowed: boolean;
-  ydCoworkRuntimeAllowed: boolean;
   agentEngines: CoworkAgentEngine[];
   scheduledTaskBackends: STBackendType[];
 } => {
   const buildProfile = resolveIMGatewayBuildProfileFromEnv();
   const agentEngines = resolveAllowedCoworkAgentEnginesByBuildProfile();
-  // Scheduled task backend is coupled to COWORK_AGENT_ENGINE.
+  // Scheduled task backend is coupled to cowork agent engine.
   const scheduledTaskBackends: STBackendType[] = [STBackend.Auto];
   return {
     buildProfile,
     openClawRuntimeAllowed: agentEngines.includes('openclaw'),
-    ydCoworkRuntimeAllowed: agentEngines.includes('yd_cowork'),
     agentEngines,
     scheduledTaskBackends,
   };
@@ -798,20 +772,12 @@ const isOpenClawIntegrationEnabled = (): boolean => (
 const normalizeCoworkAgentEngine = (
   configured: CoworkAgentEngine | null | undefined,
 ): CoworkAgentEngine => {
-  const fallbackEngine = resolveDefaultCoworkAgentEngineForBuildProfile();
-  const normalized = configured === 'openclaw' ? 'openclaw' : 'yd_cowork';
-  if (normalized === 'openclaw' && !isOpenClawRuntimeAllowedByBuildProfile()) {
-    return fallbackEngine;
-  }
-  if (normalized === 'yd_cowork' && !isYdCoworkRuntimeAllowedByBuildProfile()) {
-    return fallbackEngine;
-  }
-  return normalized;
+  return configured === 'openclaw' ? 'openclaw' : resolveDefaultCoworkAgentEngineForBuildProfile();
 };
 
 const ensureOpenClawRunningForCowork = async () => {
   if (!isOpenClawRuntimeAllowedByBuildProfile()) {
-    console.warn('[OpenClaw] ensureRunning skipped because build profile is yd-only');
+    console.warn('[OpenClaw] ensureRunning skipped because OpenClaw runtime is disabled by build profile');
     return getOpenClawEngineManager().getStatus();
   }
   const manager = getOpenClawEngineManager();
@@ -887,21 +853,18 @@ const resolveCoworkAgentEngine = (): CoworkAgentEngine => {
   return normalizeCoworkAgentEngine(configured);
 };
 
+const resolveModelModeFromExecutionMode = (executionMode?: CoworkExecutionMode) => {
+  if (executionMode === 'local') {
+    return 'local';
+  }
+  return 'sandbox';
+};
+
 const resolveScheduledTaskBackendFromConfig = (
   config: Pick<ReturnType<CoworkStore['getConfig']>, 'scheduledTaskBackend' | 'agentEngine'>,
 ): Exclude<STBackendType, 'auto'> => {
-  const normalizedEngine = normalizeCoworkAgentEngine(config.agentEngine);
-  const coupledBackend = normalizedEngine === 'openclaw'
-    ? STBackend.OpenClaw
-    : STBackend.YdCowork;
-
-  if (coupledBackend === STBackend.OpenClaw && !isOpenClawRuntimeAllowedByBuildProfile()) {
-    return STBackend.YdCowork;
-  }
-  if (coupledBackend === STBackend.YdCowork && !isYdCoworkRuntimeAllowedByBuildProfile()) {
-    return STBackend.OpenClaw;
-  }
-  return coupledBackend;
+  void config;
+  return STBackend.OpenClaw;
 };
 
 const resolveScheduledTaskBackend = (): Exclude<STBackendType, 'auto'> => {
@@ -1074,7 +1037,7 @@ const syncOpenClawConfig = async (
   options: { reason: string; restartGatewayIfRunning?: boolean } = { reason: 'unknown' },
 ): Promise<{ success: boolean; changed: boolean; status?: OpenClawEngineStatus; error?: string }> => {
   if (!isOpenClawRuntimeAllowedByBuildProfile()) {
-    console.log(`[OpenClaw] config sync skipped because build profile is yd-only (reason: ${options.reason})`);
+    console.log(`[OpenClaw] config sync skipped because OpenClaw runtime is disabled by build profile (reason: ${options.reason})`);
     return {
       success: true,
       changed: false,
@@ -1168,18 +1131,6 @@ const syncOpenClawConfig = async (
   };
 };
 
-const getCoworkRunner = () => {
-  if (!coworkRunner) {
-    coworkRunner = new CoworkRunner(getCoworkStore());
-
-    // Provide MCP server configuration to the runner
-    coworkRunner.setMcpServerProvider(() => {
-      return getMcpStore().getEnabledServers();
-    });
-  }
-  return coworkRunner;
-};
-
 const bindCoworkRuntimeForwarder = (): void => {
   if (coworkRuntimeForwarderBound) return;
   const runtime = getCoworkEngineRouter();
@@ -1263,9 +1214,6 @@ const bindCoworkRuntimeForwarder = (): void => {
 
 const getCoworkEngineRouter = () => {
   if (!coworkEngineRouter) {
-    if (!claudeRuntimeAdapter) {
-      claudeRuntimeAdapter = new ClaudeRuntimeAdapter(getCoworkRunner());
-    }
     if (!openClawRuntimeAdapter) {
       openClawRuntimeAdapter = new OpenClawRuntimeAdapter(
         getCoworkStore(),
@@ -1292,10 +1240,14 @@ const getCoworkEngineRouter = () => {
     coworkEngineRouter = new CoworkEngineRouter({
       getCurrentEngine: resolveCoworkAgentEngine,
       openclawRuntime: openClawRuntimeAdapter,
-      claudeRuntime: claudeRuntimeAdapter,
     });
   }
   return coworkEngineRouter;
+};
+
+const resolveRuntimeAuditEngineForSession = (sessionId: string): CoworkAgentEngine => {
+  void sessionId;
+  return 'openclaw';
 };
 
 const getSkillManager = () => {
@@ -1673,157 +1625,8 @@ const getCronJobService = (): CronJobService => {
   return cronJobService;
 };
 
-const extractScheduledTaskDeliveryText = (sessionId: string | null, fallback: string): string => {
-  if (!sessionId) {
-    return fallback;
-  }
-  const session = getCoworkStore().getSession(sessionId);
-  if (!session || session.messages.length === 0) {
-    return fallback;
-  }
-  for (let index = session.messages.length - 1; index >= 0; index -= 1) {
-    const message = session.messages[index];
-    if (message.type === 'assistant' && message.content.trim()) {
-      return message.content.trim();
-    }
-  }
-  return fallback;
-};
-
-const executeYdCoworkScheduledTask = async (task: ScheduledTask): Promise<YdCoworkRunResult> => {
-  const prompt = task.payload.kind === 'agentTurn'
-    ? task.payload.message.trim()
-    : task.payload.text.trim();
-  if (!prompt) {
-    return {
-      status: TaskStatus.Error,
-      error: 'Scheduled task payload is empty.',
-    };
-  }
-
-  const activeEngine = resolveCoworkAgentEngine();
-  if (activeEngine === 'openclaw') {
-    const status = await ensureOpenClawRunningForCowork();
-    if (status.phase !== 'running') {
-      return {
-        status: TaskStatus.Error,
-        error: status.message || 'OpenClaw engine is not ready.',
-      };
-    }
-  }
-
-  const coworkStoreInstance = getCoworkStore();
-  const coworkConfig = coworkStoreInstance.getConfig();
-  const selectedWorkspaceRoot = (coworkConfig.workingDirectory || '').trim();
-  if (!selectedWorkspaceRoot) {
-    return {
-      status: TaskStatus.Error,
-      error: 'Please set a working directory in LobsterAI settings before running scheduled tasks.',
-    };
-  }
-  const taskWorkingDirectory = resolveTaskWorkingDirectory(selectedWorkspaceRoot);
-  const runtime = getCoworkEngineRouter();
-  const systemPrompt = mergeCoworkSystemPrompt(activeEngine, coworkConfig.systemPrompt);
-
-  let sessionId: string | null = null;
-  const canContinueMainSession = task.sessionTarget === STSessionTarget.Main
-    && !!task.sessionKey
-    && !!coworkStoreInstance.getSession(task.sessionKey);
-
-  const startedAtMs = Date.now();
-  try {
-    if (canContinueMainSession && task.sessionKey) {
-      sessionId = task.sessionKey;
-      await runtime.continueSession(task.sessionKey, prompt, {
-        systemPrompt,
-      });
-    } else {
-      const title = `[Scheduled] ${task.name}`.trim();
-      const session = coworkStoreInstance.createSession(
-        title || 'Scheduled Task',
-        taskWorkingDirectory,
-        systemPrompt || '',
-        coworkConfig.executionMode || 'local',
-        [],
-        task.agentId || 'main',
-      );
-      sessionId = session.id;
-      await runtime.startSession(session.id, prompt, {
-        systemPrompt,
-        workspaceRoot: selectedWorkspaceRoot,
-        confirmationMode: 'text',
-        agentId: task.agentId || undefined,
-      });
-    }
-  } catch (error) {
-    return {
-      status: TaskStatus.Error,
-      sessionId,
-      error: error instanceof Error ? error.message : String(error),
-      durationMs: Math.max(0, Date.now() - startedAtMs),
-    };
-  }
-
-  const sessionAfterRun = sessionId ? coworkStoreInstance.getSession(sessionId) : null;
-  const status = sessionAfterRun?.status === 'error' ? TaskStatus.Error : TaskStatus.Success;
-  const durationMs = Math.max(0, Date.now() - startedAtMs);
-
-  if (
-    status === TaskStatus.Success
-    && task.delivery.mode === STDeliveryMode.Announce
-    && task.delivery.channel
-    && task.delivery.to
-  ) {
-    const platform = CHANNEL_PLATFORM_MAP[task.delivery.channel] as IMPlatform | undefined;
-    if (platform) {
-      const deliveryText = extractScheduledTaskDeliveryText(sessionId, prompt);
-      const delivered = await getIMGatewayManager().sendConversationReply(platform, task.delivery.to, deliveryText);
-      if (!delivered) {
-        return {
-          status: TaskStatus.Error,
-          sessionId,
-          sessionKey: sessionId,
-          error: `Failed to deliver scheduled task result to ${platform}:${task.delivery.to}.`,
-          durationMs,
-        };
-      }
-    }
-  }
-
-  return {
-    status,
-    sessionId,
-    sessionKey: sessionId,
-    error: status === TaskStatus.Error ? 'Scheduled task execution failed.' : null,
-    durationMs,
-  };
-};
-
-const getYdCoworkTaskRepository = (): YdCoworkTaskRepository => {
-  if (!ydCoworkTaskRepository) {
-    const sqliteStore = getStore();
-    ydCoworkTaskRepository = new YdCoworkTaskRepository(
-      sqliteStore.getDatabase(),
-      sqliteStore.getSaveFunction(),
-    );
-  }
-  return ydCoworkTaskRepository;
-};
-
-const getYdCoworkCronJobService = (): YdCoworkCronJobService => {
-  if (!ydCoworkCronJobService) {
-    ydCoworkCronJobService = new YdCoworkCronJobService({
-      repository: getYdCoworkTaskRepository(),
-      executeTask: executeYdCoworkScheduledTask,
-    });
-  }
-  return ydCoworkCronJobService;
-};
-
 const getScheduledTaskBackendService = (): ScheduledTaskBackendService => {
-  return resolveScheduledTaskBackend() === STBackend.OpenClaw
-    ? getCronJobService()
-    : getYdCoworkCronJobService();
+  return getCronJobService();
 };
 
 let openClawScheduledTaskMigrationPromise: Promise<void> | null = null;
@@ -1855,22 +1658,16 @@ const ensureOpenClawScheduledTaskMigrations = async (): Promise<void> => {
 };
 
 const startScheduledTaskPollingForBackend = (backend: Exclude<STBackendType, 'auto'>): void => {
-  if (backend === STBackend.OpenClaw) {
-    getCronJobService().startPolling();
-    void ensureOpenClawScheduledTaskMigrations().catch((error) => {
-      console.warn('[Main] OpenClaw scheduled task migration failed:', error);
-    });
-    return;
-  }
-  getYdCoworkCronJobService().startPolling();
+  if (backend !== STBackend.OpenClaw) return;
+  getCronJobService().startPolling();
+  void ensureOpenClawScheduledTaskMigrations().catch((error) => {
+    console.warn('[Main] OpenClaw scheduled task migration failed:', error);
+  });
 };
 
 const stopScheduledTaskPollingForBackend = (backend: Exclude<STBackendType, 'auto'>): void => {
-  if (backend === STBackend.OpenClaw) {
-    cronJobService?.stopPolling();
-    return;
-  }
-  ydCoworkCronJobService?.stopPolling();
+  if (backend !== STBackend.OpenClaw) return;
+  cronJobService?.stopPolling();
 };
 
 function listScheduledTaskChannels(): Array<{ value: string; label: string }> {
@@ -1933,13 +1730,6 @@ const getAppIconPath = (): string | undefined => {
 
 // 保存对主窗口的引用
 let mainWindow: BrowserWindow | null = null;
-
-onSandboxProgress((progress) => {
-  const windows = BrowserWindow.getAllWindows();
-  windows.forEach((win) => {
-    win.webContents.send('cowork:sandbox:downloadProgress', progress);
-  });
-});
 let isQuitting = false;
 
 // 存储活跃的流式请求控制器
@@ -2937,8 +2727,6 @@ if (!gotTheLock) {
         metadata: Object.keys(messageMetadata).length > 0 ? messageMetadata : undefined,
       });
 
-      const runner = getCoworkRunner();
-
       // Update session status to 'running' before starting async task
       // This ensures the frontend receives the correct status immediately
       coworkStoreInstance.updateSession(session.id, { status: 'running' });
@@ -2951,6 +2739,7 @@ if (!gotTheLock) {
         skillIds: options.activeSkillIds,
         workspaceRoot: selectedWorkspaceRoot,
         confirmationMode: 'modal',
+        modelMode: resolveModelModeFromExecutionMode(config.executionMode),
         imageAttachments: options.imageAttachments,
         agentId: options.agentId,
       }).catch(error => {
@@ -2999,12 +2788,16 @@ if (!gotTheLock) {
 
       const runtime = getCoworkEngineRouter();
       const existingSession = getCoworkStore().getSession(options.sessionId);
+      const currentConfig = getCoworkStore().getConfig();
       runtime.continueSession(options.sessionId, options.prompt, {
         systemPrompt: mergeCoworkSystemPrompt(
           activeEngine,
           options.systemPrompt ?? existingSession?.systemPrompt,
         ),
         skillIds: options.activeSkillIds,
+        modelMode: resolveModelModeFromExecutionMode(
+          existingSession?.executionMode ?? currentConfig.executionMode,
+        ),
         imageAttachments: options.imageAttachments,
       }).catch(error => {
         console.error('Cowork continue error:', error);
@@ -3420,9 +3213,164 @@ if (!gotTheLock) {
     }
   });
 
-  ipcMain.handle('cowork:sandbox:status', async () => {
-    return getSandboxStatus();
+  ipcMain.handle(CoworkIpcChannel.RuntimeDiagnosticsGet, async (_event, input: { sessionId?: string }) => {
+    try {
+      const sessionId = typeof input?.sessionId === 'string' ? input.sessionId.trim() : '';
+      if (!sessionId) {
+        return {
+          success: false,
+          error: 'Session ID is required',
+        };
+      }
+      return {
+        success: true,
+        result: getCoworkEngineRouter().getRuntimeDiagnosticsWithEngine(sessionId),
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to get runtime diagnostics',
+      };
+    }
   });
+
+  ipcMain.handle(
+    CoworkIpcChannel.RuntimeAuditSessionEventsGet,
+    async (_event, input: { sessionId?: string }) => {
+      try {
+        const sessionId = typeof input?.sessionId === 'string' ? input.sessionId.trim() : '';
+        if (!sessionId) {
+          return {
+            success: false,
+            error: 'Session ID is required',
+          };
+        }
+        return {
+          success: true,
+          result: {
+            engine: resolveRuntimeAuditEngineForSession(sessionId),
+            events: [],
+          },
+        };
+      } catch (error) {
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : 'Failed to get session audit events',
+        };
+      }
+    },
+  );
+
+  ipcMain.handle(
+    CoworkIpcChannel.RuntimeAuditRunEventsGet,
+    async (_event, input: { sessionId?: string; runId?: string }) => {
+      try {
+        const sessionId = typeof input?.sessionId === 'string' ? input.sessionId.trim() : '';
+        const runId = typeof input?.runId === 'string' ? input.runId.trim() : '';
+        if (!sessionId || !runId) {
+          return {
+            success: false,
+            error: 'Session ID and run ID are required',
+          };
+        }
+        return {
+          success: true,
+          result: {
+            engine: resolveRuntimeAuditEngineForSession(sessionId),
+            events: [],
+          },
+        };
+      } catch (error) {
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : 'Failed to get run audit events',
+        };
+      }
+    },
+  );
+
+  ipcMain.handle(
+    CoworkIpcChannel.RuntimeAuditTurnEventsGet,
+    async (_event, input: { sessionId?: string; turnId?: string }) => {
+      try {
+        const sessionId = typeof input?.sessionId === 'string' ? input.sessionId.trim() : '';
+        const turnId = typeof input?.turnId === 'string' ? input.turnId.trim() : '';
+        if (!sessionId || !turnId) {
+          return {
+            success: false,
+            error: 'Session ID and turn ID are required',
+          };
+        }
+        return {
+          success: true,
+          result: {
+            engine: resolveRuntimeAuditEngineForSession(sessionId),
+            events: [],
+          },
+        };
+      } catch (error) {
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : 'Failed to get turn audit events',
+        };
+      }
+    },
+  );
+
+  ipcMain.handle(
+    CoworkIpcChannel.RuntimeAuditRunSummariesGet,
+    async (_event, input: { sessionId?: string }) => {
+      try {
+        const sessionId = typeof input?.sessionId === 'string' ? input.sessionId.trim() : '';
+        if (!sessionId) {
+          return {
+            success: false,
+            error: 'Session ID is required',
+          };
+        }
+        return {
+          success: true,
+          result: {
+            engine: resolveRuntimeAuditEngineForSession(sessionId),
+            runs: [],
+          },
+        };
+      } catch (error) {
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : 'Failed to get run summaries',
+        };
+      }
+    },
+  );
+
+  ipcMain.handle(
+    CoworkIpcChannel.RuntimeAuditSessionStatsGet,
+    async (_event, input: { sessionId?: string }) => {
+      try {
+        const sessionId = typeof input?.sessionId === 'string' ? input.sessionId.trim() : '';
+        if (!sessionId) {
+          return {
+            success: false,
+            error: 'Session ID is required',
+          };
+        }
+        return {
+          success: true,
+          result: {
+            engine: resolveRuntimeAuditEngineForSession(sessionId),
+            stats: null,
+          },
+        };
+      } catch (error) {
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : 'Failed to get session audit stats',
+        };
+      }
+    },
+  );
+
   ipcMain.handle('cowork:memory:listEntries', async (_event, input: {
     query?: string;
     status?: 'created' | 'stale' | 'deleted' | 'all';
@@ -3570,14 +3518,6 @@ if (!gotTheLock) {
       };
     }
   });
-  ipcMain.handle('cowork:sandbox:install', async () => {
-    const result = await ensureSandboxReady();
-    return {
-      success: result.ok,
-      status: getSandboxStatus(),
-      error: result.ok ? undefined : ('error' in result ? result.error : undefined),
-    };
-  });
   ipcMain.handle(CoworkIpcChannel.ConfigSet, async (_event, config: {
     workingDirectory?: string;
     executionMode?: 'auto' | 'local' | 'sandbox';
@@ -3594,9 +3534,7 @@ if (!gotTheLock) {
         config.executionMode && String(config.executionMode) === 'container'
           ? 'local'
           : config.executionMode;
-      const requestedAgentEngine = config.agentEngine === 'yd_cowork'
-        ? 'yd_cowork'
-        : config.agentEngine === 'openclaw'
+      const requestedAgentEngine = config.agentEngine === 'openclaw'
           ? 'openclaw'
           : undefined;
       const normalizedAgentEngine = requestedAgentEngine
@@ -5018,9 +4956,7 @@ if (!gotTheLock) {
         console.error('[OpenClaw] Failed to stop gateway on quit:', error);
       });
     }
-
     stopScheduledTaskPollingForBackend(STBackend.OpenClaw);
-    stopScheduledTaskPollingForBackend(STBackend.YdCowork);
   };
 
   app.on('before-quit', (e) => {

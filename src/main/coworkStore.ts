@@ -45,64 +45,6 @@ const MEMORY_PROCEDURAL_TEXT_RE = /(执行以下命令|run\s+(?:the\s+)?followin
 const MEMORY_ASSISTANT_STYLE_TEXT_RE = /^(?:使用|use)\s+[A-Za-z0-9._-]+\s*(?:技能|skill)/i;
 const CONVERSATION_SEARCH_SEMANTIC_MIN_SCORE = 0.2;
 const CONVERSATION_SEARCH_MAX_SCAN_ROWS = 800;
-const COWORK_AGENT_ENGINE_ENV_KEYS = ['COWORK_AGENT_ENGINE', 'LOBSTERAI_COWORK_AGENT_ENGINE'] as const;
-const ENV_LINE_RE = /^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/;
-
-let cachedRootDotEnv: Record<string, string> | null = null;
-
-function unquoteEnvValue(value: string): string {
-  const trimmed = value.trim();
-  if (
-    (trimmed.startsWith('"') && trimmed.endsWith('"'))
-    || (trimmed.startsWith('\'') && trimmed.endsWith('\''))
-  ) {
-    return trimmed.slice(1, -1);
-  }
-  return trimmed;
-}
-
-function readRootDotEnv(): Record<string, string> {
-  if (cachedRootDotEnv) {
-    return cachedRootDotEnv;
-  }
-  const envMap: Record<string, string> = {};
-  const envCandidates = [path.resolve(process.cwd(), '.env')];
-  for (const envPath of envCandidates) {
-    try {
-      if (!fs.existsSync(envPath)) continue;
-      const content = fs.readFileSync(envPath, 'utf8');
-      const lines = content.split(/\r?\n/g);
-      for (const rawLine of lines) {
-        const line = rawLine.trim();
-        if (!line || line.startsWith('#')) continue;
-        const match = line.match(ENV_LINE_RE);
-        if (!match) continue;
-        envMap[match[1]] = unquoteEnvValue(match[2]);
-      }
-    } catch (error) {
-      console.warn(`[CoworkStore] Failed to parse env file: ${envPath}`, error);
-    }
-  }
-  cachedRootDotEnv = envMap;
-  return envMap;
-}
-
-function readConfigEnvValue(keys: readonly string[]): string | undefined {
-  for (const key of keys) {
-    const processValue = process.env[key];
-    if (typeof processValue === 'string' && processValue.trim()) {
-      return processValue.trim();
-    }
-  }
-  const dotEnv = readRootDotEnv();
-  for (const key of keys) {
-    const envFileValue = dotEnv[key];
-    if (typeof envFileValue === 'string' && envFileValue.trim()) {
-      return envFileValue.trim();
-    }
-  }
-  return undefined;
-}
 
 function normalizeMemoryGuardLevel(value: string | undefined): CoworkMemoryGuardLevel {
   if (value === 'strict' || value === 'standard' || value === 'relaxed') return value;
@@ -383,7 +325,7 @@ function shouldAutoDeleteMemoryText(text: string): boolean {
 export type CoworkSessionStatus = 'idle' | 'running' | 'completed' | 'error';
 export type CoworkMessageType = 'user' | 'assistant' | 'tool_use' | 'tool_result' | 'system';
 export type CoworkExecutionMode = 'auto' | 'local' | 'sandbox';
-export type CoworkAgentEngine = 'openclaw' | 'yd_cowork';
+export type CoworkAgentEngine = 'openclaw';
 
 export type AgentSource = 'custom' | 'preset';
 
@@ -428,31 +370,20 @@ export interface UpdateAgentRequest {
   enabled?: boolean;
 }
 
-const COWORK_AGENT_ENGINE = 'yd_cowork';
+const DEFAULT_AGENT_ENGINE: CoworkAgentEngine = 'openclaw';
 const COWORK_SCHEDULED_TASK_BACKEND = ScheduledTaskBackendValue.Auto;
-
-function resolveDefaultCoworkAgentEngine(): CoworkAgentEngine {
-  const configured = readConfigEnvValue(COWORK_AGENT_ENGINE_ENV_KEYS);
-  if (configured === 'yd_cowork' || configured === 'openclaw') {
-    return configured;
-  }
-  return COWORK_AGENT_ENGINE;
-}
-
-const DEFAULT_COWORK_AGENT_ENGINE = resolveDefaultCoworkAgentEngine();
 const DEFAULT_COWORK_SCHEDULED_TASK_BACKEND = COWORK_SCHEDULED_TASK_BACKEND;
 
 function normalizeCoworkAgentEngineValue(value?: string | null): CoworkAgentEngine {
-  if (value === 'yd_cowork' || value === 'openclaw') {
+  if (value === 'openclaw') {
     return value;
   }
-  return DEFAULT_COWORK_AGENT_ENGINE;
+  return DEFAULT_AGENT_ENGINE;
 }
 
 function normalizeScheduledTaskBackendValue(value?: string | null): ScheduledTaskBackend {
   if (
     value === ScheduledTaskBackendValue.OpenClaw
-    || value === ScheduledTaskBackendValue.YdCowork
     || value === ScheduledTaskBackendValue.Auto
   ) {
     return value;
@@ -664,7 +595,7 @@ export class CoworkStore {
   private ensureDefaultConfigEntries(): void {
     const now = Date.now();
     let changed = false;
-    changed = this.insertConfigIfMissing('agentEngine', DEFAULT_COWORK_AGENT_ENGINE, now) || changed;
+    changed = this.insertConfigIfMissing('agentEngine', DEFAULT_AGENT_ENGINE, now) || changed;
     changed = this.insertConfigIfMissing('scheduledTaskBackend', DEFAULT_COWORK_SCHEDULED_TASK_BACKEND, now) || changed;
     if (changed) {
       this.saveDb();
@@ -1162,9 +1093,7 @@ export class CoworkStore {
 
     const normalizedExecutionMode =
       executionModeRow?.value === 'container' ? 'sandbox' : (executionModeRow?.value as CoworkExecutionMode);
-    const envAgentEngine = readConfigEnvValue(COWORK_AGENT_ENGINE_ENV_KEYS);
-
-    const normalizedAgentEngine = normalizeCoworkAgentEngineValue(envAgentEngine ?? agentEngineRow?.value);
+    const normalizedAgentEngine = normalizeCoworkAgentEngineValue(agentEngineRow?.value);
 
     return {
       workingDirectory: workingDirRow?.value || getDefaultWorkingDirectory(),

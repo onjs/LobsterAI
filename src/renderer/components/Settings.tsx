@@ -9,7 +9,7 @@ import { decryptSecret, encryptWithPassword, decryptWithPassword, EncryptedPaylo
 import { coworkService } from '../services/cowork';
 import { APP_ID, EXPORT_FORMAT_TYPE, EXPORT_PASSWORD } from '../constants/app';
 import ErrorMessage from './ErrorMessage';
-import { XMarkIcon, Cog6ToothIcon, SignalIcon, CheckCircleIcon, XCircleIcon, CubeIcon, ChatBubbleLeftIcon, ShieldCheckIcon, EnvelopeIcon, CpuChipIcon, InformationCircleIcon, UserCircleIcon } from '@heroicons/react/24/outline';
+import { XMarkIcon, Cog6ToothIcon, SignalIcon, CheckCircleIcon, XCircleIcon, CubeIcon, ChatBubbleLeftIcon, EnvelopeIcon, InformationCircleIcon, UserCircleIcon } from '@heroicons/react/24/outline';
 import { EyeIcon, EyeSlashIcon, XCircleIcon as XCircleIconSolid } from '@heroicons/react/20/solid';
 import PlusCircleIcon from './icons/PlusCircleIcon';
 import TrashIcon from './icons/TrashIcon';
@@ -27,8 +27,6 @@ import type {
   OpenClawEngineStatus,
   CoworkUserMemoryEntry,
   CoworkMemoryStats,
-  CoworkSandboxProgress,
-  CoworkSandboxStatus,
 } from '../types/cowork';
 import IMSettings from './im/IMSettings';
 import { imService } from '../services/im';
@@ -216,11 +214,10 @@ const MINIMAX_CODE_ENDPOINT_GLOBAL = 'https://api.minimax.io/oauth/code';
 const MINIMAX_TOKEN_ENDPOINT_CN = 'https://api.minimaxi.com/oauth/token';
 const MINIMAX_TOKEN_ENDPOINT_GLOBAL = 'https://api.minimax.io/oauth/token';
 const DEFAULT_COWORK_CAPABILITIES: CoworkCapabilities = {
-  buildProfile: 'full',
+  buildProfile: 'openclaw-only',
   openClawRuntimeAllowed: true,
-  ydCoworkRuntimeAllowed: true,
-  agentEngines: ['yd_cowork', 'openclaw'],
-  scheduledTaskBackends: ['auto', 'yd_cowork', 'openclaw'],
+  agentEngines: ['openclaw'],
+  scheduledTaskBackends: ['auto', 'openclaw'],
 };
 
 type MiniMaxRegion = 'cn' | 'global';
@@ -586,7 +583,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
 
   const coworkConfig = useSelector((state: RootState) => state.cowork.config);
 
-  const [coworkAgentEngine, setCoworkAgentEngine] = useState<CoworkAgentEngine>(coworkConfig.agentEngine || 'yd_cowork');
+  const [coworkAgentEngine, setCoworkAgentEngine] = useState<CoworkAgentEngine>(coworkConfig.agentEngine || 'openclaw');
   const [coworkScheduledTaskBackend, setCoworkScheduledTaskBackend] = useState<CoworkScheduledTaskBackend>(
     coworkConfig.scheduledTaskBackend || 'auto'
   );
@@ -604,15 +601,11 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
   const [bootstrapUser, setBootstrapUser] = useState<string>('');
   const [bootstrapSoul, setBootstrapSoul] = useState<string>('');
   const [bootstrapLoaded, setBootstrapLoaded] = useState<boolean>(false);
-  const [coworkSandboxStatus, setCoworkSandboxStatus] = useState<CoworkSandboxStatus | null>(null);
-  const [coworkSandboxLoading, setCoworkSandboxLoading] = useState(true);
-  const [coworkSandboxProgress, setCoworkSandboxProgress] = useState<CoworkSandboxProgress | null>(null);
-  const [coworkSandboxInstalling, setCoworkSandboxInstalling] = useState(false);
   const [openClawEngineStatus, setOpenClawEngineStatus] = useState<OpenClawEngineStatus | null>(null);
   const [coworkCapabilities, setCoworkCapabilities] = useState<CoworkCapabilities>(DEFAULT_COWORK_CAPABILITIES);
 
   useEffect(() => {
-    setCoworkAgentEngine(coworkConfig.agentEngine || 'yd_cowork');
+    setCoworkAgentEngine(coworkConfig.agentEngine || 'openclaw');
     setCoworkScheduledTaskBackend(coworkConfig.scheduledTaskBackend || 'auto');
     setCoworkExecutionMode(coworkConfig.executionMode || 'local');
     setCoworkMemoryEnabled(coworkConfig.memoryEnabled ?? true);
@@ -633,36 +626,6 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
       window.clearTimeout(updateCheckTimerRef.current);
     }
   }, []);
-
-  const loadCoworkSandboxStatus = useCallback(async () => {
-    setCoworkSandboxLoading(true);
-    try {
-      const status = await coworkService.getSandboxStatus();
-      setCoworkSandboxStatus(status);
-      if (status?.progress) {
-        setCoworkSandboxProgress(status.progress);
-      }
-    } catch (loadError) {
-      console.error('Failed to load cowork sandbox status:', loadError);
-      setCoworkSandboxStatus(null);
-    } finally {
-      setCoworkSandboxLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    loadCoworkSandboxStatus();
-  }, [loadCoworkSandboxStatus]);
-
-  useEffect(() => {
-    const unsubscribe = coworkService.onSandboxDownloadProgress((progress) => {
-      setCoworkSandboxProgress(progress);
-      if (progress.percent !== undefined && progress.percent >= 1) {
-        void loadCoworkSandboxStatus();
-      }
-    });
-    return () => unsubscribe();
-  }, [loadCoworkSandboxStatus]);
 
   useEffect(() => {
     let active = true;
@@ -694,7 +657,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
   }, []);
 
   useEffect(() => {
-    const fallbackAgentEngine = coworkCapabilities.agentEngines[0] ?? 'yd_cowork';
+    const fallbackAgentEngine = coworkCapabilities.agentEngines[0] ?? 'openclaw';
     if (!coworkCapabilities.agentEngines.includes(coworkAgentEngine)) {
       setCoworkAgentEngine(fallbackAgentEngine);
     }
@@ -703,7 +666,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
       const fallbackScheduledTaskBackend: CoworkScheduledTaskBackend =
         coworkCapabilities.scheduledTaskBackends.includes('auto')
           ? 'auto'
-          : (coworkCapabilities.scheduledTaskBackends[0] ?? 'yd_cowork');
+          : (coworkCapabilities.scheduledTaskBackends[0] ?? 'openclaw');
       setCoworkScheduledTaskBackend(fallbackScheduledTaskBackend);
     }
   }, [
@@ -951,7 +914,11 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
 
   useEffect(() => {
     if (initialTab) {
-      setActiveTab(initialTab);
+      if (initialTab === 'coworkAgentEngine' || initialTab === 'coworkSandbox') {
+        setActiveTab('general');
+      } else {
+        setActiveTab(initialTab);
+      }
     }
   }, [initialTab]);
 
@@ -1259,46 +1226,18 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
     || coworkMemoryLlmJudgeEnabled !== coworkConfig.memoryLlmJudgeEnabled;
   const effectiveCoworkAgentEngine = coworkCapabilities.agentEngines.includes(coworkAgentEngine)
     ? coworkAgentEngine
-    : (coworkCapabilities.agentEngines[0] ?? 'yd_cowork');
+    : (coworkCapabilities.agentEngines[0] ?? 'openclaw');
   const effectiveCoworkScheduledTaskBackend = coworkCapabilities.scheduledTaskBackends.includes(coworkScheduledTaskBackend)
     ? coworkScheduledTaskBackend
     : (coworkCapabilities.scheduledTaskBackends.includes('auto')
       ? 'auto'
-      : (coworkCapabilities.scheduledTaskBackends[0] ?? 'yd_cowork'));
+      : (coworkCapabilities.scheduledTaskBackends[0] ?? 'openclaw'));
   const isOpenClawAgentEngine = effectiveCoworkAgentEngine === 'openclaw';
   const canUseOpenClawAgentEngine = coworkCapabilities.agentEngines.includes('openclaw');
   const canUseOpenClawScheduledTaskBackend = coworkCapabilities.scheduledTaskBackends.includes('openclaw');
   const resolvedScheduledTaskBackend = effectiveCoworkScheduledTaskBackend === 'auto'
-    ? (effectiveCoworkAgentEngine === 'openclaw' ? 'openclaw' : 'yd_cowork')
+    ? 'openclaw'
     : effectiveCoworkScheduledTaskBackend;
-
-  const coworkSandboxDisabled = !coworkSandboxStatus?.supported
-    || !coworkSandboxStatus?.runtimeReady
-    || !coworkSandboxStatus?.imageReady;
-
-  const coworkSandboxStatusHint = useMemo(() => {
-    if (coworkSandboxLoading) return i18nService.t('coworkSandboxChecking');
-    if (!coworkSandboxStatus?.supported) return i18nService.t('coworkSandboxUnsupported');
-    if (coworkSandboxStatus?.downloading) return i18nService.t('coworkSandboxDownloading');
-    if (!coworkSandboxStatus?.runtimeReady) return i18nService.t('coworkSandboxRuntimeMissing');
-    if (!coworkSandboxStatus?.imageReady) return i18nService.t('coworkSandboxImageMissing');
-    return '';
-  }, [coworkSandboxLoading, coworkSandboxStatus]);
-
-  const coworkSandboxPercent = useMemo(() => {
-    if (!coworkSandboxProgress) return null;
-    if (coworkSandboxProgress.percent !== undefined && Number.isFinite(coworkSandboxProgress.percent)) {
-      return Math.min(100, Math.max(0, Math.round(coworkSandboxProgress.percent * 100)));
-    }
-    if (coworkSandboxProgress.total && coworkSandboxProgress.total > 0) {
-      return Math.min(100, Math.max(0, Math.round((coworkSandboxProgress.received / coworkSandboxProgress.total) * 100)));
-    }
-    return null;
-  }, [coworkSandboxProgress]);
-
-  const coworkSandboxStageLabel = coworkSandboxProgress?.stage === 'image'
-    ? (i18nService.getLanguage() === 'zh' ? '镜像' : 'Image')
-    : (i18nService.getLanguage() === 'zh' ? '运行时' : 'Runtime');
 
   const openClawProgressPercent = useMemo(() => {
     if (typeof openClawEngineStatus?.progressPercent !== 'number' || !Number.isFinite(openClawEngineStatus.progressPercent)) {
@@ -1328,21 +1267,6 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
       case 'running':
       default:
         return i18nService.t('coworkOpenClawRunning');
-    }
-  };
-
-  const handleInstallCoworkSandbox = async () => {
-    setCoworkSandboxInstalling(true);
-    try {
-      const result = await coworkService.installSandbox();
-      if (result?.status) {
-        setCoworkSandboxStatus(result.status);
-        if (result.status.progress) {
-          setCoworkSandboxProgress(result.status.progress);
-        }
-      }
-    } finally {
-      setCoworkSandboxInstalling(false);
     }
   };
 
@@ -2194,13 +2118,11 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
   // 渲染标签页
   const sidebarTabs: { key: TabType; label: string; icon: React.ReactNode }[] = useMemo(() => [
     { key: 'general',        label: i18nService.t('general'),        icon: <Cog6ToothIcon className="h-5 w-5" /> },
-    { key: 'coworkAgentEngine', label: i18nService.t('coworkAgentEngine'), icon: <CpuChipIcon className="h-5 w-5" /> },
     { key: 'model',          label: i18nService.t('model'),          icon: <CubeIcon className="h-5 w-5" /> },
     { key: 'im',             label: i18nService.t('imBot'),          icon: <ChatBubbleLeftIcon className="h-5 w-5" /> },
     { key: 'email',          label: i18nService.t('emailTab'),       icon: <EnvelopeIcon className="h-5 w-5" /> },
     { key: 'coworkMemory',   label: i18nService.t('coworkMemoryTitle'), icon: <BrainIcon className="h-5 w-5" /> },
     { key: 'coworkAgent',    label: i18nService.t('coworkAgentTab'),    icon: <UserCircleIcon className="h-5 w-5" /> },
-    { key: 'coworkSandbox',  label: i18nService.t('coworkSandbox'),  icon: <ShieldCheckIcon className="h-5 w-5" /> },
     { key: 'shortcuts',      label: i18nService.t('shortcuts'),      icon: <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="h-5 w-5"><rect x="2" y="4" width="20" height="14" rx="2" /><line x1="6" y1="8" x2="8" y2="8" /><line x1="10" y1="8" x2="12" y2="8" /><line x1="14" y1="8" x2="16" y2="8" /><line x1="6" y1="12" x2="8" y2="12" /><line x1="10" y1="12" x2="14" y2="12" /><line x1="16" y1="12" x2="18" y2="12" /><line x1="8" y1="15.5" x2="16" y2="15.5" /></svg> },
     { key: 'about',          label: i18nService.t('about'),          icon: <InformationCircleIcon className="h-5 w-5" /> },
   ], [language]);
@@ -2496,20 +2418,11 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
       case 'coworkAgentEngine':
         return (
           <div className="space-y-6">
-            {coworkCapabilities.buildProfile !== 'full' && (
-              <div className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-xs text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-300">
-                {coworkCapabilities.buildProfile === 'yd-only'
-                  ? i18nService.t('coworkBuildProfileYdOnlyNotice')
-                  : i18nService.t('coworkBuildProfileOpenClawOnlyNotice')}
-              </div>
-            )}
+            <div className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-xs text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-300">
+              {i18nService.t('coworkBuildProfileOpenClawOnlyNotice')}
+            </div>
             <div className="space-y-3">
               {([
-                {
-                  value: 'yd_cowork' as CoworkAgentEngine,
-                  label: i18nService.t('coworkAgentEngineClaudeLegacy'),
-                  hint: i18nService.t('coworkAgentEngineClaudeLegacyHint'),
-                },
                 {
                   value: 'openclaw' as CoworkAgentEngine,
                   label: i18nService.t('coworkAgentEngineOpenClaw'),
@@ -2518,11 +2431,9 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
               ]).map((option) => {
                 const isDisabled = option.value === 'openclaw'
                   ? !canUseOpenClawAgentEngine
-                  : !coworkCapabilities.agentEngines.includes('yd_cowork');
+                  : true;
                 const hintText = isDisabled
-                  ? (option.value === 'openclaw'
-                    ? i18nService.t('coworkAgentEngineOpenClawUnavailableHint')
-                    : i18nService.t('coworkAgentEngineYdCoworkUnavailableHint'))
+                  ? i18nService.t('coworkAgentEngineOpenClawUnavailableHint')
                   : option.hint;
                 return (
                   <label
@@ -2541,9 +2452,6 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
                       onChange={() => {
                         if (isDisabled) return;
                         setCoworkAgentEngine(option.value);
-                        if (option.value === 'yd_cowork') {
-                          setCoworkExecutionMode('local');
-                        }
                       }}
                       disabled={isDisabled}
                       className="mt-1"
@@ -2572,11 +2480,6 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
                     hint: i18nService.t('coworkScheduledTaskBackendAutoHint'),
                   },
                   {
-                    value: 'yd_cowork' as CoworkScheduledTaskBackend,
-                    label: i18nService.t('coworkScheduledTaskBackendYdCowork'),
-                    hint: i18nService.t('coworkScheduledTaskBackendYdCoworkHint'),
-                  },
-                  {
                     value: 'openclaw' as CoworkScheduledTaskBackend,
                     label: i18nService.t('coworkScheduledTaskBackendOpenClaw'),
                     hint: i18nService.t('coworkScheduledTaskBackendOpenClawHint'),
@@ -2584,15 +2487,11 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
                 ]).map((option) => {
                   const isDisabled = option.value === 'openclaw'
                     ? !canUseOpenClawScheduledTaskBackend
-                    : option.value === 'yd_cowork'
-                      ? !coworkCapabilities.scheduledTaskBackends.includes('yd_cowork')
-                      : !coworkCapabilities.scheduledTaskBackends.includes('auto');
+                    : !coworkCapabilities.scheduledTaskBackends.includes('auto');
                   const hintText = isDisabled
                     ? (option.value === 'openclaw'
                       ? i18nService.t('coworkScheduledTaskBackendOpenClawUnavailableHint')
-                      : option.value === 'yd_cowork'
-                        ? i18nService.t('coworkScheduledTaskBackendYdCoworkUnavailableHint')
-                        : option.hint)
+                      : option.hint)
                     : option.hint;
                   return (
                     <label
@@ -2632,7 +2531,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
                 {' '}
                 {resolvedScheduledTaskBackend === 'openclaw'
                   ? i18nService.t('coworkScheduledTaskBackendOpenClaw')
-                  : i18nService.t('coworkScheduledTaskBackendYdCowork')}
+                  : i18nService.t('coworkScheduledTaskBackendOpenClaw')}
               </div>
             </div>
             {isOpenClawAgentEngine && (
@@ -2667,64 +2566,6 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
         );
 
       case 'coworkSandbox':
-        if (isOpenClawAgentEngine) {
-          return (
-            <div className="space-y-6">
-              <div className="space-y-3">
-                <label className="block text-sm font-medium dark:text-claude-darkText text-claude-text">
-                  {i18nService.t('coworkExecutionMode')}
-                </label>
-                <div className="space-y-2">
-                  {([
-                    {
-                      value: 'auto',
-                      label: i18nService.t('coworkOpenClawExecutionModeAuto'),
-                      hint: i18nService.t('coworkOpenClawExecutionModeAutoHint'),
-                    },
-                    {
-                      value: 'local',
-                      label: i18nService.t('coworkOpenClawExecutionModeLocal'),
-                      hint: i18nService.t('coworkOpenClawExecutionModeLocalHint'),
-                    },
-                    {
-                      value: 'sandbox',
-                      label: i18nService.t('coworkOpenClawExecutionModeSandbox'),
-                      hint: i18nService.t('coworkOpenClawExecutionModeSandboxHint'),
-                    },
-                  ] as Array<{ value: CoworkExecutionMode; label: string; hint: string }>).map((option) => {
-                    return (
-                      <label
-                        key={option.value}
-                        className="flex items-start gap-3 rounded-xl border px-3 py-2 text-sm transition-colors cursor-pointer dark:border-claude-darkBorder border-claude-border hover:border-claude-accent"
-                      >
-                        <input
-                          type="radio"
-                          name="cowork-execution-mode"
-                          value={option.value}
-                          checked={coworkExecutionMode === option.value}
-                          onChange={() => setCoworkExecutionMode(option.value)}
-                          className="mt-1"
-                        />
-                        <span>
-                          <span className="block font-medium dark:text-claude-darkText text-claude-text">
-                            {option.label}
-                          </span>
-                          <span className="block text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
-                            {option.hint}
-                          </span>
-                        </span>
-                      </label>
-                    );
-                  })}
-                </div>
-                <div className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-xs text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-300">
-                  {i18nService.t('coworkOpenClawSandboxNotice')}
-                </div>
-              </div>
-            </div>
-          );
-        }
-
         return (
           <div className="space-y-6">
             <div className="space-y-3">
@@ -2735,29 +2576,24 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
                 {([
                   {
                     value: 'auto',
-                    label: i18nService.t('coworkExecutionModeAuto'),
-                    hint: i18nService.t('coworkExecutionModeAutoHint'),
+                    label: i18nService.t('coworkOpenClawExecutionModeAuto'),
+                    hint: i18nService.t('coworkOpenClawExecutionModeAutoHint'),
                   },
                   {
                     value: 'local',
-                    label: i18nService.t('coworkExecutionModeLocal'),
-                    hint: i18nService.t('coworkExecutionModeLocalHint'),
+                    label: i18nService.t('coworkOpenClawExecutionModeLocal'),
+                    hint: i18nService.t('coworkOpenClawExecutionModeLocalHint'),
                   },
                   {
                     value: 'sandbox',
-                    label: i18nService.t('coworkExecutionModeSandbox'),
-                    hint: i18nService.t('coworkExecutionModeSandboxHint'),
+                    label: i18nService.t('coworkOpenClawExecutionModeSandbox'),
+                    hint: i18nService.t('coworkOpenClawExecutionModeSandboxHint'),
                   },
                 ] as Array<{ value: CoworkExecutionMode; label: string; hint: string }>).map((option) => {
-                  const isDisabled = option.value === 'sandbox' && coworkSandboxDisabled;
                   return (
                     <label
                       key={option.value}
-                      className={`flex items-start gap-3 rounded-xl border px-3 py-2 text-sm transition-colors ${
-                        isDisabled
-                          ? 'cursor-not-allowed opacity-60 dark:border-claude-darkBorder border-claude-border'
-                          : 'cursor-pointer dark:border-claude-darkBorder border-claude-border hover:border-claude-accent'
-                      }`}
+                      className="flex items-start gap-3 rounded-xl border px-3 py-2 text-sm transition-colors cursor-pointer dark:border-claude-darkBorder border-claude-border hover:border-claude-accent"
                     >
                       <input
                         type="radio"
@@ -2765,7 +2601,6 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
                         value={option.value}
                         checked={coworkExecutionMode === option.value}
                         onChange={() => setCoworkExecutionMode(option.value)}
-                        disabled={isDisabled}
                         className="mt-1"
                       />
                       <span>
@@ -2780,48 +2615,9 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
                   );
                 })}
               </div>
-
-              {coworkSandboxStatusHint && (
-                <div className="text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
-                  {coworkSandboxStatusHint}
-                </div>
-              )}
-
-              {coworkSandboxProgress && (
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between text-xs dark:text-claude-darkTextSecondary text-claude-textSecondary">
-                    <span>
-                      {coworkSandboxStageLabel}
-                    </span>
-                    {coworkSandboxPercent !== null && (
-                      <span>{coworkSandboxPercent}%</span>
-                    )}
-                  </div>
-                  <div className="h-2 rounded-full dark:bg-claude-darkBorder bg-claude-border overflow-hidden">
-                    <div
-                      className="h-full bg-claude-accent transition-all"
-                      style={{ width: `${coworkSandboxPercent ?? 0}%` }}
-                    />
-                  </div>
-                </div>
-              )}
-
-              {coworkSandboxDisabled && coworkSandboxStatus?.supported && (
-                <button
-                  type="button"
-                  onClick={handleInstallCoworkSandbox}
-                  disabled={coworkSandboxInstalling || coworkSandboxLoading}
-                  className="inline-flex items-center justify-center px-4 py-2 rounded-xl bg-claude-accent hover:bg-claude-accentHover text-white text-sm font-medium transition-colors disabled:opacity-50 active:scale-[0.98]"
-                >
-                  {coworkSandboxInstalling ? i18nService.t('coworkSandboxInstalling') : i18nService.t('coworkSandboxInstall')}
-                </button>
-              )}
-
-              {coworkSandboxDisabled && !coworkSandboxStatus?.supported && (
-                <div className="text-xs text-blue-500 dark:text-blue-400">
-                  {i18nService.t('coworkSandboxSelectionBlocked')}
-                </div>
-              )}
+              <div className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-xs text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-300">
+                {i18nService.t('coworkOpenClawSandboxNotice')}
+              </div>
             </div>
           </div>
         );
