@@ -2046,7 +2046,7 @@ if (!gotTheLock) {
     try {
       if (enabled) {
         if (preventSleepBlockerId === null || !powerSaveBlocker.isStarted(preventSleepBlockerId)) {
-          preventSleepBlockerId = powerSaveBlocker.start('prevent-display-sleep');
+          preventSleepBlockerId = powerSaveBlocker.start('prevent-app-suspension');
         }
       } else {
         if (preventSleepBlockerId !== null && powerSaveBlocker.isStarted(preventSleepBlockerId)) {
