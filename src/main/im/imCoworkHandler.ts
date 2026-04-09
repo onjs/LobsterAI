@@ -498,9 +498,8 @@ export class IMCoworkHandler extends EventEmitter {
     return bound || GatewayRoute.DefaultAgentId;
   }
 
-  private resolveProviderId(): 'openclaw' | 'yd_cowork' {
-    const engine = this.coworkStore.getConfig().agentEngine;
-    return engine === 'openclaw' ? 'openclaw' : 'yd_cowork';
+  private resolveProviderId(): 'openclaw' {
+    return 'openclaw';
   }
 
   /**

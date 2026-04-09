@@ -216,6 +216,7 @@ const MINIMAX_TOKEN_ENDPOINT_GLOBAL = 'https://api.minimax.io/oauth/token';
 const DEFAULT_COWORK_CAPABILITIES: CoworkCapabilities = {
   buildProfile: 'openclaw-only',
   openClawRuntimeAllowed: true,
+  ydCoworkRuntimeAllowed: false,
   agentEngines: ['openclaw'],
   scheduledTaskBackends: ['auto', 'openclaw'],
 };

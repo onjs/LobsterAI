@@ -12,7 +12,6 @@ import { ENGINE_SWITCHED_CODE } from './types';
 type RouterDeps = {
   getCurrentEngine: () => CoworkAgentEngine;
   openclawRuntime: CoworkRuntime;
-  claudeRuntime: CoworkRuntime;
 };
 
 export class CoworkEngineRouter extends EventEmitter implements CoworkRuntime {
@@ -28,12 +27,10 @@ export class CoworkEngineRouter extends EventEmitter implements CoworkRuntime {
     this.getCurrentEngine = deps.getCurrentEngine;
     this.runtimeByEngine = {
       openclaw: deps.openclawRuntime,
-      yd_cowork: deps.claudeRuntime,
     };
     this.currentEngine = this.safeResolveEngine();
 
     this.bindRuntimeEvents('openclaw', deps.openclawRuntime);
-    this.bindRuntimeEvents('yd_cowork', deps.claudeRuntime);
   }
 
   override on<U extends keyof CoworkRuntimeEvents>(
@@ -80,7 +77,6 @@ export class CoworkEngineRouter extends EventEmitter implements CoworkRuntime {
       this.runtimeByEngine[engine].stopSession(sessionId);
     } else {
       this.runtimeByEngine.openclaw.stopSession(sessionId);
-      this.runtimeByEngine.yd_cowork.stopSession(sessionId);
     }
     this.sessionEngine.delete(sessionId);
     this.clearRequestEngineBySession(sessionId);
@@ -88,7 +84,6 @@ export class CoworkEngineRouter extends EventEmitter implements CoworkRuntime {
 
   stopAllSessions(): void {
     this.runtimeByEngine.openclaw.stopAllSessions();
-    this.runtimeByEngine.yd_cowork.stopAllSessions();
     this.sessionEngine.clear();
     this.requestEngine.clear();
     this.requestSession.clear();
@@ -106,7 +101,6 @@ export class CoworkEngineRouter extends EventEmitter implements CoworkRuntime {
     }
 
     this.runtimeByEngine.openclaw.respondToPermission(requestId, result);
-    this.runtimeByEngine.yd_cowork.respondToPermission(requestId, result);
   }
 
   isSessionActive(sessionId: string): boolean {
@@ -114,8 +108,7 @@ export class CoworkEngineRouter extends EventEmitter implements CoworkRuntime {
     if (engine) {
       return this.runtimeByEngine[engine].isSessionActive(sessionId);
     }
-    return this.runtimeByEngine.openclaw.isSessionActive(sessionId)
-      || this.runtimeByEngine.yd_cowork.isSessionActive(sessionId);
+    return this.runtimeByEngine.openclaw.isSessionActive(sessionId);
   }
 
   getSessionConfirmationMode(sessionId: string): 'modal' | 'text' | null {
@@ -123,8 +116,7 @@ export class CoworkEngineRouter extends EventEmitter implements CoworkRuntime {
     if (engine) {
       return this.runtimeByEngine[engine].getSessionConfirmationMode(sessionId);
     }
-    return this.runtimeByEngine.openclaw.getSessionConfirmationMode(sessionId)
-      ?? this.runtimeByEngine.yd_cowork.getSessionConfirmationMode(sessionId);
+    return this.runtimeByEngine.openclaw.getSessionConfirmationMode(sessionId);
   }
 
   onSessionDeleted(sessionId: string): void {
@@ -142,8 +134,7 @@ export class CoworkEngineRouter extends EventEmitter implements CoworkRuntime {
 
     this.currentEngine = nextEngine;
     const activeSessionIds = Array.from(this.sessionEngine.keys())
-      .filter((sessionId) => this.runtimeByEngine.openclaw.isSessionActive(sessionId)
-        || this.runtimeByEngine.yd_cowork.isSessionActive(sessionId));
+      .filter((sessionId) => this.runtimeByEngine.openclaw.isSessionActive(sessionId));
     this.stopAllSessions();
 
     activeSessionIds.forEach((sessionId) => {
@@ -192,7 +183,7 @@ export class CoworkEngineRouter extends EventEmitter implements CoworkRuntime {
 
   private safeResolveEngine(): CoworkAgentEngine {
     const nextEngine = this.getCurrentEngine();
-    if (nextEngine === 'yd_cowork' || nextEngine === 'openclaw') {
+    if (nextEngine === 'openclaw') {
       this.currentEngine = nextEngine;
       return nextEngine;
     }

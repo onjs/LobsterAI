@@ -115,68 +115,8 @@ class OpenClawGatewayProvider implements IManagedGatewayProvider {
   }
 }
 
-class YdCoworkGatewayProvider implements IManagedGatewayProvider {
-  readonly id = IMGatewayProviderId.YdCowork;
-
-  constructor(private readonly openClawCompatibilityProvider: OpenClawGatewayProvider) {}
-
-  supportsManagedPlatform(platform: IMPlatform): boolean {
-    return this.openClawCompatibilityProvider.supportsManagedPlatform(platform);
-  }
-
-  shouldAutoStartManagedPlatforms(): boolean {
-    return false;
-  }
-
-  async startManagedPlatform(
-    platform: IMPlatform,
-    _deps: IMGatewayProviderRuntimeDeps,
-  ): Promise<boolean> {
-    if (!this.supportsManagedPlatform(platform)) {
-      return false;
-    }
-
-    console.log(
-      `[IMGatewayProvider] yd_cowork provider does not support managed platform ${platform}`,
-    );
-    return false;
-  }
-
-  async stopManagedPlatform(
-    platform: IMPlatform,
-    _deps: IMGatewayProviderRuntimeDeps,
-  ): Promise<boolean> {
-    if (!this.supportsManagedPlatform(platform)) {
-      return false;
-    }
-
-    console.log(
-      `[IMGatewayProvider] yd_cowork provider does not support managed platform ${platform}`,
-    );
-    return false;
-  }
-
-  async startAllManagedPlatforms(
-    platforms: IMPlatform[],
-    _deps: IMGatewayProviderRuntimeDeps,
-  ): Promise<boolean> {
-    if (platforms.length === 0) {
-      return false;
-    }
-
-    console.log(
-      '[IMGatewayProvider] yd_cowork provider skips managed gateway auto-start until native IM provider is ready',
-    );
-    return false;
-  }
-}
-
 export const createIMGatewayProvider = (
-  providerId: GatewayProviderId,
+  _providerId: GatewayProviderId,
 ): IManagedGatewayProvider => {
-  const openClawProvider = new OpenClawGatewayProvider();
-  if (providerId === IMGatewayProviderId.OpenClaw) {
-    return openClawProvider;
-  }
-  return new YdCoworkGatewayProvider(openClawProvider);
+  return new OpenClawGatewayProvider();
 };

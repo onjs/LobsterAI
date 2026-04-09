@@ -4,7 +4,7 @@ import path from 'path';
 import fs from 'fs';
 import os from 'os';
 import { SqliteStore } from './sqliteStore';
-import { CoworkStore, type CoworkExecutionMode } from './coworkStore';
+import { CoworkStore } from './coworkStore';
 import { AgentManager } from './agentManager';
 import {
   CoworkEngineRouter,
@@ -12,7 +12,7 @@ import {
   type CoworkAgentEngine,
 } from './libs/agentEngine';
 import { SkillManager, type SkillRecord } from './skillManager';
-import type { PermissionResult } from './libs/permissionTypes';
+import type { PermissionResult } from '@anthropic-ai/claude-agent-sdk';
 import { getCurrentApiConfig, resolveCurrentApiConfig, setStoreGetter, setAuthTokensGetter, setServerBaseUrlGetter, updateServerModelMetadata, clearServerModelMetadata } from './libs/claudeSettings';
 import { saveCoworkApiConfig } from './libs/coworkConfigStore';
 import { generateSessionTitle, probeCoworkModelReadiness } from './libs/coworkUtil';
@@ -750,6 +750,7 @@ const resolveDefaultCoworkAgentEngineForBuildProfile = (): CoworkAgentEngine => 
 const resolveCoworkCapabilities = (): {
   buildProfile: IMGatewayBuildProfile;
   openClawRuntimeAllowed: boolean;
+  ydCoworkRuntimeAllowed: boolean;
   agentEngines: CoworkAgentEngine[];
   scheduledTaskBackends: STBackendType[];
 } => {
@@ -760,6 +761,7 @@ const resolveCoworkCapabilities = (): {
   return {
     buildProfile,
     openClawRuntimeAllowed: agentEngines.includes('openclaw'),
+    ydCoworkRuntimeAllowed: false,
     agentEngines,
     scheduledTaskBackends,
   };
@@ -851,13 +853,6 @@ const getAgentManager = () => {
 const resolveCoworkAgentEngine = (): CoworkAgentEngine => {
   const configured = getCoworkStore().getConfig().agentEngine;
   return normalizeCoworkAgentEngine(configured);
-};
-
-const resolveModelModeFromExecutionMode = (executionMode?: CoworkExecutionMode) => {
-  if (executionMode === 'local') {
-    return 'local';
-  }
-  return 'sandbox';
 };
 
 const resolveScheduledTaskBackendFromConfig = (
@@ -1243,11 +1238,6 @@ const getCoworkEngineRouter = () => {
     });
   }
   return coworkEngineRouter;
-};
-
-const resolveRuntimeAuditEngineForSession = (sessionId: string): CoworkAgentEngine => {
-  void sessionId;
-  return 'openclaw';
 };
 
 const getSkillManager = () => {
@@ -2739,7 +2729,6 @@ if (!gotTheLock) {
         skillIds: options.activeSkillIds,
         workspaceRoot: selectedWorkspaceRoot,
         confirmationMode: 'modal',
-        modelMode: resolveModelModeFromExecutionMode(config.executionMode),
         imageAttachments: options.imageAttachments,
         agentId: options.agentId,
       }).catch(error => {
@@ -2795,9 +2784,6 @@ if (!gotTheLock) {
           options.systemPrompt ?? existingSession?.systemPrompt,
         ),
         skillIds: options.activeSkillIds,
-        modelMode: resolveModelModeFromExecutionMode(
-          existingSession?.executionMode ?? currentConfig.executionMode,
-        ),
         imageAttachments: options.imageAttachments,
       }).catch(error => {
         console.error('Cowork continue error:', error);
@@ -3212,164 +3198,6 @@ if (!gotTheLock) {
       };
     }
   });
-
-  ipcMain.handle(CoworkIpcChannel.RuntimeDiagnosticsGet, async (_event, input: { sessionId?: string }) => {
-    try {
-      const sessionId = typeof input?.sessionId === 'string' ? input.sessionId.trim() : '';
-      if (!sessionId) {
-        return {
-          success: false,
-          error: 'Session ID is required',
-        };
-      }
-      return {
-        success: true,
-        result: getCoworkEngineRouter().getRuntimeDiagnosticsWithEngine(sessionId),
-      };
-    } catch (error) {
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : 'Failed to get runtime diagnostics',
-      };
-    }
-  });
-
-  ipcMain.handle(
-    CoworkIpcChannel.RuntimeAuditSessionEventsGet,
-    async (_event, input: { sessionId?: string }) => {
-      try {
-        const sessionId = typeof input?.sessionId === 'string' ? input.sessionId.trim() : '';
-        if (!sessionId) {
-          return {
-            success: false,
-            error: 'Session ID is required',
-          };
-        }
-        return {
-          success: true,
-          result: {
-            engine: resolveRuntimeAuditEngineForSession(sessionId),
-            events: [],
-          },
-        };
-      } catch (error) {
-        return {
-          success: false,
-          error: error instanceof Error ? error.message : 'Failed to get session audit events',
-        };
-      }
-    },
-  );
-
-  ipcMain.handle(
-    CoworkIpcChannel.RuntimeAuditRunEventsGet,
-    async (_event, input: { sessionId?: string; runId?: string }) => {
-      try {
-        const sessionId = typeof input?.sessionId === 'string' ? input.sessionId.trim() : '';
-        const runId = typeof input?.runId === 'string' ? input.runId.trim() : '';
-        if (!sessionId || !runId) {
-          return {
-            success: false,
-            error: 'Session ID and run ID are required',
-          };
-        }
-        return {
-          success: true,
-          result: {
-            engine: resolveRuntimeAuditEngineForSession(sessionId),
-            events: [],
-          },
-        };
-      } catch (error) {
-        return {
-          success: false,
-          error: error instanceof Error ? error.message : 'Failed to get run audit events',
-        };
-      }
-    },
-  );
-
-  ipcMain.handle(
-    CoworkIpcChannel.RuntimeAuditTurnEventsGet,
-    async (_event, input: { sessionId?: string; turnId?: string }) => {
-      try {
-        const sessionId = typeof input?.sessionId === 'string' ? input.sessionId.trim() : '';
-        const turnId = typeof input?.turnId === 'string' ? input.turnId.trim() : '';
-        if (!sessionId || !turnId) {
-          return {
-            success: false,
-            error: 'Session ID and turn ID are required',
-          };
-        }
-        return {
-          success: true,
-          result: {
-            engine: resolveRuntimeAuditEngineForSession(sessionId),
-            events: [],
-          },
-        };
-      } catch (error) {
-        return {
-          success: false,
-          error: error instanceof Error ? error.message : 'Failed to get turn audit events',
-        };
-      }
-    },
-  );
-
-  ipcMain.handle(
-    CoworkIpcChannel.RuntimeAuditRunSummariesGet,
-    async (_event, input: { sessionId?: string }) => {
-      try {
-        const sessionId = typeof input?.sessionId === 'string' ? input.sessionId.trim() : '';
-        if (!sessionId) {
-          return {
-            success: false,
-            error: 'Session ID is required',
-          };
-        }
-        return {
-          success: true,
-          result: {
-            engine: resolveRuntimeAuditEngineForSession(sessionId),
-            runs: [],
-          },
-        };
-      } catch (error) {
-        return {
-          success: false,
-          error: error instanceof Error ? error.message : 'Failed to get run summaries',
-        };
-      }
-    },
-  );
-
-  ipcMain.handle(
-    CoworkIpcChannel.RuntimeAuditSessionStatsGet,
-    async (_event, input: { sessionId?: string }) => {
-      try {
-        const sessionId = typeof input?.sessionId === 'string' ? input.sessionId.trim() : '';
-        if (!sessionId) {
-          return {
-            success: false,
-            error: 'Session ID is required',
-          };
-        }
-        return {
-          success: true,
-          result: {
-            engine: resolveRuntimeAuditEngineForSession(sessionId),
-            stats: null,
-          },
-        };
-      } catch (error) {
-        return {
-          success: false,
-          error: error instanceof Error ? error.message : 'Failed to get session audit stats',
-        };
-      }
-    },
-  );
 
   ipcMain.handle('cowork:memory:listEntries', async (_event, input: {
     query?: string;

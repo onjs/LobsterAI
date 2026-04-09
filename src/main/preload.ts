@@ -206,8 +206,8 @@ contextBridge.exposeInMainWorld('electron', {
     setConfig: (config: {
       workingDirectory?: string;
       executionMode?: 'auto' | 'local' | 'sandbox';
-      agentEngine?: 'openclaw' | 'yd_cowork';
-      scheduledTaskBackend?: 'openclaw' | 'yd_cowork' | 'auto';
+      agentEngine?: 'openclaw';
+      scheduledTaskBackend?: 'openclaw' | 'auto';
       memoryEnabled?: boolean;
       memoryImplicitUpdateEnabled?: boolean;
       memoryLlmJudgeEnabled?: boolean;
