@@ -175,9 +175,32 @@ const truncate = (value: string, maxChars: number): string => {
   return `${value.slice(0, maxChars)}...`;
 };
 
-/** Strip Discord mention markup: <@userId>, <@!userId>, <#channelId>, <@&roleId> */
+/** Strip Discord mention markup: <@userId>, <@!userId>, <#channelId>, <@&roleId>, and rendered @Username mentions */
 const stripDiscordMentions = (text: string): string =>
-  text.replace(/<@!?\d+>/g, '').replace(/<#\d+>/g, '').replace(/<@&\d+>/g, '').trim();
+  text
+    .replace(/<@!?\d+>/g, '')
+    .replace(/<#\d+>/g, '')
+    .replace(/<@&\d+>/g, '')
+    .replace(/^(?:@\S+\s*)+/, '')  // strip leading rendered @mentions (e.g. "@OctoBot ")
+    .trim();
+
+/**
+ * Strip the Feishu plugin's system header line from user messages.
+ *
+ * The Feishu (Lark) plugin prepends a one-line header before the user's actual
+ * text:
+ *   System: [2026-04-09 15:55:28 GMT+8] Feishu[755f282a] DM | user [msg:id]
+ *
+ * After OpenClaw's inbound metadata stripping (which removes the "Conversation
+ * info" and "Sender" JSON blocks), the header line may be the only remaining
+ * prefix.  Strip it so only the real user text is stored locally.
+ */
+const stripFeishuSystemHeader = (text: string): string => {
+  // Match: "System: [timestamp] Feishu[accountId] ..." as the first line.
+  const match = text.match(/^System:\s*\[.*?\]\s+Feishu\[.*$/m);
+  if (!match) return text;
+  return text.slice(match.index! + match[0].length).replace(/^\n+/, '').trim();
+};
 
 /**
  * Strip the QQ Bot plugin's injected system prompt prefix from user messages.
@@ -2161,6 +2184,43 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     if (phase === 'start') {
       this.store.updateSession(sessionId, { status: 'running' });
     }
+    if (phase === 'end') {
+      // Deferred completion fallback: the gateway should send a `chat state=final`
+      // event that triggers handleChatFinal(). But after the OpenClaw upgrade, this
+      // event may not arrive reliably for IM channel sessions.  The agent lifecycle
+      // `phase=end` event IS reliable.  Wait a short window for handleChatFinal() to
+      // run; if the turn is still active after that, complete it ourselves.
+      const FALLBACK_DELAY_MS = 3000;
+      setTimeout(() => {
+        const turn = this.activeTurns.get(sessionId);
+        if (!turn) return; // Already completed by handleChatFinal
+        console.log('[OpenClawRuntime] agent lifecycle end fallback: completing turn that missed chat final, sessionId:', sessionId);
+        void this.completeChannelTurnFallback(sessionId, turn);
+      }, FALLBACK_DELAY_MS);
+    }
+  }
+
+  /**
+   * Fallback completion for channel turns that never received a `chat state=final`
+   * event.  Called from handleAgentLifecycleEvent after a delay to give the normal
+   * handleChatFinal path time to run first.
+   */
+  private async completeChannelTurnFallback(sessionId: string, turn: ActiveTurn): Promise<void> {
+    if (!this.activeTurns.has(sessionId)) return;
+
+    try {
+      await this.reconcileWithHistory(sessionId, turn.sessionKey);
+    } catch (error) {
+      console.warn('[OpenClawRuntime] fallback reconcile failed:', error);
+    }
+
+    // Re-check after async reconcile — handleChatFinal may have run in the meantime
+    if (!this.activeTurns.has(sessionId)) return;
+
+    this.store.updateSession(sessionId, { status: 'completed' });
+    this.emit('complete', sessionId, turn.runId);
+    this.cleanupSessionTurn(sessionId);
+    this.resolveTurn(sessionId);
   }
 
   private handleAgentToolEvent(sessionId: string, turn: ActiveTurn, data: unknown): void {
@@ -3053,6 +3113,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
         && this.channelSessionSync.isChannelSessionKey(sessionKey);
       const isDiscord = sessionKey.includes(':discord:');
       const isQQ = sessionKey.includes(':qqbot:');
+      const isFeishu = sessionKey.includes(':feishu:');
 
       // Extract authoritative user/assistant entries from gateway history
       const authoritativeEntries: Array<{ role: 'user' | 'assistant'; text: string }> = [];
@@ -3064,6 +3125,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
         if (!text) continue;
         if (isDiscord) text = stripDiscordMentions(text);
         if (isQQ && role === 'user') text = stripQQBotSystemPrompt(text);
+        if (isFeishu && role === 'user') text = stripFeishuSystemHeader(text);
         authoritativeEntries.push({ role: role as 'user' | 'assistant', text });
       }
 
@@ -3215,7 +3277,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
         );
         if (isChannel) {
           const latestOnly = this.reCreatedChannelSessionIds.has(sessionId);
-          this.syncChannelUserMessages(sessionId, history.messages, latestOnly, turn.sessionKey.includes(':discord:'), turn.sessionKey.includes(':qqbot:'), turn.sessionKey.includes(':moltbot-popo:'));
+          this.syncChannelUserMessages(sessionId, history.messages, latestOnly, turn.sessionKey.includes(':discord:'), turn.sessionKey.includes(':qqbot:'), turn.sessionKey.includes(':moltbot-popo:'), turn.sessionKey.includes(':feishu:'));
         }
 
         if (!this.isCurrentTurnToken(sessionId, turn.turnToken)) {
@@ -3322,6 +3384,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     isDiscord: boolean,
     isQQ: boolean,
     isPopo: boolean = false,
+    isFeishu: boolean = false,
   ): ChannelHistorySyncEntry[] {
     const historyEntries: ChannelHistorySyncEntry[] = [];
     for (const message of historyMessages) {
@@ -3334,6 +3397,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       if (isPopo) text = text.replace(/<br\s*\/?>/gi, '\n');
       if (isDiscord) text = stripDiscordMentions(text);
       if (isQQ && role === 'user') text = stripQQBotSystemPrompt(text);
+      if (isFeishu && role === 'user') text = stripFeishuSystemHeader(text);
       if (text) {
         historyEntries.push({ role: role as 'user' | 'assistant', text });
       }
@@ -3475,8 +3539,8 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
    * because OpenClaw's `chat.history` window can slide due to byte limits well before
    * the requested message count is reached.
    */
-  private syncChannelUserMessages(sessionId: string, historyMessages: unknown[], latestOnly = false, isDiscord = false, isQQ = false, isPopo = false): void {
-    const historyEntries = this.collectChannelHistoryEntries(historyMessages, isDiscord, isQQ, isPopo);
+  private syncChannelUserMessages(sessionId: string, historyMessages: unknown[], latestOnly = false, isDiscord = false, isQQ = false, isPopo = false, isFeishu = false): void {
+    const historyEntries = this.collectChannelHistoryEntries(historyMessages, isDiscord, isQQ, isPopo, isFeishu);
 
     const cursor = this.channelSyncCursor.get(sessionId) ?? 0;
 
@@ -3523,30 +3587,45 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     let syncedCount = 0;
 
     // Collect all user message indices that need syncing:
-    // 1. Normal: user messages from firstNewIdx onwards
+    // 1. Normal: user messages from firstNewIdx onwards (definitely new, no dedup)
     // 2. Repair: user messages before firstNewIdx that are missing locally
     //    (can happen when computeChannelHistoryFirstNewIndex's forward-match
     //    strategy matches the assistant but skips the preceding user message)
     const currentSession = this.store.getSession(sessionId);
-    const localUserTexts = new Set<string>();
+
+    // Build a count-based map of local user texts for the repair range.
+    // A simple Set<text> is wrong because users can send the same text
+    // multiple times (e.g. "你好" in turn 1 and turn 4) — the Set would
+    // dedup the second occurrence.  A count map tracks how many times each
+    // text already exists locally so we only add genuinely missing entries.
+    const localUserTextCounts = new Map<string, number>();
     if (currentSession) {
       for (const msg of currentSession.messages) {
         if (msg.type === 'user') {
-          localUserTexts.add(msg.content.trim());
+          const text = msg.content.trim();
+          localUserTextCounts.set(text, (localUserTextCounts.get(text) ?? 0) + 1);
         }
       }
     }
 
     const userIndicesToSync: number[] = [];
-    // Normal range: from firstNewIdx onwards, with dedup against local messages
+    // Normal range: from firstNewIdx onwards — these are definitively new messages
+    // identified by the reconciliation algorithm, sync unconditionally.
     for (let i = firstNewIdx; i < historyEntries.length; i++) {
-      if (historyEntries[i].role === 'user' && !localUserTexts.has(historyEntries[i].text)) {
+      if (historyEntries[i].role === 'user') {
         userIndicesToSync.push(i);
       }
     }
-    // Repair range: before firstNewIdx, missing locally
+    // Repair range: before firstNewIdx, check for entries missing locally.
+    // Use count-based matching: consume one local occurrence per history entry.
+    // Entries with no remaining local count are missing and need to be synced.
+    const repairCounts = new Map(localUserTextCounts);
     for (let i = 0; i < firstNewIdx; i++) {
-      if (historyEntries[i].role === 'user' && !localUserTexts.has(historyEntries[i].text)) {
+      if (historyEntries[i].role !== 'user') continue;
+      const remaining = repairCounts.get(historyEntries[i].text) ?? 0;
+      if (remaining > 0) {
+        repairCounts.set(historyEntries[i].text, remaining - 1);
+      } else {
         userIndicesToSync.push(i);
       }
     }
@@ -3590,7 +3669,6 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
         });
       }
       this.emit('message', sessionId, userMessage);
-      localUserTexts.add(entry.text);
       syncedCount++;
     }
 
@@ -3835,59 +3913,50 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
   private async prefetchChannelUserMessages(sessionId: string, sessionKey: string): Promise<void> {
     console.log('[Debug:prefetch] start — sessionId:', sessionId, 'sessionKey:', sessionKey);
 
-    // Best-effort prefetch with 2 attempts. Final correctness is ensured by
-    // reconcileWithHistory after the turn completes.
+    // Use reconcileWithHistory for prefetch — it does an authoritative full
+    // comparison against chat.history and replaces local messages on mismatch.
+    // This is simpler and more accurate than incremental syncChannelUserMessages:
+    // - Handles duplicate user texts correctly (position-based, not text-based)
+    // - No cursor drift or dedup heuristic issues
+    // - replaceConversationMessages preserves tool_use/tool_result/system messages
+    //
+    // At turn start the assistant hasn't streamed yet, so full replacement is safe.
+    // Final correctness is still ensured by reconcileWithHistory at turn end.
     const MAX_ATTEMPTS = 2;
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
       try {
-        const client = this.gatewayClient;
-        if (!client) {
-          console.log('[Debug:prefetch] no gateway client available');
-          break;
-        }
+        const beforeCount = this.getUserMessageCount(sessionId);
+        await this.reconcileWithHistory(sessionId, sessionKey);
+        const afterCount = this.getUserMessageCount(sessionId);
+        const newUserMessages = afterCount - beforeCount;
+        console.log('[Debug:prefetch] reconciled (attempt', attempt, ') synced user messages:', newUserMessages, '(before:', beforeCount, 'after:', afterCount, ')');
 
-        const history = await client.request<{ messages?: unknown[] }>('chat.history', {
-          sessionKey,
-          limit: FINAL_HISTORY_SYNC_LIMIT,
-        }, { timeoutMs: 5_000 });
-        const msgCount = Array.isArray(history?.messages) ? history.messages.length : 0;
-        console.log('[Debug:prefetch] chat.history returned', msgCount, 'messages (attempt', attempt, ')');
-
-        if (Array.isArray(history?.messages) && history.messages.length > 0) {
-          this.markGatewayHistoryWindowConsumed(sessionId, history.messages);
-          const latestOnly = this.reCreatedChannelSessionIds.has(sessionId);
-          const beforeCount = this.getUserMessageCount(sessionId);
-                  this.syncChannelUserMessages(sessionId, history.messages, latestOnly, sessionKey.includes(':discord:'), sessionKey.includes(':qqbot:'), sessionKey.includes(':moltbot-popo:'));
-          const afterCount = this.getUserMessageCount(sessionId);
-          const newUserMessages = afterCount - beforeCount;
-          console.log('[Debug:prefetch] synced user messages:', newUserMessages, '(before:', beforeCount, 'after:', afterCount, ')');
-
-          if (newUserMessages > 0) {
-            break;
-          }
-
-          // Retry once if buffered events suggest history hasn't caught up yet
-          if (attempt < MAX_ATTEMPTS - 1) {
-            const turn = this.activeTurns.get(sessionId);
-            if (turn && (turn.bufferedChatPayloads.length > 0 || turn.bufferedAgentPayloads.length > 0)) {
-              console.log('[Debug:prefetch] no new user messages but have buffered events, retrying after 500ms...');
-              await new Promise((resolve) => setTimeout(resolve, 500));
-              continue;
-            }
-          }
-          break;
-        } else {
-          // Retry once if buffered events suggest history hasn't caught up yet
-          if (attempt < MAX_ATTEMPTS - 1) {
-            const turn = this.activeTurns.get(sessionId);
-            if (turn && (turn.bufferedChatPayloads.length > 0 || turn.bufferedAgentPayloads.length > 0)) {
-              console.log('[Debug:prefetch] empty history but have buffered events, retrying after 500ms...');
-              await new Promise((resolve) => setTimeout(resolve, 500));
-              continue;
+        // Emit 'message' events for newly added user messages so the renderer
+        // updates the active session view in real-time.  reconcileWithHistory
+        // writes to SQLite and sends cowork:sessions:changed, but that only
+        // refreshes the session list sidebar — not the active conversation.
+        if (newUserMessages > 0) {
+          const session = this.store.getSession(sessionId);
+          if (session) {
+            const userMessages = session.messages.filter((m: CoworkMessage) => m.type === 'user');
+            const newMsgs = userMessages.slice(-newUserMessages);
+            for (const msg of newMsgs) {
+              this.emit('message', sessionId, msg);
             }
           }
           break;
         }
+
+        // Retry once if buffered events suggest history hasn't caught up yet
+        if (attempt < MAX_ATTEMPTS - 1) {
+          const turn = this.activeTurns.get(sessionId);
+          if (turn && (turn.bufferedChatPayloads.length > 0 || turn.bufferedAgentPayloads.length > 0)) {
+            console.log('[Debug:prefetch] no new user messages but have buffered events, retrying after 500ms...');
+            await new Promise((resolve) => setTimeout(resolve, 500));
+            continue;
+          }
+        }
+        break;
       } catch (error) {
         console.warn('[OpenClawRuntime] prefetchChannelUserMessages attempt', attempt, 'failed:', error);
         if (attempt < MAX_ATTEMPTS - 1) {

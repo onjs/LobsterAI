@@ -1054,7 +1054,9 @@ const syncOpenClawConfig = async (
   // When secret env vars change, the running gateway must be restarted even if
   // the caller didn't request it — the ${VAR} placeholders in openclaw.json
   // resolve from the process environment which is fixed at spawn time.
-  const needsHardRestart = secretEnvVarsChanged || (syncResult.changed && options.restartGatewayIfRunning);
+  // When agent bindings change, a hard restart is also needed because channel
+  // plugins capture their config at startup and don't hot-reload bindings.
+  const needsHardRestart = secretEnvVarsChanged || syncResult.bindingsChanged || (syncResult.changed && options.restartGatewayIfRunning);
 
   if (!needsHardRestart) {
     // Config file was written; OpenClaw's file-watcher will handle the reload.

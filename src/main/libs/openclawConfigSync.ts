@@ -2,9 +2,7 @@ import { app } from 'electron';
 import fs from 'fs';
 import path from 'path';
 
-
 import { buildScheduledTaskEnginePrompt } from '../../scheduledTask/enginePrompt';
-import { PlatformRegistry } from '../../shared/platform';
 import { OpenClawApi as OpenClawApiConst, OpenClawProviderId, ProviderName } from '../../shared/providers';
 import type { Agent, CoworkConfig, CoworkExecutionMode } from '../coworkStore';
 import type { DiscordOpenClawConfig, IMSettings, TelegramOpenClawConfig } from '../im/types';
@@ -21,7 +19,7 @@ import {
 } from './openclawAgentModels';
 import { parseChannelSessionKey } from './openclawChannelSessionSync';
 import type { OpenClawEngineManager } from './openclawEngineManager';
-import { hasBundledOpenClawExtension, findThirdPartyExtensionsDir } from './openclawLocalExtensions';
+import { findThirdPartyExtensionsDir, hasBundledOpenClawExtension } from './openclawLocalExtensions';
 import { getOpenClawTokenProxyPort } from './openclawTokenProxy';
 
 export type McpBridgeConfig = {
@@ -670,6 +668,7 @@ export type OpenClawConfigSyncResult = {
   configPath: string;
   error?: string;
   agentsMdWarning?: string;
+  bindingsChanged?: boolean;
 };
 
 type OpenClawConfigSyncDeps = {
@@ -710,6 +709,8 @@ export class OpenClawConfigSync {
   private readonly getMcpBridgeConfig?: () => McpBridgeConfig | null;
   private readonly getSkillsList?: () => Array<{ id: string; enabled: boolean }>;
   private readonly getAgents?: () => Agent[];
+  private previousBindingsJson?: string;
+  private currentBindingsObj: { bindings?: Array<Record<string, unknown>> } = {};
 
   constructor(deps: OpenClawConfigSyncDeps) {
     this.engineManager = deps.engineManager;
@@ -899,6 +900,14 @@ export class OpenClawConfigSync {
 
     const hasAnyChannel = hasDingTalkOpenClaw;
 
+    // Pre-compute bindings and detect changes so we can signal a hard restart
+    // when only bindings change (channel plugins don't hot-reload bindings).
+    this.currentBindingsObj = this.buildBindings();
+    const bindingsJson = JSON.stringify(this.currentBindingsObj);
+    const bindingsChanged = this.previousBindingsJson !== undefined
+      && bindingsJson !== this.previousBindingsJson;
+    this.previousBindingsJson = bindingsJson;
+
     const managedConfig: Record<string, unknown> = {
       gateway: {
         // Preserve gateway fields that the runtime seeds at startup (auth,
@@ -933,7 +942,7 @@ export class OpenClawConfigSync {
         },
         ...this.buildAgentsList(primaryModel),
       },
-      ...this.buildBindings(),
+      ...this.currentBindingsObj,
       session: {
         dmScope: 'per-account-channel-peer',
       },
@@ -1368,36 +1377,6 @@ export class OpenClawConfigSync {
       managedConfig.channels = { ...(managedConfig.channels as Record<string, unknown> || {}), 'openclaw-weixin': weixinChannel };
     }
 
-    // Inject _agentBinding into channel configs that have a non-main binding,
-    // forcing those channels to restart when the binding changes.  OpenClaw
-    // channel plugins capture their config at startup and never refresh it,
-    // so bindings-only config changes (kind: "none" in the reload plan) are
-    // invisible to running plugins.  By touching the channel config we trigger
-    // a "channels.*" diff path which forces the plugin to restart.
-    const platformBindingsForSentinel = this.getIMSettings?.()?.platformAgentBindings;
-    if (platformBindingsForSentinel) {
-      const channels = (managedConfig.channels ?? {}) as Record<string, Record<string, unknown>>;
-      for (const channelKey of Object.keys(channels)) {
-        if (!channels[channelKey] || typeof channels[channelKey] !== 'object') continue;
-        const platformKey = PlatformRegistry.platformOfChannel(channelKey);
-        if (!platformKey) continue;
-        // Collect all bindings for this platform (platform-level + per-instance)
-        const bindingValues: string[] = [];
-        if (platformBindingsForSentinel[platformKey] && platformBindingsForSentinel[platformKey] !== 'main') {
-          bindingValues.push(platformBindingsForSentinel[platformKey]);
-        }
-        const prefix = `${platformKey}:`;
-        for (const key of Object.keys(platformBindingsForSentinel)) {
-          if (key.startsWith(prefix) && platformBindingsForSentinel[key] !== 'main') {
-            bindingValues.push(`${key}=${platformBindingsForSentinel[key]}`);
-          }
-        }
-        if (bindingValues.length > 0) {
-          channels[channelKey]._agentBinding = bindingValues.join(',');
-        }
-      }
-    }
-
     const nextContent = `${JSON.stringify(managedConfig, null, 2)}\n`;
     console.log('[OpenClawConfigSync] sync() managedConfig key fields:', {
       providers: (managedConfig.models as Record<string, unknown>)?.providers,
@@ -1449,6 +1428,7 @@ export class OpenClawConfigSync {
       ok: true,
       changed: configChanged || sessionStoreChanged,
       configPath,
+      ...(bindingsChanged ? { bindingsChanged } : {}),
       ...(agentsMdWarning ? { agentsMdWarning } : {}),
     };
   }
