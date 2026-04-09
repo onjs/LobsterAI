@@ -3,6 +3,7 @@ import { useSelector } from 'react-redux';
 import { RootState } from '../../store';
 import type { CoworkSessionStatus, CoworkSessionSummary } from '../../types/cowork';
 import type { IMPlatform } from '../../types/im';
+import { ScheduledSessionTitlePrefix, parseScheduledSessionTitle } from '../../utils/scheduledSessionTitle';
 import CoworkSessionItem from './CoworkSessionItem';
 import { i18nService } from '../../services/i18n';
 import {
@@ -29,7 +30,6 @@ interface CoworkSessionListProps {
   onEnterBatchMode: (sessionId: string) => void;
 }
 
-const SCHEDULED_TITLE_PREFIX = '[Scheduled]';
 const IM_SESSION_CHANNELS = [
   'dingtalk',
   'feishu',
@@ -117,13 +117,6 @@ const statusLabels: Record<CoworkSessionStatus, string> = {
   completed: 'coworkStatusCompleted',
   error: 'coworkStatusError',
 };
-
-function parseScheduledTaskName(title: string): string | null {
-  const trimmed = title.trim();
-  if (!trimmed.startsWith(SCHEDULED_TITLE_PREFIX)) return null;
-  const name = trimmed.slice(SCHEDULED_TITLE_PREFIX.length).trim();
-  return name || i18nService.t('scheduledTasksNotSet');
-}
 
 function formatRunTime(timestamp: number): string {
   const date = new Date(timestamp);
@@ -256,7 +249,9 @@ const CoworkSessionList: React.FC<CoworkSessionListProps> = ({
     const groupMap = new Map<string, CoworkSessionSummary[]>();
     const manual: CoworkSessionSummary[] = [];
     sortedSessions.forEach((session) => {
-      const scheduledTaskName = parseScheduledTaskName(session.title);
+      const scheduledTaskName = parseScheduledSessionTitle(session.title, {
+        fallbackName: i18nService.t('scheduledTasksNotSet'),
+      });
       if (scheduledTaskName) {
         const bucket = groupMap.get(scheduledTaskName) ?? [];
         bucket.push(session);
@@ -425,7 +420,7 @@ const CoworkSessionList: React.FC<CoworkSessionListProps> = ({
           return next;
         });
       } else {
-        const nextTitle = `${SCHEDULED_TITLE_PREFIX} ${trimmedValue}`;
+        const nextTitle = `${ScheduledSessionTitlePrefix.LegacyScheduled} ${trimmedValue}`;
         await Promise.all(renameTarget.sessions.map((session) => runRename(session.id, nextTitle)));
       }
       closeRenameDialog();

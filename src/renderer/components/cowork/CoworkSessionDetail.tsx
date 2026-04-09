@@ -26,6 +26,7 @@ import PencilSquareIcon from '../icons/PencilSquareIcon';
 import TrashIcon from '../icons/TrashIcon';
 import WindowTitleBar from '../window/WindowTitleBar';
 import { getCompactFolderName } from '../../utils/path';
+import { parseScheduledSessionTitle } from '../../utils/scheduledSessionTitle';
 import { getScheduledReminderDisplayText } from '../../../scheduled-task/reminderText';
 
 interface CoworkSessionDetailProps {
@@ -45,7 +46,6 @@ const NAV_BOTTOM_SNAP_THRESHOLD = 20;
 const INVALID_FILE_NAME_PATTERN = /[<>:"/\\|?*\u0000-\u001F]/g;
 const ATTACHMENT_INFO_BLOCK_PATTERN = /\n\n\[附件信息\]\n(?:- .*(?:\n|$))+/g;
 const ATTACHMENT_INFO_ONLY_PATTERN = /^\[附件信息\]\n(?:- .*(?:\n|$))+$/;
-const SCHEDULED_TITLE_PREFIX = '[Scheduled]';
 const IM_GROUP_LABEL_STORAGE_KEY = 'cowork.imGroupDisplayNames';
 const IM_SESSION_CHANNELS = [
   'dingtalk',
@@ -74,13 +74,6 @@ const IM_PLATFORM_LABEL_KEYS: Record<IMPlatform, string> = {
 
 const isImPlatform = (value: string): value is IMPlatform =>
   Object.prototype.hasOwnProperty.call(IM_PLATFORM_LABEL_KEYS, value);
-
-const parseScheduledTaskName = (title: string): string | null => {
-  const trimmed = title.trim();
-  if (!trimmed.startsWith(SCHEDULED_TITLE_PREFIX)) return null;
-  const name = trimmed.slice(SCHEDULED_TITLE_PREFIX.length).trim();
-  return name || null;
-};
 
 const sanitizeExportFileName = (value: string): string => {
   const sanitized = value.replace(INVALID_FILE_NAME_PATTERN, ' ').replace(/\s+/g, ' ').trim();
@@ -1515,7 +1508,7 @@ const CoworkSessionDetail: React.FC<CoworkSessionDetailProps> = ({
   const displaySessionTitle = useMemo(() => {
     if (!currentSession) return i18nService.t('coworkNewSession');
 
-    const scheduledTaskName = parseScheduledTaskName(currentSession.title);
+    const scheduledTaskName = parseScheduledSessionTitle(currentSession.title);
     if (scheduledTaskName) {
       return scheduledTaskName;
     }
