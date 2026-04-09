@@ -1210,17 +1210,16 @@ export class CoworkStore {
     }
 
     if (config.skipMissedJobs !== undefined) {
-      this.db
-        .prepare(
-          `
+      this.db.run(
+        `
         INSERT INTO cowork_config (key, value, updated_at)
         VALUES ('skipMissedJobs', ?, ?)
         ON CONFLICT(key) DO UPDATE SET
           value = excluded.value,
           updated_at = excluded.updated_at
       `,
-        )
-        .run(config.skipMissedJobs ? '1' : '0', now);
+        [config.skipMissedJobs ? '1' : '0', now],
+      );
     }
 
     this.saveDb();
