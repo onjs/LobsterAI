@@ -1486,7 +1486,7 @@ const getIMGatewayManager = () => {
           // Strip IM subtype prefix (e.g. "direct:ou_xxx" -> "ou_xxx")
           let deliveryTo = message.conversationId;
           if (backend === STBackend.OpenClaw && hasChannel && deliveryTo) {
-            const colonIdx = deliveryTo.indexOf(':');
+            const colonIdx = deliveryTo.lastIndexOf(':');
             if (colonIdx > 0) {
               deliveryTo = deliveryTo.slice(colonIdx + 1);
             }
