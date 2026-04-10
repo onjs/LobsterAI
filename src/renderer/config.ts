@@ -1,4 +1,4 @@
-import { ProviderRegistry, ProviderName, ApiFormat } from '@shared/providers';
+import { ProviderRegistry } from '../shared/providers';
 
 // 配置类型定义
 export interface AppConfig {
@@ -262,7 +262,7 @@ const buildDefaultProviders = (): AppConfig['providers'] => {
       baseUrl: def.defaultBaseUrl,
       apiFormat: def.defaultApiFormat,
       ...(def.codingPlanSupported ? { codingPlanEnabled: false } : {}),
-      models: def.defaultModels.map(m => ({ ...m })),
+      models: def.defaultModels.map((m) => ({ ...m })),
     };
   }
 

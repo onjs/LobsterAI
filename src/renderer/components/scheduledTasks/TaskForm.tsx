@@ -8,15 +8,6 @@ import type {
   ScheduledTaskInput,
 } from '../../../scheduled-task/types';
 import { formatScheduleLabel, type IntervalUnit, type PlanType, scheduleToPlanInfo } from './utils';
-import { PlatformRegistry } from '@shared/platform';
-import ModelSelector from '../ModelSelector';
-import { ProviderRegistry, OpenClawProviderId } from '@shared/providers/constants';
-
-function toOpenClawModelRef(model: { id: string; providerKey?: string; isServerModel?: boolean }): string {
-  if (model.isServerModel) return `${OpenClawProviderId.LobsteraiServer}/${model.id}`;
-  const openClawId = ProviderRegistry.getOpenClawProviderId(model.providerKey ?? '');
-  return `${openClawId}/${model.id}`;
-}
 
 interface TaskFormProps {
   mode: 'create' | 'edit';

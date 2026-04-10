@@ -1701,7 +1701,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
           url: anthropicUrl,
           method: 'POST',
           headers: {
-            'x-api-key': providerConfig.apiKey,
+            'x-api-key': effectiveApiKey,
             'anthropic-version': '2023-06-01',
             'Content-Type': 'application/json',
           },
@@ -1719,8 +1719,8 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
         const headers: Record<string, string> = {
           'Content-Type': 'application/json',
         };
-        if (providerConfig.apiKey) {
-          headers.Authorization = `Bearer ${providerConfig.apiKey}`;
+        if (effectiveApiKey) {
+          headers.Authorization = `Bearer ${effectiveApiKey}`;
         }
         const openAIRequestBody: Record<string, unknown> = useResponsesApi
           ? {
@@ -3052,12 +3052,10 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, onUpda
                     value={
                       (() => {
                         const fmt = getEffectiveApiFormat(activeProvider, providers[activeProvider].apiFormat);
-                        if (fmt !== 'gemini') {
-                          const cpUrl = (providers[activeProvider] as { codingPlanEnabled?: boolean }).codingPlanEnabled
-                            ? ProviderRegistry.getCodingPlanUrl(activeProvider, fmt)
-                            : undefined;
-                          if (cpUrl) return cpUrl;
-                        }
+                        const cpUrl = (providers[activeProvider] as { codingPlanEnabled?: boolean }).codingPlanEnabled
+                          ? ProviderRegistry.getCodingPlanUrl(activeProvider, fmt)
+                          : undefined;
+                        if (cpUrl) return cpUrl;
                         return providers[activeProvider].baseUrl;
                       })()
                     }
