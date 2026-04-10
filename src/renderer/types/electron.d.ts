@@ -301,7 +301,7 @@ interface IElectronAPI {
     get: (id: string) => Promise<Agent | null>;
     create: (request: { id?: string; name: string; description?: string; systemPrompt?: string; identity?: string; model?: string; icon?: string; skillIds?: string[]; source?: string; presetId?: string }) => Promise<Agent>;
     update: (id: string, updates: { name?: string; description?: string; systemPrompt?: string; identity?: string; model?: string; icon?: string; skillIds?: string[]; enabled?: boolean }) => Promise<Agent>;
-    delete: (id: string) => Promise<void>;
+    delete: (id: string) => Promise<boolean>;
     presets: () => Promise<PresetAgent[]>;
     addPreset: (presetId: string) => Promise<Agent>;
   };

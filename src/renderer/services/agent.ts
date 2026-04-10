@@ -10,6 +10,7 @@ import {
 import { setActiveSkillIds, clearActiveSkills } from '../store/slices/skillSlice';
 import { clearCurrentSession } from '../store/slices/coworkSlice';
 import type { Agent, PresetAgent } from '../types/agent';
+import { coworkService } from './cowork';
 
 class AgentService {
   async loadAgents(): Promise<void> {
@@ -103,8 +104,13 @@ class AgentService {
 
   async deleteAgent(id: string): Promise<boolean> {
     try {
-      await window.electron?.agents?.delete(id);
+      const deleted = await window.electron?.agents?.delete(id);
+      if (!deleted) {
+        return false;
+      }
       store.dispatch(removeAgent(id));
+      const currentAgentId = store.getState().agent.currentAgentId;
+      await coworkService.loadSessions(currentAgentId);
       return true;
     } catch (error) {
       console.error('Failed to delete agent:', error);

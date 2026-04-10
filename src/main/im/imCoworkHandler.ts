@@ -477,8 +477,20 @@ export class IMCoworkHandler extends EventEmitter {
       agentId
     );
 
-    // Save mapping
-    const mapping = this.imStore.createSessionMapping(imConversationId, platform, session.id, agentId);
+    // Save mapping (update existing mapping when agent binding changed)
+    const existingMapping = this.imStore.getSessionMapping(imConversationId, platform);
+    if (existingMapping && existingMapping.coworkSessionId !== session.id) {
+      this.sessionRouter.removeRoutesBySession(existingMapping.coworkSessionId);
+    }
+    if (existingMapping) {
+      this.imStore.updateSessionMappingTarget(imConversationId, platform, session.id, agentId);
+    } else {
+      this.imStore.createSessionMapping(imConversationId, platform, session.id, agentId);
+    }
+    const mapping = this.imStore.getSessionMapping(imConversationId, platform);
+    if (!mapping) {
+      throw new Error('Failed to persist IM session mapping');
+    }
     this.trackSessionMapping(mapping);
     this.sessionRouter.bindRoute({
       platform,

@@ -48,6 +48,10 @@ export class IMSessionRouter {
     if (!legacyMapping) {
       return null;
     }
+    const legacyAgentId = this.normalizeAgentId(legacyMapping.agentId);
+    if (legacyAgentId !== agentId) {
+      return null;
+    }
 
     return this.bindRoute({
       platform: params.platform,

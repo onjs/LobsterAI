@@ -113,6 +113,29 @@ describe('IMSessionRouter', () => {
     expect(store.upserts[0].provider).toBe('openclaw');
   });
 
+  test('does not backfill route when legacy mapping agent differs', () => {
+    const store = new StoreStub();
+    store.mapping = {
+      imConversationId: 'conv-1',
+      platform: 'nim' as IMPlatform,
+      coworkSessionId: 'sess-legacy',
+      agentId: 'agent-1',
+      createdAt: Date.now(),
+      lastActiveAt: Date.now(),
+    };
+
+    const router = new IMSessionRouter(store as any);
+    const resolved = router.resolveRoute({
+      platform: 'nim',
+      conversationId: 'conv-1',
+      provider: 'openclaw',
+      agentId: 'main',
+    });
+
+    expect(resolved).toBeNull();
+    expect(store.upserts.length).toBe(0);
+  });
+
   test('touch and delete delegate to store', () => {
     const store = new StoreStub();
     const router = new IMSessionRouter(store as any);
