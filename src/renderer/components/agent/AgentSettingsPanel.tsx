@@ -36,6 +36,7 @@ const AgentSettingsPanel: React.FC<AgentSettingsPanelProps> = ({ agentId, onClos
   const [, setAgent] = useState<Agent | null>(null);
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
+  const [model, setModel] = useState('');
   const [systemPrompt, setSystemPrompt] = useState('');
   const [identity, setIdentity] = useState('');
   const [icon, setIcon] = useState('');
@@ -43,6 +44,7 @@ const AgentSettingsPanel: React.FC<AgentSettingsPanelProps> = ({ agentId, onClos
   const [saving, setSaving] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [activeTab, setActiveTab] = useState<SettingsTab>('basic');
+  const availableModels = useSelector((state: RootState) => state.model.availableModels);
 
   // IM binding state
   const [imConfig, setImConfig] = useState<IMGatewayConfig | null>(null);
@@ -58,6 +60,7 @@ const AgentSettingsPanel: React.FC<AgentSettingsPanelProps> = ({ agentId, onClos
         setAgent(a);
         setName(a.name);
         setDescription(a.description);
+        setModel(a.model ?? '');
         setSystemPrompt(a.systemPrompt);
         setIdentity(a.identity);
         setIcon(a.icon);
@@ -90,6 +93,7 @@ const AgentSettingsPanel: React.FC<AgentSettingsPanelProps> = ({ agentId, onClos
       await agentService.updateAgent(agentId, {
         name: name.trim(),
         description: description.trim(),
+        model: model.trim(),
         systemPrompt: systemPrompt.trim(),
         identity: identity.trim(),
         icon: icon.trim(),
@@ -227,6 +231,25 @@ const AgentSettingsPanel: React.FC<AgentSettingsPanelProps> = ({ agentId, onClos
                   onChange={(e) => setDescription(e.target.value)}
                   className="w-full px-3 py-2 rounded-lg border dark:border-claude-darkBorder border-claude-border bg-transparent dark:text-claude-darkText text-claude-text text-sm"
                 />
+              </div>
+              <div>
+                <label className="block text-sm font-medium dark:text-claude-darkTextSecondary text-claude-textSecondary mb-1">
+                  {i18nService.t('agentModel') || 'Model'}
+                </label>
+                <select
+                  value={model}
+                  onChange={(e) => setModel(e.target.value)}
+                  className="w-full px-3 py-2 rounded-lg border dark:border-claude-darkBorder border-claude-border bg-transparent dark:text-claude-darkText text-claude-text text-sm"
+                >
+                  <option value="">
+                    {i18nService.t('agentModelInheritGlobal') || 'Use global default model'}
+                  </option>
+                  {availableModels.map((item) => (
+                    <option key={`${item.providerKey ?? ''}::${item.id}`} value={item.id}>
+                      {item.provider ? `${item.name} (${item.provider})` : item.name}
+                    </option>
+                  ))}
+                </select>
               </div>
               <div>
                 <label className="block text-sm font-medium dark:text-claude-darkTextSecondary text-claude-textSecondary mb-1">

@@ -17,11 +17,12 @@ import { configService } from './services/config';
 import { apiService } from './services/api';
 import { themeService } from './services/theme';
 import { coworkService } from './services/cowork';
+import { agentService } from './services/agent';
 import { authService } from './services/auth';
 import { scheduledTaskService } from './services/scheduledTask';
 import { checkForAppUpdate, type AppUpdateInfo, type AppUpdateDownloadProgress, UPDATE_POLL_INTERVAL_MS, UPDATE_HEARTBEAT_INTERVAL_MS } from './services/appUpdate';
 import { defaultConfig } from './config';
-import { setAvailableModels, setSelectedModel } from './store/slices/modelSlice';
+import { setAvailableModels, setSelectedModel, isSameModelIdentity } from './store/slices/modelSlice';
 import { clearSelection } from './store/slices/quickActionSlice';
 import type { ApiConfig } from './services/api';
 import type { CoworkPermissionResult } from './types/cowork';
@@ -31,6 +32,7 @@ import { matchesShortcut } from './services/shortcuts';
 import AppUpdateBadge from './components/update/AppUpdateBadge';
 import AppUpdateModal from './components/update/AppUpdateModal';
 import PrivacyDialog from './components/PrivacyDialog';
+import { resolveAgentModelSelection } from './components/cowork/agentModelSelection';
 
 const App: React.FC = () => {
   const [showSettings, setShowSettings] = useState(false);
@@ -51,10 +53,18 @@ const App: React.FC = () => {
   const hasInitialized = useRef(false);
   const dispatch = useDispatch();
   const selectedModel = useSelector((state: RootState) => state.model.selectedModel);
+  const availableModels = useSelector((state: RootState) => state.model.availableModels);
+  const currentAgentId = useSelector((state: RootState) => state.agent.currentAgentId);
+  const agents = useSelector((state: RootState) => state.agent.agents);
   const currentSessionId = useSelector((state: RootState) => state.cowork.currentSessionId);
   const pendingPermissions = useSelector((state: RootState) => state.cowork.pendingPermissions);
   const pendingPermission = pendingPermissions[0] ?? null;
   const isWindows = window.electron.platform === 'win32';
+  const suppressModelPersistRef = useRef(false);
+  const selectedAgent = useMemo(
+    () => agents.find((agent) => agent.id === currentAgentId) ?? null,
+    [agents, currentAgentId]
+  );
 
   const waitWithTimeout = useCallback(
     async <T,>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> => {
@@ -205,7 +215,49 @@ const App: React.FC = () => {
   }, []);
 
   useEffect(() => {
+    if (!isInitialized || availableModels.length === 0 || !selectedModel) return;
+    const config = configService.getConfig();
+    const fallbackModel = availableModels.find(
+      (model) => model.id === config.model.defaultModel
+        && (!config.model.defaultModelProvider || model.providerKey === config.model.defaultModelProvider)
+    ) ?? availableModels[0] ?? null;
+    const { selectedModel: resolvedModel } = resolveAgentModelSelection({
+      agentModel: currentAgentId === 'main' ? '' : (selectedAgent?.model ?? ''),
+      availableModels,
+      fallbackModel,
+      engine: 'openclaw',
+    });
+    if (!resolvedModel || isSameModelIdentity(resolvedModel, selectedModel)) {
+      return;
+    }
+    suppressModelPersistRef.current = true;
+    dispatch(setSelectedModel(resolvedModel));
+  }, [
+    isInitialized,
+    availableModels,
+    selectedModel?.id,
+    selectedModel?.providerKey,
+    currentAgentId,
+    selectedAgent?.model,
+    dispatch,
+  ]);
+
+  useEffect(() => {
     if (!isInitialized || !selectedModel?.id) return;
+    if (suppressModelPersistRef.current) {
+      suppressModelPersistRef.current = false;
+      return;
+    }
+    if (currentAgentId !== 'main') {
+      if (!selectedAgent) return;
+      if ((selectedAgent.model ?? '').trim() === selectedModel.id) {
+        return;
+      }
+      void agentService.updateAgent(currentAgentId, {
+        model: selectedModel.id,
+      });
+      return;
+    }
     const config = configService.getConfig();
     if (
       config.model.defaultModel === selectedModel.id
@@ -220,7 +272,7 @@ const App: React.FC = () => {
         defaultModelProvider: selectedModel.providerKey,
       },
     });
-  }, [isInitialized, selectedModel?.id, selectedModel?.providerKey]);
+  }, [isInitialized, selectedModel?.id, selectedModel?.providerKey, currentAgentId, selectedAgent?.id, selectedAgent?.model]);
 
   const handleShowSettings = useCallback((options?: SettingsOpenOptions) => {
     setSettingsOptions({

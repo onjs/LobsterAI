@@ -656,7 +656,7 @@ export class OpenClawConfigSync {
           },
           ...(mainAgentWorkspace ? { workspace: mainAgentWorkspace } : {}),
         },
-        ...this.buildAgentsList(),
+        ...this.buildAgentsList(providerSelection),
       },
       ...this.buildBindings(),
       session: {
@@ -1469,7 +1469,20 @@ export class OpenClawConfigSync {
    * Per-agent `identity` (name, emoji) is set from the agent database so
    * OpenClaw picks it up natively.
    */
-  private buildAgentsList(): { list?: Array<Record<string, unknown>> } {
+  private resolveAgentPrimaryModel(
+    rawAgentModel: string | undefined,
+    providerSelection: OpenClawProviderSelection,
+  ): string | null {
+    const agentModel = rawAgentModel?.trim();
+    if (!agentModel) return null;
+    if (agentModel.includes('/')) return agentModel;
+    if (agentModel === providerSelection.legacyModelId || agentModel === providerSelection.sessionModelId) {
+      return providerSelection.primaryModel;
+    }
+    return `${providerSelection.providerId}/${agentModel}`;
+  }
+
+  private buildAgentsList(providerSelection: OpenClawProviderSelection): { list?: Array<Record<string, unknown>> } {
     const agents = this.getAgents?.() ?? [];
 
     const list: Array<Record<string, unknown>> = [
@@ -1481,6 +1494,7 @@ export class OpenClawConfigSync {
 
     for (const agent of agents) {
       if (agent.id === 'main' || !agent.enabled) continue;
+      const agentPrimaryModel = this.resolveAgentPrimaryModel(agent.model, providerSelection);
 
       list.push({
         id: agent.id,
@@ -1495,6 +1509,11 @@ export class OpenClawConfigSync {
         // Per-agent skill whitelist: only when skillIds is non-empty.
         // OpenClaw's resolveAgentSkillsFilter() uses this to filter available skills.
         ...(agent.skillIds && agent.skillIds.length > 0 ? { skills: agent.skillIds } : {}),
+        ...(agentPrimaryModel ? {
+          model: {
+            primary: agentPrimaryModel,
+          },
+        } : {}),
       });
     }
 
