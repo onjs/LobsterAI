@@ -302,7 +302,31 @@ export class OpenClawChannelSessionSync {
     // 2. Check in-memory cache
     const cached = this.syncedSessionKeys.get(sessionKey);
     if (cached) {
-      return cached;
+      const cachedSession = this.coworkStore.getSession(cached);
+      if (!cachedSession) {
+        // Cached local session was deleted; drop stale cache and continue resolution.
+        this.syncedSessionKeys.delete(sessionKey);
+      } else {
+        // Best-effort self-heal: ensure persisted IM mapping still exists for sidebar grouping.
+        const parsedCached = parseChannelSessionKey(sessionKey);
+        if (parsedCached) {
+          const imSettings = this.imStore.getIMSettings();
+          const boundAgentId = (imSettings.platformAgentBindings?.[parsedCached.platform] || GatewayRoute.DefaultAgentId).trim() || GatewayRoute.DefaultAgentId;
+          const keyAgentId = extractAgentIdFromKey(sessionKey)?.trim() || null;
+          if (!keyAgentId || keyAgentId === boundAgentId) {
+            const mapping = this.imStore.getSessionMapping(parsedCached.conversationId, parsedCached.platform);
+            if (!mapping) {
+              this.imStore.createSessionMapping(parsedCached.conversationId, parsedCached.platform, cached, boundAgentId);
+            } else if (mapping.coworkSessionId !== cached || mapping.agentId !== boundAgentId) {
+              this.imStore.updateSessionMappingTarget(parsedCached.conversationId, parsedCached.platform, cached, boundAgentId);
+            } else {
+              this.imStore.updateSessionLastActive(parsedCached.conversationId, parsedCached.platform);
+            }
+            this.upsertOpenClawRoute(parsedCached.platform, parsedCached.conversationId, cached, boundAgentId);
+          }
+        }
+        return cached;
+      }
     }
 
     // 2b. Skip keys already known to be non-channel
