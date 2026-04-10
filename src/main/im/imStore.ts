@@ -1246,13 +1246,23 @@ export class IMStore {
   }
 
   /**
-   * List all session mappings for a platform
+   * List all session mappings for a platform, optionally filtered by IM bot accountId.
    */
-  listSessionMappings(platform?: IMPlatform): IMSessionMapping[] {
-    const query = platform
-      ? 'SELECT im_conversation_id, platform, cowork_session_id, agent_id, created_at, last_active_at FROM im_session_mappings WHERE platform = ? ORDER BY last_active_at DESC'
-      : 'SELECT im_conversation_id, platform, cowork_session_id, agent_id, created_at, last_active_at FROM im_session_mappings ORDER BY last_active_at DESC';
-    const params = platform ? [platform] : [];
+  listSessionMappings(platform?: IMPlatform, accountId?: string): IMSessionMapping[] {
+    let query: string;
+    let params: unknown[];
+
+    if (platform && accountId) {
+      query = "SELECT im_conversation_id, platform, cowork_session_id, agent_id, created_at, last_active_at FROM im_session_mappings WHERE platform = ? AND (im_conversation_id LIKE ? OR im_conversation_id LIKE 'group:%') ORDER BY last_active_at DESC";
+      params = [platform, `${accountId}:%`];
+    } else if (platform) {
+      query = 'SELECT im_conversation_id, platform, cowork_session_id, agent_id, created_at, last_active_at FROM im_session_mappings WHERE platform = ? ORDER BY last_active_at DESC';
+      params = [platform];
+    } else {
+      query = 'SELECT im_conversation_id, platform, cowork_session_id, agent_id, created_at, last_active_at FROM im_session_mappings ORDER BY last_active_at DESC';
+      params = [];
+    }
+
     const rows = this.getAll<{
       im_conversation_id: string;
       platform: IMPlatform;

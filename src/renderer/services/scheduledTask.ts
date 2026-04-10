@@ -20,7 +20,7 @@ import type {
   ScheduledTaskInput,
   ScheduledTaskStatusEvent,
   ScheduledTaskRunEvent,
-} from '../../scheduled-task/types';
+} from '../../scheduledTask/types';
 import { i18nService } from './i18n';
 
 function showToast(message: string): void {
@@ -267,12 +267,12 @@ class ScheduledTaskService {
     }
   }
 
-  async listChannelConversations(channel: string): Promise<ScheduledTaskConversationOption[]> {
+  async listChannelConversations(channel: string, accountId?: string): Promise<ScheduledTaskConversationOption[]> {
     const api = window.electron?.scheduledTasks;
     if (!api?.listChannelConversations) return [];
 
     try {
-      const result = await api.listChannelConversations(channel);
+      const result = await api.listChannelConversations(channel, accountId);
       return result.success && result.conversations ? result.conversations : [];
     } catch {
       return [];

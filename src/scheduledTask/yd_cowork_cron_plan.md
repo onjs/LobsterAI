@@ -26,7 +26,7 @@
 
 ## 2. 现状问题
 
-当前 `src/scheduled-task/cronJobService.ts` 完全绑定 OpenClaw 网关：
+当前 `src/scheduledTask/cronJobService.ts` 完全绑定 OpenClaw 网关：
 
 - CRUD/Run/Runs 全部转发 `cron.add/update/list/run/runs`。
 - 轮询状态也依赖网关 `cron.list`。

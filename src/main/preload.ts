@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import { IpcChannel as ScheduledTaskIpc } from '../scheduled-task/constants';
+import { IpcChannel as ScheduledTaskIpc } from '../scheduledTask/constants';
 import { CoworkIpcChannel } from './coworkIpcChannels';
 
 // 暴露安全的 API 到渲染进程
@@ -402,7 +402,8 @@ contextBridge.exposeInMainWorld('electron', {
 
     // Delivery channels
     listChannels: () => ipcRenderer.invoke(ScheduledTaskIpc.ListChannels),
-    listChannelConversations: (channel: string) => ipcRenderer.invoke(ScheduledTaskIpc.ListChannelConversations, channel),
+    listChannelConversations: (channel: string, accountId?: string) =>
+      ipcRenderer.invoke(ScheduledTaskIpc.ListChannelConversations, channel, accountId),
 
     // Stream event listeners
     onStatusUpdate: (callback: (data: any) => void) => {

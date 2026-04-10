@@ -27,7 +27,7 @@ import TrashIcon from '../icons/TrashIcon';
 import WindowTitleBar from '../window/WindowTitleBar';
 import { getCompactFolderName } from '../../utils/path';
 import { parseScheduledSessionTitle } from '../../utils/scheduledSessionTitle';
-import { getScheduledReminderDisplayText } from '../../../scheduled-task/reminderText';
+import { getScheduledReminderDisplayText } from '../../../scheduledTask/reminderText';
 
 interface CoworkSessionDetailProps {
   onManageSkills?: () => void;

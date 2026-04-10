@@ -14,7 +14,7 @@ import { judgeMemoryCandidate } from './libs/coworkMemoryJudge';
 import {
   ScheduledTaskBackend as ScheduledTaskBackendValue,
   type ScheduledTaskBackend,
-} from '../scheduled-task/constants';
+} from '../scheduledTask/constants';
 
 // Default working directory for new users
 const getDefaultWorkingDirectory = (): string => {

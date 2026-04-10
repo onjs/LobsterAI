@@ -11,7 +11,7 @@ import { parseChannelSessionKey } from './openclawChannelSessionSync';
 import type { McpToolManifestEntry } from './mcpServerManager';
 import { hasBundledOpenClawExtension } from './openclawLocalExtensions';
 import { resolveOpenClawMainAgentWorkspace, resolveOpenClawWorkspaceDir } from './openclawWorkspace';
-import { buildScheduledTaskEnginePrompt } from '../../scheduled-task/enginePrompt';
+import { buildScheduledTaskEnginePrompt } from '../../scheduledTask/enginePrompt';
 
 export type McpBridgeConfig = {
   callbackUrl: string;
@@ -1570,7 +1570,7 @@ export class OpenClawConfigSync {
       sections.push(MANAGED_WEB_SEARCH_POLICY_PROMPT);
       sections.push(MANAGED_EXEC_SAFETY_PROMPT);
 
-      // Keep scheduled-task policy after skills so native channel sessions
+      // Keep scheduledTask policy after skills so native channel sessions
       // treat it as the final app-managed override for reminder handling.
       const scheduledTaskPrompt = buildScheduledTaskEnginePrompt('openclaw').replaceAll(MARKER, '');
       if (scheduledTaskPrompt) {

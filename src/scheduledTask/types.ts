@@ -116,6 +116,7 @@ export interface ScheduledTaskRunEvent {
 export interface ScheduledTaskChannelOption {
   value: string;
   label: string;
+  accountId?: string;
 }
 
 export interface ScheduledTaskConversationOption {
