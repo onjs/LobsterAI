@@ -1701,21 +1701,77 @@ export class OpenClawConfigSync {
 
     const agents = this.getAgents?.() ?? [];
 
-    // Map openclaw channel name → platform key used in platformAgentBindings
-    const channelMap: Array<{ getter: () => { enabled: boolean } | null; channel: string; platform: string }> = [
-      { getter: () => this.getDingTalkConfig(), channel: 'dingtalk', platform: 'dingtalk' },
-      { getter: () => this.getFeishuConfig(), channel: 'feishu', platform: 'feishu' },
-      { getter: () => this.getTelegramOpenClawConfig?.() ?? null, channel: 'telegram', platform: 'telegram' },
-      { getter: () => this.getDiscordOpenClawConfig?.() ?? null, channel: 'discord', platform: 'discord' },
-      { getter: () => this.getQQConfig(), channel: 'qqbot', platform: 'qq' },
-      { getter: () => this.getWecomConfig(), channel: 'wecom', platform: 'wecom' },
-      { getter: () => this.getPopoConfig(), channel: 'moltbot-popo', platform: 'popo' },
-      { getter: () => this.getNimConfig(), channel: 'nim', platform: 'nim' },
-      { getter: () => this.getWeixinConfig(), channel: 'openclaw-weixin', platform: 'weixin' },
+    // Map openclaw channel name → platform key used in platformAgentBindings.
+    // OpenClaw channel bindings require both `channel` and `accountId`; for
+    // single-account channels we bind to the canonical default account.
+    const channelMap: Array<{
+      getter: () => { enabled: boolean } | null;
+      channel: string;
+      platform: string;
+      resolveAccountId: (cfg: { enabled: boolean } | null) => string | null;
+    }> = [
+      {
+        getter: () => this.getDingTalkConfig(),
+        channel: 'dingtalk',
+        platform: 'dingtalk',
+        resolveAccountId: () => 'default',
+      },
+      {
+        getter: () => this.getFeishuConfig(),
+        channel: 'feishu',
+        platform: 'feishu',
+        resolveAccountId: () => 'default',
+      },
+      {
+        getter: () => this.getTelegramOpenClawConfig?.() ?? null,
+        channel: 'telegram',
+        platform: 'telegram',
+        resolveAccountId: () => 'default',
+      },
+      {
+        getter: () => this.getDiscordOpenClawConfig?.() ?? null,
+        channel: 'discord',
+        platform: 'discord',
+        resolveAccountId: () => 'default',
+      },
+      {
+        getter: () => this.getQQConfig(),
+        channel: 'qqbot',
+        platform: 'qq',
+        resolveAccountId: () => 'default',
+      },
+      {
+        getter: () => this.getWecomConfig(),
+        channel: 'wecom',
+        platform: 'wecom',
+        resolveAccountId: () => 'default',
+      },
+      {
+        getter: () => this.getPopoConfig(),
+        channel: 'moltbot-popo',
+        platform: 'popo',
+        resolveAccountId: () => 'default',
+      },
+      {
+        getter: () => this.getNimConfig(),
+        channel: 'nim',
+        platform: 'nim',
+        resolveAccountId: () => 'default',
+      },
+      {
+        getter: () => this.getWeixinConfig(),
+        channel: 'openclaw-weixin',
+        platform: 'weixin',
+        resolveAccountId: (cfg) => {
+          const value = (cfg as WeixinOpenClawConfig | null)?.accountId;
+          const normalized = typeof value === 'string' ? value.trim() : '';
+          return normalized || 'default';
+        },
+      },
     ];
 
     const bindings: Array<Record<string, unknown>> = [];
-    for (const { getter, channel, platform } of channelMap) {
+    for (const { getter, channel, platform, resolveAccountId } of channelMap) {
       const agentId = platformBindings[platform];
       if (!agentId || agentId === 'main') continue;
 
@@ -1726,7 +1782,9 @@ export class OpenClawConfigSync {
       try {
         const cfg = getter();
         if (cfg?.enabled) {
-          bindings.push({ agentId, match: { channel } });
+          const accountId = resolveAccountId(cfg);
+          if (!accountId) continue;
+          bindings.push({ agentId, match: { channel, accountId } });
         }
       } catch {
         // Skip channels that fail to load config
