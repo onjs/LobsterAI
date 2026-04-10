@@ -1084,6 +1084,31 @@ export class IMGatewayManager extends EventEmitter {
     const previousConfig = this.imStore.getConfig();
     this.imStore.setConfig(config);
 
+    if (config.settings) {
+      const previousBindings = previousConfig.settings?.platformAgentBindings || {};
+      const nextSettings = { ...previousConfig.settings, ...config.settings };
+      const nextBindings = nextSettings.platformAgentBindings || {};
+      const candidatePlatforms = new Set<string>([
+        ...Object.keys(previousBindings),
+        ...Object.keys(nextBindings),
+      ]);
+      const changedPlatforms = Array.from(candidatePlatforms).filter((platform) => {
+        const previousAgentId = (previousBindings[platform] || GatewayRoute.DefaultAgentId).trim() || GatewayRoute.DefaultAgentId;
+        const nextAgentId = (nextBindings[platform] || GatewayRoute.DefaultAgentId).trim() || GatewayRoute.DefaultAgentId;
+        return previousAgentId !== nextAgentId;
+      });
+      for (const platform of changedPlatforms) {
+        const platformMappings = this.imStore.listSessionMappings(platform as IMPlatform);
+        for (const mapping of platformMappings) {
+          this.imStore.deleteSessionRoutesByCoworkSessionId(mapping.coworkSessionId);
+          this.imStore.deleteSessionMapping(mapping.imConversationId, mapping.platform);
+        }
+      }
+      if (changedPlatforms.length > 0) {
+        console.log(`[IMGatewayManager] reset ${changedPlatforms.length} platform route mappings after agent binding updates`);
+      }
+    }
+
     // Update chat handler if settings changed
     if (config.settings) {
       this.updateChatHandler();

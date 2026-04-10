@@ -360,8 +360,25 @@ export class IMCoworkHandler extends EventEmitter {
       const mappingSession = existingMapping
         ? this.coworkStore.getSession(existingMapping.coworkSessionId)
         : null;
+      const routeSessionAgentId = (routeSession?.agentId || GatewayRoute.DefaultAgentId).trim() || GatewayRoute.DefaultAgentId;
+      const routeSessionMatchesAgent = Boolean(routeSession && routeSessionAgentId === agentId);
       const mappingMatchesAgent = Boolean(existingMapping && existingMapping.agentId === agentId);
       const mappingUsable = Boolean(existingMapping && mappingSession && mappingMatchesAgent);
+
+      if (routeSession && !routeSessionMatchesAgent) {
+        console.log(
+          `[IMCoworkHandler] Route session agent changed for ${platform}:${imConversationId}, resetting route ${existingRoute.coworkSessionId} (${routeSessionAgentId} -> ${agentId})`,
+        );
+        this.sessionRouter.removeRoute(existingRoute.routeKey);
+        this.sessionRouter.removeRoutesBySession(existingRoute.coworkSessionId);
+        if (existingMapping) {
+          this.imStore.deleteSessionMapping(imConversationId, platform);
+        }
+        this.imSessionIds.delete(existingRoute.coworkSessionId);
+        this.sessionConversationMap.delete(existingRoute.coworkSessionId);
+        this.clearPendingPermissionsBySessionId(existingRoute.coworkSessionId);
+        this.coworkRuntime.stopSession(existingRoute.coworkSessionId);
+      } else
 
       if (mappingUsable && (
         !routeSession

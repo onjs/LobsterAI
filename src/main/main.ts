@@ -2964,16 +2964,25 @@ if (!gotTheLock) {
         if (imStore) {
           const imSettings = imStore.getIMSettings();
           const bindings = imSettings.platformAgentBindings;
+          const affectedPlatforms: IMPlatform[] = [];
           if (bindings) {
             let changed = false;
             for (const [platform, agentId] of Object.entries(bindings)) {
               if (agentId === id) {
                 delete bindings[platform];
                 changed = true;
+                affectedPlatforms.push(platform as IMPlatform);
               }
             }
             if (changed) {
               imStore.setIMSettings({ platformAgentBindings: bindings });
+              for (const platform of affectedPlatforms) {
+                const platformMappings = imStore.listSessionMappings(platform);
+                for (const mapping of platformMappings) {
+                  imStore.deleteSessionRoutesByCoworkSessionId(mapping.coworkSessionId);
+                  imStore.deleteSessionMapping(mapping.imConversationId, mapping.platform);
+                }
+              }
             }
           }
         }
