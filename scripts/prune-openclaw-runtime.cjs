@@ -196,6 +196,23 @@ function cleanDir(dirPath, stats) {
   }
 }
 
+// ─── Helpers ───
+
+function getDirSize(dirPath) {
+  let total = 0;
+  try {
+    for (const entry of fs.readdirSync(dirPath, { withFileTypes: true })) {
+      const fullPath = path.join(dirPath, entry.name);
+      if (entry.isDirectory()) {
+        total += getDirSize(fullPath);
+      } else {
+        try { total += fs.statSync(fullPath).size; } catch { /* ignore */ }
+      }
+    }
+  } catch { /* ignore */ }
+  return total;
+}
+
 // ─── Main ───
 
 function main() {
@@ -252,6 +269,32 @@ function main() {
         }
       }
     } catch { /* ignore */ }
+  }
+
+  // Step 2c: Remove openclaw SDK duplicates from third-party-extensions.
+  // Plugins like openclaw-qqbot declare openclaw as a peerDependency, and
+  // npm v7+ auto-installs it into the plugin's own node_modules (~226 MB).
+  // At runtime the host gateway already provides the SDK on the module path,
+  // so this copy is redundant and safe to remove.
+  const thirdPartyDir = path.join(runtimeRoot, 'third-party-extensions');
+  if (fs.existsSync(thirdPartyDir)) {
+    try {
+      for (const plugin of fs.readdirSync(thirdPartyDir, { withFileTypes: true })) {
+        if (!plugin.isDirectory()) continue;
+        const dupeOC = path.join(thirdPartyDir, plugin.name, 'node_modules', 'openclaw');
+        if (fs.existsSync(dupeOC)) {
+          const size = getDirSize(dupeOC);
+          fs.rmSync(dupeOC, { recursive: true, force: true });
+          stats.bytesFreed += size;
+          stats.dirsRemoved++;
+          console.log(
+            `[prune-openclaw-runtime] Removed duplicate openclaw SDK from ${plugin.name} (${(size / 1024 / 1024).toFixed(1)} MB)`
+          );
+        }
+      }
+    } catch (err) {
+      console.warn(`[prune-openclaw-runtime] Failed to prune openclaw from third-party-extensions: ${err.message}`);
+    }
   }
 
   // Step 3: Clean unnecessary files from node_modules only

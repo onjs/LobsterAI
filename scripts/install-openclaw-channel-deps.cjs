@@ -71,14 +71,21 @@ function main() {
 
   console.log(`${LABEL} Installing ${missing.length} missing channel dep(s): ${missing.join(', ')}`);
 
-  const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+  const isWin = process.platform === 'win32';
+  const npmCmd = isWin ? 'npm.cmd' : 'npm';
   const result = spawnSync(npmCmd, ['install', '--no-save', ...missing], {
     cwd: runtimeRoot,
     encoding: 'utf-8',
     stdio: 'pipe',
+    shell: isWin,
+    windowsVerbatimArguments: isWin,
     timeout: 5 * 60 * 1000,
   });
 
+  if (result.error) {
+    console.error(`${LABEL} npm install failed: ${result.error.message}`);
+    process.exit(1);
+  }
   if (result.status !== 0) {
     console.error(`${LABEL} npm install failed (exit ${result.status})`);
     if (result.stderr) {
