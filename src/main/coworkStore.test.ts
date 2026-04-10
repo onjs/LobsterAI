@@ -21,6 +21,7 @@ vi.mock('electron', () => ({
 import BetterSqlite3 from 'better-sqlite3';
 
 import { CoworkStore } from './coworkStore';
+import type { SqlJsCompatDatabase } from './sqliteStore';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -28,6 +29,41 @@ import { CoworkStore } from './coworkStore';
 
 let db: BetterSqlite3.Database;
 let store: CoworkStore;
+
+function createCompatDb(rawDb: BetterSqlite3.Database): SqlJsCompatDatabase {
+  let rowsModified = 0;
+  const compat = rawDb as unknown as SqlJsCompatDatabase;
+  compat.run = (sql: string, params: unknown[] = []) => {
+    const result = rawDb.prepare(sql).run(...params);
+    rowsModified = result.changes;
+    return result;
+  };
+  compat.exec = (sql: string, params: unknown[] = []) => {
+    const normalized = sql.trim().toUpperCase();
+    const isQuery =
+      normalized.startsWith('SELECT') ||
+      normalized.startsWith('PRAGMA') ||
+      normalized.startsWith('WITH') ||
+      normalized.startsWith('EXPLAIN');
+    if (!isQuery) {
+      if (!params.length) {
+        rawDb.exec(sql);
+        rowsModified = 0;
+        return [];
+      }
+      const result = rawDb.prepare(sql).run(...params);
+      rowsModified = result.changes;
+      return [];
+    }
+    const stmt = rawDb.prepare(sql);
+    const columns = stmt.columns().map((col) => col.name);
+    const rows = stmt.all(...params) as Array<Record<string, unknown>>;
+    const values = rows.map((row) => columns.map((column) => row[column]));
+    return [{ columns, values }];
+  };
+  compat.getRowsModified = () => rowsModified;
+  return compat;
+}
 
 /** Initialise a fresh in-memory database with the minimum schema. */
 function setupDb(): void {
@@ -66,7 +102,8 @@ function setupDb(): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS cowork_config (
       key TEXT PRIMARY KEY,
-      value TEXT
+      value TEXT,
+      updated_at INTEGER
     );
   `);
 
@@ -82,8 +119,7 @@ function setupDb(): void {
     );
   `);
 
-  // CoworkStore only needs (db)
-  store = new CoworkStore(db);
+  store = new CoworkStore(createCompatDb(db), () => {});
 }
 
 /** Insert a session row directly. */

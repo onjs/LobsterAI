@@ -1,5 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
-import type { Database } from 'sql.js';
+import type { SqlJsCompatDatabase } from '../main/sqliteStore';
 import { TaskStatus } from './constants';
 import type {
   Schedule,
@@ -123,7 +123,7 @@ function toRun(row: RunRow): ScheduledTaskRun {
 
 export class YdCoworkTaskRepository {
   constructor(
-    private readonly db: Database,
+    private readonly db: SqlJsCompatDatabase,
     private readonly saveDb: () => void,
   ) {
     this.ensureTables();
@@ -453,4 +453,3 @@ export class YdCoworkTaskRepository {
     }));
   }
 }
-

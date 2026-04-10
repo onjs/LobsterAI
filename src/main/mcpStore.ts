@@ -58,7 +58,7 @@ interface McpConfigJson {
 export class McpStore {
   private db: Database.Database;
 
-  constructor(db: Database.Database) {
+  constructor(db: Database.Database, _saveDb?: () => void) {
     this.db = db;
   }
 

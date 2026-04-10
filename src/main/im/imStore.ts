@@ -3,44 +3,54 @@
  * SQLite operations for IM configuration storage
  */
 
-import Database from 'better-sqlite3';
-import { PlatformRegistry } from '../../shared/platform';
+import type { SqlJsCompatDatabase } from '../sqliteStore';
 import {
   IMGatewayConfig,
   DingTalkOpenClawConfig,
-  DingTalkInstanceConfig,
-  DingTalkMultiInstanceConfig,
   FeishuOpenClawConfig,
-  FeishuInstanceConfig,
-  FeishuMultiInstanceConfig,
   TelegramOpenClawConfig,
   QQConfig,
-  QQInstanceConfig,
-  QQMultiInstanceConfig,
   DiscordOpenClawConfig,
   NimConfig,
-  NeteaseBeeChanConfig,
+  XiaomifengConfig,
   WecomOpenClawConfig,
   PopoOpenClawConfig,
   WeixinOpenClawConfig,
+  WeixinStoredCredential,
+  WeixinContextTokenRecord,
+  WeixinContextTokenStatus,
+  WeixinPendingOutboundRecord,
+  WeixinPendingOutboundReason,
+  WeixinPendingOutboundStatus,
   IMSettings,
-  Platform,
+  IMPlatform,
   IMSessionMapping,
+  IMSessionRoute,
   DEFAULT_DINGTALK_OPENCLAW_CONFIG,
-  DEFAULT_DINGTALK_MULTI_INSTANCE_CONFIG,
   DEFAULT_FEISHU_OPENCLAW_CONFIG,
-  DEFAULT_FEISHU_MULTI_INSTANCE_CONFIG,
   DEFAULT_TELEGRAM_OPENCLAW_CONFIG,
   DEFAULT_QQ_CONFIG,
-  DEFAULT_QQ_MULTI_INSTANCE_CONFIG,
   DEFAULT_DISCORD_OPENCLAW_CONFIG,
   DEFAULT_NIM_CONFIG,
-  DEFAULT_NETEASE_BEE_CONFIG,
+  DEFAULT_XIAOMIFENG_CONFIG,
   DEFAULT_WECOM_CONFIG,
   DEFAULT_POPO_CONFIG,
   DEFAULT_WEIXIN_CONFIG,
   DEFAULT_IM_SETTINGS,
 } from './types';
+import {
+  ensureImGatewayMigrationSchema,
+  ImGatewayMigrationConfigKey,
+  ImGatewayMigrationEnvKey,
+  ImGatewayMigrationPhase,
+} from './imGatewayMigrations';
+import {
+  GatewayDeliveryStatus,
+  GatewayRoute,
+  GatewayRunStatus,
+  type GatewayDeliveryStatus as GatewayDeliveryStatusType,
+  type GatewayRunStatus as GatewayRunStatusType,
+} from './gateway/constants';
 
 interface StoredConversationReplyRoute {
   channel: string;
@@ -48,41 +58,54 @@ interface StoredConversationReplyRoute {
   accountId?: string;
 }
 
-interface SessionMappingRow {
-  im_conversation_id: string;
-  platform: string;
-  cowork_session_id: string;
-  agent_id: string;
-  created_at: number;
-  last_active_at: number;
+export interface IMOutboundDeliveryRecord {
+  id: string;
+  runId: string;
+  platform: IMPlatform;
+  conversationId: string;
+  threadId: string | null;
+  payloadJson: string;
+  status: GatewayDeliveryStatusType;
+  retryCount: number;
+  maxRetries: number;
+  nextRetryAt: number | null;
+  lastError: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface IMRecoverableGatewayRunRecord {
+  runId: string;
+  platform: IMPlatform;
+  conversationId: string | null;
+  routeKey: string;
+  coworkSessionId: string;
+  status: GatewayRunStatusType;
+  startedAt: number;
 }
 
 export class IMStore {
-  private db: Database.Database;
+  private db: SqlJsCompatDatabase;
+  private saveDb: () => void;
 
-  constructor(db: Database.Database) {
+  constructor(db: SqlJsCompatDatabase, saveDb: () => void = () => {}) {
     this.db = db;
+    this.saveDb = saveDb;
     this.initializeTables();
     this.migrateDefaults();
   }
 
   private initializeTables() {
-    this.db
-      .prepare(
-        `
+    this.db.run(`
       CREATE TABLE IF NOT EXISTS im_config (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL,
         updated_at INTEGER NOT NULL
       );
-    `,
-      )
-      .run();
+    `);
 
     // IM session mappings table for Cowork mode
-    this.db
-      .prepare(
-        `
+    this.db.run(`
       CREATE TABLE IF NOT EXISTS im_session_mappings (
         im_conversation_id TEXT NOT NULL,
         platform TEXT NOT NULL,
@@ -91,62 +114,100 @@ export class IMStore {
         last_active_at INTEGER NOT NULL,
         PRIMARY KEY (im_conversation_id, platform)
       );
-    `,
-      )
-      .run();
+    `);
+
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS weixin_context_tokens (
+        account_id TEXT NOT NULL,
+        conversation_id TEXT NOT NULL,
+        context_token TEXT NOT NULL,
+        status TEXT NOT NULL,
+        updated_at INTEGER NOT NULL,
+        last_success_at INTEGER,
+        last_error_at INTEGER,
+        last_error_message TEXT,
+        PRIMARY KEY (account_id, conversation_id)
+      );
+    `);
+
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS weixin_pending_outbound (
+        id TEXT PRIMARY KEY,
+        account_id TEXT NOT NULL,
+        conversation_id TEXT NOT NULL,
+        text TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        status TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        expire_at INTEGER NOT NULL,
+        sent_at INTEGER,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        last_error_message TEXT,
+        updated_at INTEGER NOT NULL
+      );
+    `);
 
     // Migration: Add agent_id column to im_session_mappings
-    const mappingCols = this.db.pragma('table_info(im_session_mappings)') as Array<{
-      name: string;
-    }>;
-    const mappingColNames = mappingCols.map((r) => r.name);
+    const mappingCols = this.db.exec('PRAGMA table_info(im_session_mappings)');
+    const mappingColNames = (mappingCols[0]?.values ?? []).map((r) => r[1] as string);
     if (!mappingColNames.includes('agent_id')) {
-      this.db
-        .prepare("ALTER TABLE im_session_mappings ADD COLUMN agent_id TEXT NOT NULL DEFAULT 'main'")
-        .run();
+      this.db.run("ALTER TABLE im_session_mappings ADD COLUMN agent_id TEXT NOT NULL DEFAULT 'main'");
     }
+
+    const storedPhase = this.getConfigValue<string>(ImGatewayMigrationConfigKey.Phase);
+    ensureImGatewayMigrationSchema({
+      db: this.db,
+      saveDb: this.saveDb,
+      envPhase: process.env[ImGatewayMigrationEnvKey.Phase],
+      storedPhase,
+      defaultPhase: ImGatewayMigrationPhase.Phase3,
+      persistPhase: (phase) => this.setConfigValue(ImGatewayMigrationConfigKey.Phase, phase),
+    });
+
+    this.saveDb();
   }
 
   /**
    * Migrate existing IM configs to ensure stable defaults.
    */
   private migrateDefaults(): void {
-    const platforms = PlatformRegistry.platforms;
+    const platforms = ['dingtalk', 'feishu', 'telegram', 'discord', 'nim', 'xiaomifeng', 'qq', 'wecom', 'popo', 'weixin'] as const;
+    let changed = false;
 
     for (const platform of platforms) {
-      const row = this.db.prepare('SELECT value FROM im_config WHERE key = ?').get(platform) as
-        | { value: string }
-        | undefined;
-      if (!row) continue;
+      const result = this.db.exec('SELECT value FROM im_config WHERE key = ?', [platform]);
+      if (!result[0]?.values[0]) continue;
 
       try {
-        const config = JSON.parse(row.value);
+        const config = JSON.parse(result[0].values[0][0] as string);
         if (config.debug === undefined || config.debug === false) {
           config.debug = true;
           const now = Date.now();
-          this.db
-            .prepare('UPDATE im_config SET value = ?, updated_at = ? WHERE key = ?')
-            .run(JSON.stringify(config), now, platform);
+          this.db.run(
+            'UPDATE im_config SET value = ?, updated_at = ? WHERE key = ?',
+            [JSON.stringify(config), now, platform]
+          );
+          changed = true;
         }
       } catch {
         // Ignore parse errors
       }
     }
 
-    const settingsRow = this.db
-      .prepare('SELECT value FROM im_config WHERE key = ?')
-      .get('settings') as { value: string } | undefined;
-    if (settingsRow) {
+    const settingsResult = this.db.exec('SELECT value FROM im_config WHERE key = ?', ['settings']);
+    if (settingsResult[0]?.values[0]) {
       try {
-        const settings = JSON.parse(settingsRow.value) as Partial<IMSettings>;
+        const settings = JSON.parse(settingsResult[0].values[0][0] as string) as Partial<IMSettings>;
         // Keep IM and desktop behavior aligned: skills auto-routing should be on by default.
         // Historical renderer default could persist `skillsEnabled: false` unintentionally.
         if (settings.skillsEnabled !== true) {
           settings.skillsEnabled = true;
           const now = Date.now();
-          this.db
-            .prepare('UPDATE im_config SET value = ?, updated_at = ? WHERE key = ?')
-            .run(JSON.stringify(settings), now, 'settings');
+          this.db.run(
+            'UPDATE im_config SET value = ?, updated_at = ? WHERE key = ?',
+            [JSON.stringify(settings), now, 'settings']
+          );
+          changed = true;
         }
       } catch {
         // Ignore parse errors
@@ -154,18 +215,18 @@ export class IMStore {
     }
 
     // Migrate feishu renderMode from 'text' to 'card' (previous renderer default was incorrect)
-    const feishuRow = this.db.prepare('SELECT value FROM im_config WHERE key = ?').get('feishu') as
-      | { value: string }
-      | undefined;
-    if (feishuRow) {
+    const feishuResult = this.db.exec('SELECT value FROM im_config WHERE key = ?', ['feishu']);
+    if (feishuResult[0]?.values[0]) {
       try {
-        const feishuConfig = JSON.parse(feishuRow.value) as Partial<{ renderMode: string }>;
+        const feishuConfig = JSON.parse(feishuResult[0].values[0][0] as string) as Partial<{ renderMode: string }>;
         if (feishuConfig.renderMode === 'text') {
           feishuConfig.renderMode = 'card';
           const now = Date.now();
-          this.db
-            .prepare('UPDATE im_config SET value = ?, updated_at = ? WHERE key = ?')
-            .run(JSON.stringify(feishuConfig), now, 'feishu');
+          this.db.run(
+            'UPDATE im_config SET value = ?, updated_at = ? WHERE key = ?',
+            [JSON.stringify(feishuConfig), now, 'feishu']
+          );
+          changed = true;
         }
       } catch {
         // Ignore parse errors
@@ -173,38 +234,33 @@ export class IMStore {
     }
 
     // Migrate old native Telegram config to new OpenClaw format
-    const oldTelegramRow = this.db
-      .prepare('SELECT value FROM im_config WHERE key = ?')
-      .get('telegram') as { value: string } | undefined;
-    const newTelegramRow = this.db
-      .prepare('SELECT value FROM im_config WHERE key = ?')
-      .get('telegramOpenClaw') as { value: string } | undefined;
-    if (oldTelegramRow && !newTelegramRow) {
+    const oldTelegramResult = this.db.exec('SELECT value FROM im_config WHERE key = ?', ['telegram']);
+    const newTelegramResult = this.db.exec('SELECT value FROM im_config WHERE key = ?', ['telegramOpenClaw']);
+    if (oldTelegramResult[0]?.values[0] && !newTelegramResult[0]?.values[0]) {
       try {
-        const oldConfig = JSON.parse(oldTelegramRow.value) as {
+        const oldConfig = JSON.parse(oldTelegramResult[0].values[0][0] as string) as {
           enabled?: boolean;
           botToken?: string;
           allowedUserIds?: string[];
           debug?: boolean;
         };
         if (oldConfig.botToken) {
-          const hasAllowList =
-            Array.isArray(oldConfig.allowedUserIds) && oldConfig.allowedUserIds.length > 0;
+          const hasAllowList = Array.isArray(oldConfig.allowedUserIds) && oldConfig.allowedUserIds.length > 0;
           const newConfig = {
             ...DEFAULT_TELEGRAM_OPENCLAW_CONFIG,
             enabled: oldConfig.enabled ?? false,
             botToken: oldConfig.botToken,
             allowFrom: oldConfig.allowedUserIds ?? [],
-            dmPolicy: hasAllowList ? ('allowlist' as const) : ('pairing' as const),
+            dmPolicy: hasAllowList ? 'allowlist' as const : 'pairing' as const,
             debug: oldConfig.debug ?? true,
           };
           const now = Date.now();
-          this.db
-            .prepare(
-              'INSERT OR REPLACE INTO im_config (key, value, created_at, updated_at) VALUES (?, ?, ?, ?)',
-            )
-            .run('telegramOpenClaw', JSON.stringify(newConfig), now, now);
-          this.db.prepare('DELETE FROM im_config WHERE key = ?').run('telegram');
+          this.db.run(
+            'INSERT OR REPLACE INTO im_config (key, value, updated_at) VALUES (?, ?, ?)',
+            ['telegramOpenClaw', JSON.stringify(newConfig), now]
+          );
+          this.db.run('DELETE FROM im_config WHERE key = ?', ['telegram']);
+          changed = true;
           console.log('[IMStore] Migrated old Telegram config to OpenClaw format');
         }
       } catch {
@@ -213,15 +269,11 @@ export class IMStore {
     }
 
     // Migrate old native Discord config to new OpenClaw format
-    const oldDiscordRow = this.db
-      .prepare('SELECT value FROM im_config WHERE key = ?')
-      .get('discord') as { value: string } | undefined;
-    const newDiscordRow = this.db
-      .prepare('SELECT value FROM im_config WHERE key = ?')
-      .get('discordOpenClaw') as { value: string } | undefined;
-    if (oldDiscordRow && !newDiscordRow) {
+    const oldDiscordResult = this.db.exec('SELECT value FROM im_config WHERE key = ?', ['discord']);
+    const newDiscordResult = this.db.exec('SELECT value FROM im_config WHERE key = ?', ['discordOpenClaw']);
+    if (oldDiscordResult[0]?.values[0] && !newDiscordResult[0]?.values[0]) {
       try {
-        const oldConfig = JSON.parse(oldDiscordRow.value) as {
+        const oldConfig = JSON.parse(oldDiscordResult[0].values[0][0] as string) as {
           enabled?: boolean;
           botToken?: string;
           debug?: boolean;
@@ -234,10 +286,12 @@ export class IMStore {
             debug: oldConfig.debug ?? true,
           };
           const now = Date.now();
-          this.db
-            .prepare('INSERT OR REPLACE INTO im_config (key, value, updated_at) VALUES (?, ?, ?)')
-            .run('discordOpenClaw', JSON.stringify(newConfig), now);
-          this.db.prepare('DELETE FROM im_config WHERE key = ?').run('discord');
+          this.db.run(
+            'INSERT OR REPLACE INTO im_config (key, value, updated_at) VALUES (?, ?, ?)',
+            ['discordOpenClaw', JSON.stringify(newConfig), now]
+          );
+          this.db.run('DELETE FROM im_config WHERE key = ?', ['discord']);
+          changed = true;
           console.log('[IMStore] Migrated old Discord config to OpenClaw format');
         }
       } catch {
@@ -246,21 +300,11 @@ export class IMStore {
     }
 
     // Migrate old native Feishu config to new OpenClaw format
-    const oldFeishuRow2 = this.db
-      .prepare('SELECT value FROM im_config WHERE key = ?')
-      .get('feishu') as { value: string } | undefined;
-    const newFeishuRow = this.db
-      .prepare('SELECT value FROM im_config WHERE key = ?')
-      .get('feishuOpenClaw') as { value: string } | undefined;
-    if (oldFeishuRow2 && !newFeishuRow) {
+    const oldFeishuResult2 = this.db.exec('SELECT value FROM im_config WHERE key = ?', ['feishu']);
+    const newFeishuResult = this.db.exec('SELECT value FROM im_config WHERE key = ?', ['feishuOpenClaw']);
+    if (oldFeishuResult2[0]?.values[0] && !newFeishuResult[0]?.values[0]) {
       try {
-        const oldConfig = JSON.parse(oldFeishuRow2.value) as Partial<{
-          enabled: boolean;
-          appId: string;
-          appSecret: string;
-          domain: string;
-          debug: boolean;
-        }>;
+        const oldConfig = JSON.parse(oldFeishuResult2[0].values[0][0] as string) as Partial<{ enabled: boolean; appId: string; appSecret: string; domain: string; debug: boolean }>;
         if (oldConfig.appId) {
           const newConfig: FeishuOpenClawConfig = {
             ...DEFAULT_FEISHU_OPENCLAW_CONFIG,
@@ -271,10 +315,12 @@ export class IMStore {
             debug: oldConfig.debug ?? true,
           };
           const now = Date.now();
-          this.db
-            .prepare('INSERT OR REPLACE INTO im_config (key, value, updated_at) VALUES (?, ?, ?)')
-            .run('feishuOpenClaw', JSON.stringify(newConfig), now);
-          this.db.prepare('DELETE FROM im_config WHERE key = ?').run('feishu');
+          this.db.run(
+            'INSERT OR REPLACE INTO im_config (key, value, updated_at) VALUES (?, ?, ?)',
+            ['feishuOpenClaw', JSON.stringify(newConfig), now]
+          );
+          this.db.run('DELETE FROM im_config WHERE key = ?', ['feishu']);
+          changed = true;
           console.log('[IMStore] Migrated old Feishu config to OpenClaw format');
         }
       } catch {
@@ -283,20 +329,11 @@ export class IMStore {
     }
 
     // Migrate old native DingTalk config to new OpenClaw format
-    const oldDingtalkRow = this.db
-      .prepare('SELECT value FROM im_config WHERE key = ?')
-      .get('dingtalk') as { value: string } | undefined;
-    const newDingtalkRow = this.db
-      .prepare('SELECT value FROM im_config WHERE key = ?')
-      .get('dingtalkOpenClaw') as { value: string } | undefined;
-    if (oldDingtalkRow && !newDingtalkRow) {
+    const oldDingtalkResult = this.db.exec('SELECT value FROM im_config WHERE key = ?', ['dingtalk']);
+    const newDingtalkResult = this.db.exec('SELECT value FROM im_config WHERE key = ?', ['dingtalkOpenClaw']);
+    if (oldDingtalkResult[0]?.values[0] && !newDingtalkResult[0]?.values[0]) {
       try {
-        const oldConfig = JSON.parse(oldDingtalkRow.value) as Partial<{
-          enabled: boolean;
-          clientId: string;
-          clientSecret: string;
-          debug: boolean;
-        }>;
+        const oldConfig = JSON.parse(oldDingtalkResult[0].values[0][0] as string) as Partial<{ enabled: boolean; clientId: string; clientSecret: string; debug: boolean }>;
         if (oldConfig.clientId) {
           const newConfig: DingTalkOpenClawConfig = {
             ...DEFAULT_DINGTALK_OPENCLAW_CONFIG,
@@ -306,10 +343,12 @@ export class IMStore {
             debug: oldConfig.debug ?? false,
           };
           const now = Date.now();
-          this.db
-            .prepare('INSERT OR REPLACE INTO im_config (key, value, updated_at) VALUES (?, ?, ?)')
-            .run('dingtalkOpenClaw', JSON.stringify(newConfig), now);
-          this.db.prepare('DELETE FROM im_config WHERE key = ?').run('dingtalk');
+          this.db.run(
+            'INSERT OR REPLACE INTO im_config (key, value, updated_at) VALUES (?, ?, ?)',
+            ['dingtalkOpenClaw', JSON.stringify(newConfig), now]
+          );
+          this.db.run('DELETE FROM im_config WHERE key = ?', ['dingtalk']);
+          changed = true;
           console.log('[IMStore] Migrated old DingTalk config to OpenClaw format');
         }
       } catch {
@@ -318,20 +357,11 @@ export class IMStore {
     }
 
     // Migrate old native WeCom config to new OpenClaw format
-    const oldWecomRow = this.db
-      .prepare('SELECT value FROM im_config WHERE key = ?')
-      .get('wecom') as { value: string } | undefined;
-    const newWecomRow = this.db
-      .prepare('SELECT value FROM im_config WHERE key = ?')
-      .get('wecomOpenClaw') as { value: string } | undefined;
-    if (oldWecomRow && !newWecomRow) {
+    const oldWecomResult = this.db.exec('SELECT value FROM im_config WHERE key = ?', ['wecom']);
+    const newWecomResult = this.db.exec('SELECT value FROM im_config WHERE key = ?', ['wecomOpenClaw']);
+    if (oldWecomResult[0]?.values[0] && !newWecomResult[0]?.values[0]) {
       try {
-        const oldConfig = JSON.parse(oldWecomRow.value) as Partial<{
-          enabled: boolean;
-          botId: string;
-          secret: string;
-          debug: boolean;
-        }>;
+        const oldConfig = JSON.parse(oldWecomResult[0].values[0][0] as string) as Partial<{ enabled: boolean; botId: string; secret: string; debug: boolean }>;
         if (oldConfig.botId) {
           const newConfig: WecomOpenClawConfig = {
             ...DEFAULT_WECOM_CONFIG,
@@ -341,10 +371,12 @@ export class IMStore {
             debug: oldConfig.debug ?? true,
           };
           const now = Date.now();
-          this.db
-            .prepare('INSERT OR REPLACE INTO im_config (key, value, updated_at) VALUES (?, ?, ?)')
-            .run('wecomOpenClaw', JSON.stringify(newConfig), now);
-          this.db.prepare('DELETE FROM im_config WHERE key = ?').run('wecom');
+          this.db.run(
+            'INSERT OR REPLACE INTO im_config (key, value, updated_at) VALUES (?, ?, ?)',
+            ['wecomOpenClaw', JSON.stringify(newConfig), now]
+          );
+          this.db.run('DELETE FROM im_config WHERE key = ?', ['wecom']);
+          changed = true;
           console.log('[IMStore] Migrated old WeCom config to OpenClaw format');
         }
       } catch {
@@ -355,196 +387,36 @@ export class IMStore {
     // Migrate popo configs that have token but no connectionMode:
     // These are existing webhook users from before connectionMode was introduced.
     // Preserve their setup by explicitly setting connectionMode to 'webhook'.
-    const popoRow = this.db.prepare('SELECT value FROM im_config WHERE key = ?').get('popo') as
-      | { value: string }
-      | undefined;
-    if (popoRow) {
+    const popoResult = this.db.exec('SELECT value FROM im_config WHERE key = ?', ['popo']);
+    if (popoResult[0]?.values[0]) {
       try {
-        const popoConfig = JSON.parse(popoRow.value) as Partial<PopoOpenClawConfig>;
+        const popoConfig = JSON.parse(popoResult[0].values[0][0] as string) as Partial<PopoOpenClawConfig>;
         if (popoConfig.token && !popoConfig.connectionMode) {
           popoConfig.connectionMode = 'webhook';
           const now = Date.now();
-          this.db
-            .prepare('UPDATE im_config SET value = ?, updated_at = ? WHERE key = ?')
-            .run(JSON.stringify(popoConfig), now, 'popo');
-          console.log(
-            '[IMStore] Migrated popo config: inferred connectionMode=webhook from existing token',
+          this.db.run(
+            'UPDATE im_config SET value = ?, updated_at = ? WHERE key = ?',
+            [JSON.stringify(popoConfig), now, 'popo']
           );
+          changed = true;
+          console.log('[IMStore] Migrated popo config: inferred connectionMode=webhook from existing token');
         }
       } catch {
         // Ignore parse errors
       }
     }
 
-    // Migrate 'xiaomifeng' config key to 'netease-bee'
-    const oldXmfRow = this.db
-      .prepare('SELECT value FROM im_config WHERE key = ?')
-      .get('xiaomifeng') as { value: string } | undefined;
-    const newBeeRow = this.db
-      .prepare('SELECT value FROM im_config WHERE key = ?')
-      .get('netease-bee') as { value: string } | undefined;
-    if (oldXmfRow && !newBeeRow) {
-      try {
-        const oldConfig = JSON.parse(oldXmfRow.value) as Partial<NeteaseBeeChanConfig>;
-        const now = Date.now();
-        this.db
-          .prepare('INSERT INTO im_config (key, value, updated_at) VALUES (?, ?, ?)')
-          .run('netease-bee', JSON.stringify({ ...DEFAULT_NETEASE_BEE_CONFIG, ...oldConfig }), now);
-        this.db.prepare('DELETE FROM im_config WHERE key = ?').run('xiaomifeng');
-        console.log('[IMStore] Migrated xiaomifeng config to netease-bee');
-      } catch {
-        // Ignore parse errors
-      }
-    }
-
-    // Migrate single QQ config to multi-instance format
-    const oldQQRow = this.db.prepare('SELECT value FROM im_config WHERE key = ?').get('qq') as
-      | { value: string }
-      | undefined;
-    const existingQQInstances = this.db
-      .prepare('SELECT key FROM im_config WHERE key LIKE ?')
-      .all('qq:%') as Array<{ key: string }>;
-    if (oldQQRow && !existingQQInstances.length) {
-      try {
-        const oldConfig = JSON.parse(oldQQRow.value) as QQConfig;
-        const instanceId = crypto.randomUUID();
-        const instanceConfig: QQInstanceConfig = {
-          ...DEFAULT_QQ_CONFIG,
-          ...oldConfig,
-          instanceId,
-          instanceName: 'QQ Bot 1',
-        };
-        const now = Date.now();
-        this.db
-          .prepare('INSERT INTO im_config (key, value, updated_at) VALUES (?, ?, ?)')
-          .run(`qq:${instanceId}`, JSON.stringify(instanceConfig), now);
-        this.db.prepare('DELETE FROM im_config WHERE key = ?').run('qq');
-        // Migrate session mappings
-        this.db
-          .prepare('UPDATE im_session_mappings SET platform = ? WHERE platform = ?')
-          .run(`qq:${instanceId}`, 'qq');
-        // Migrate agent bindings
-        const settingsRow2 = this.db
-          .prepare('SELECT value FROM im_config WHERE key = ?')
-          .get('settings') as { value: string } | undefined;
-        if (settingsRow2) {
-          const settings = JSON.parse(settingsRow2.value) as IMSettings;
-          if (settings.platformAgentBindings?.['qq']) {
-            settings.platformAgentBindings[`qq:${instanceId}`] =
-              settings.platformAgentBindings['qq'];
-            delete settings.platformAgentBindings['qq'];
-            this.db
-              .prepare('UPDATE im_config SET value = ?, updated_at = ? WHERE key = ?')
-              .run(JSON.stringify(settings), now, 'settings');
-          }
-        }
-        console.log('[IMStore] Migrated single QQ config to multi-instance format');
-      } catch {
-        // Ignore parse errors
-      }
-    }
-
-    // Migrate single Feishu config to multi-instance format
-    const oldFeishuSingleRow = this.db
-      .prepare('SELECT value FROM im_config WHERE key = ?')
-      .get('feishuOpenClaw') as { value: string } | undefined;
-    const existingFeishuInstances = this.db
-      .prepare('SELECT key FROM im_config WHERE key LIKE ?')
-      .all('feishu:%') as Array<{ key: string }>;
-    if (oldFeishuSingleRow && !existingFeishuInstances.length) {
-      try {
-        const oldConfig = JSON.parse(oldFeishuSingleRow.value) as FeishuOpenClawConfig;
-        const instanceId = crypto.randomUUID();
-        const instanceConfig: FeishuInstanceConfig = {
-          ...DEFAULT_FEISHU_OPENCLAW_CONFIG,
-          ...oldConfig,
-          instanceId,
-          instanceName: 'Feishu Bot 1',
-        };
-        const now = Date.now();
-        this.db
-          .prepare('INSERT INTO im_config (key, value, updated_at) VALUES (?, ?, ?)')
-          .run(`feishu:${instanceId}`, JSON.stringify(instanceConfig), now);
-        this.db.prepare('DELETE FROM im_config WHERE key = ?').run('feishuOpenClaw');
-        // Migrate session mappings
-        this.db
-          .prepare('UPDATE im_session_mappings SET platform = ? WHERE platform = ?')
-          .run(`feishu:${instanceId}`, 'feishu');
-        // Migrate agent bindings
-        const settingsRow3 = this.db
-          .prepare('SELECT value FROM im_config WHERE key = ?')
-          .get('settings') as { value: string } | undefined;
-        if (settingsRow3) {
-          const settings = JSON.parse(settingsRow3.value) as IMSettings;
-          if (settings.platformAgentBindings?.['feishu']) {
-            settings.platformAgentBindings[`feishu:${instanceId}`] =
-              settings.platformAgentBindings['feishu'];
-            delete settings.platformAgentBindings['feishu'];
-            this.db
-              .prepare('UPDATE im_config SET value = ?, updated_at = ? WHERE key = ?')
-              .run(JSON.stringify(settings), now, 'settings');
-          }
-        }
-        console.log('[IMStore] Migrated single Feishu config to multi-instance format');
-      } catch {
-        // Ignore parse errors
-      }
-    }
-
-    // Migrate single DingTalk config to multi-instance format
-    const oldDingtalkSingleRow = this.db
-      .prepare('SELECT value FROM im_config WHERE key = ?')
-      .get('dingtalkOpenClaw') as { value: string } | undefined;
-    const existingDingtalkInstances = this.db
-      .prepare('SELECT key FROM im_config WHERE key LIKE ?')
-      .all('dingtalk:%') as Array<{ key: string }>;
-    if (oldDingtalkSingleRow && !existingDingtalkInstances.length) {
-      try {
-        const oldDtConfig = JSON.parse(oldDingtalkSingleRow.value) as DingTalkOpenClawConfig;
-        const instanceId = crypto.randomUUID();
-        const instanceConfig: DingTalkInstanceConfig = {
-          ...DEFAULT_DINGTALK_OPENCLAW_CONFIG,
-          ...oldDtConfig,
-          instanceId,
-          instanceName: 'DingTalk Bot 1',
-        };
-        const now = Date.now();
-        this.db
-          .prepare('INSERT INTO im_config (key, value, updated_at) VALUES (?, ?, ?)')
-          .run(`dingtalk:${instanceId}`, JSON.stringify(instanceConfig), now);
-        this.db.prepare('DELETE FROM im_config WHERE key = ?').run('dingtalkOpenClaw');
-        // Migrate session mappings
-        this.db
-          .prepare('UPDATE im_session_mappings SET platform = ? WHERE platform = ?')
-          .run(`dingtalk:${instanceId}`, 'dingtalk');
-        // Migrate agent bindings
-        const settingsRow4 = this.db
-          .prepare('SELECT value FROM im_config WHERE key = ?')
-          .get('settings') as { value: string } | undefined;
-        if (settingsRow4) {
-          const settings = JSON.parse(settingsRow4.value) as IMSettings;
-          if (settings.platformAgentBindings?.['dingtalk']) {
-            settings.platformAgentBindings[`dingtalk:${instanceId}`] =
-              settings.platformAgentBindings['dingtalk'];
-            delete settings.platformAgentBindings['dingtalk'];
-            this.db
-              .prepare('UPDATE im_config SET value = ?, updated_at = ? WHERE key = ?')
-              .run(JSON.stringify(settings), now, 'settings');
-          }
-        }
-        console.log('[IMStore] Migrated single DingTalk config to multi-instance format');
-      } catch {
-        // Ignore parse errors
-      }
+    if (changed) {
+      this.saveDb();
     }
   }
 
+  // ==================== Generic Config Operations ====================
+
   private getConfigValue<T>(key: string): T | undefined {
-    const row = this.db.prepare('SELECT value FROM im_config WHERE key = ?').get(key) as
-      | { value: string }
-      | undefined;
-    if (!row) return undefined;
-    const value = row.value;
+    const result = this.db.exec('SELECT value FROM im_config WHERE key = ?', [key]);
+    if (!result[0]?.values[0]) return undefined;
+    const value = result[0].values[0][0] as string;
     try {
       return JSON.parse(value) as T;
     } catch (error) {
@@ -555,34 +427,26 @@ export class IMStore {
 
   private setConfigValue<T>(key: string, value: T): void {
     const now = Date.now();
-    this.db
-      .prepare(
-        `
+    this.db.run(`
       INSERT INTO im_config (key, value, updated_at)
       VALUES (?, ?, ?)
       ON CONFLICT(key) DO UPDATE SET
         value = excluded.value,
         updated_at = excluded.updated_at
-    `,
-      )
-      .run(key, JSON.stringify(value), now);
+    `, [key, JSON.stringify(value), now]);
+    this.saveDb();
   }
 
   // ==================== Full Config Operations ====================
 
   getConfig(): IMGatewayConfig {
-    const dingtalkMulti = this.getDingTalkMultiInstanceConfig();
-    const telegram =
-      this.getConfigValue<TelegramOpenClawConfig>('telegramOpenClaw') ??
-      DEFAULT_TELEGRAM_OPENCLAW_CONFIG;
-    const discord =
-      this.getConfigValue<DiscordOpenClawConfig>('discordOpenClaw') ??
-      DEFAULT_DISCORD_OPENCLAW_CONFIG;
-    const nimConfig = this.getConfigValue<NimConfig>('nim') ?? DEFAULT_NIM_CONFIG;
-    const neteaseBeeChan =
-      this.getConfigValue<NeteaseBeeChanConfig>('netease-bee') ?? DEFAULT_NETEASE_BEE_CONFIG;
-    const qqMulti = this.getQQMultiInstanceConfig();
-    const feishuMulti = this.getFeishuMultiInstanceConfig();
+    const dingtalk = this.getConfigValue<DingTalkOpenClawConfig>('dingtalkOpenClaw') ?? DEFAULT_DINGTALK_OPENCLAW_CONFIG;
+    const feishu = this.getConfigValue<FeishuOpenClawConfig>('feishuOpenClaw') ?? DEFAULT_FEISHU_OPENCLAW_CONFIG;
+    const telegram = this.getConfigValue<TelegramOpenClawConfig>('telegramOpenClaw') ?? DEFAULT_TELEGRAM_OPENCLAW_CONFIG;
+    const discord = this.getConfigValue<DiscordOpenClawConfig>('discordOpenClaw') ?? DEFAULT_DISCORD_OPENCLAW_CONFIG;
+    const nim = this.getConfigValue<NimConfig>('nim') ?? DEFAULT_NIM_CONFIG;
+    const xiaomifeng = this.getConfigValue<XiaomifengConfig>('xiaomifeng') ?? DEFAULT_XIAOMIFENG_CONFIG;
+    const qq = this.getConfigValue<QQConfig>('qq') ?? DEFAULT_QQ_CONFIG;
     const wecom = this.getConfigValue<WecomOpenClawConfig>('wecomOpenClaw') ?? DEFAULT_WECOM_CONFIG;
     const popo = this.getConfigValue<PopoOpenClawConfig>('popo') ?? DEFAULT_POPO_CONFIG;
     const weixin = this.getConfigValue<WeixinOpenClawConfig>('weixin') ?? DEFAULT_WEIXIN_CONFIG;
@@ -600,13 +464,13 @@ export class IMStore {
     };
 
     return {
-      dingtalk: dingtalkMulti,
-      feishu: feishuMulti,
+      dingtalk: resolveEnabled(dingtalk, DEFAULT_DINGTALK_OPENCLAW_CONFIG),
+      feishu: resolveEnabled(feishu, DEFAULT_FEISHU_OPENCLAW_CONFIG),
       telegram: resolveEnabled(telegram, DEFAULT_TELEGRAM_OPENCLAW_CONFIG),
       discord: resolveEnabled(discord, DEFAULT_DISCORD_OPENCLAW_CONFIG),
-      nim: resolveEnabled(nimConfig, DEFAULT_NIM_CONFIG),
-      'netease-bee': resolveEnabled(neteaseBeeChan, DEFAULT_NETEASE_BEE_CONFIG),
-      qq: qqMulti,
+      nim: resolveEnabled(nim, DEFAULT_NIM_CONFIG),
+      xiaomifeng: resolveEnabled(xiaomifeng, DEFAULT_XIAOMIFENG_CONFIG),
+      qq: resolveEnabled(qq, DEFAULT_QQ_CONFIG),
       wecom: resolveEnabled(wecom, DEFAULT_WECOM_CONFIG),
       popo: resolveEnabled(popo, DEFAULT_POPO_CONFIG),
       weixin: resolveEnabled(weixin, DEFAULT_WEIXIN_CONFIG),
@@ -616,10 +480,10 @@ export class IMStore {
 
   setConfig(config: Partial<IMGatewayConfig>): void {
     if (config.dingtalk) {
-      this.setDingTalkMultiInstanceConfig(config.dingtalk);
+      this.setDingTalkOpenClawConfig(config.dingtalk);
     }
     if (config.feishu) {
-      this.setFeishuMultiInstanceConfig(config.feishu);
+      this.setFeishuOpenClawConfig(config.feishu);
     }
     if (config.telegram) {
       this.setTelegramOpenClawConfig(config.telegram);
@@ -630,11 +494,11 @@ export class IMStore {
     if (config.nim) {
       this.setNimConfig(config.nim);
     }
-    if (config['netease-bee']) {
-      this.setNeteaseBeeChanConfig(config['netease-bee']);
+    if (config.xiaomifeng) {
+      this.setXiaomifengConfig(config.xiaomifeng);
     }
     if (config.qq) {
-      this.setQQMultiInstanceConfig(config.qq);
+      this.setQQConfig(config.qq);
     }
     if (config.wecom) {
       this.setWecomConfig(config.wecom);
@@ -652,154 +516,26 @@ export class IMStore {
 
   // ==================== DingTalk OpenClaw Config ====================
 
-  /** @deprecated Use getDingTalkMultiInstanceConfig() or getDingTalkInstances() instead */
   getDingTalkOpenClawConfig(): DingTalkOpenClawConfig {
     const stored = this.getConfigValue<DingTalkOpenClawConfig>('dingtalkOpenClaw');
     return { ...DEFAULT_DINGTALK_OPENCLAW_CONFIG, ...stored };
   }
 
-  /** @deprecated Use setDingTalkInstanceConfig() instead */
   setDingTalkOpenClawConfig(config: Partial<DingTalkOpenClawConfig>): void {
     const current = this.getDingTalkOpenClawConfig();
     this.setConfigValue('dingtalkOpenClaw', { ...current, ...config });
   }
 
-  // ==================== DingTalk Multi-Instance Config ====================
-
-  getDingTalkInstances(): DingTalkInstanceConfig[] {
-    const rows = this.db
-      .prepare('SELECT key, value FROM im_config WHERE key LIKE ?')
-      .all('dingtalk:%') as Array<{ key: string; value: string }>;
-    if (!rows.length) return [];
-    const instances: DingTalkInstanceConfig[] = [];
-    for (const row of rows) {
-      try {
-        const config = JSON.parse(row.value) as DingTalkInstanceConfig;
-        instances.push({ ...DEFAULT_DINGTALK_OPENCLAW_CONFIG, ...config });
-      } catch {
-        // Ignore parse errors
-      }
-    }
-    return instances;
-  }
-
-  getDingTalkInstanceConfig(instanceId: string): DingTalkInstanceConfig | null {
-    const stored = this.getConfigValue<DingTalkInstanceConfig>(`dingtalk:${instanceId}`);
-    if (!stored) return null;
-    return { ...DEFAULT_DINGTALK_OPENCLAW_CONFIG, ...stored };
-  }
-
-  setDingTalkInstanceConfig(instanceId: string, config: Partial<DingTalkInstanceConfig>): void {
-    const current = this.getDingTalkInstanceConfig(instanceId);
-    if (current) {
-      this.setConfigValue(`dingtalk:${instanceId}`, { ...current, ...config });
-    } else {
-      this.setConfigValue(`dingtalk:${instanceId}`, {
-        ...DEFAULT_DINGTALK_OPENCLAW_CONFIG,
-        instanceId,
-        instanceName: config.instanceName || 'DingTalk Bot',
-        ...config,
-      });
-    }
-  }
-
-  deleteDingTalkInstance(instanceId: string): void {
-    const now = Date.now();
-    this.db.prepare('DELETE FROM im_config WHERE key = ?').run(`dingtalk:${instanceId}`);
-    // Clean up session mappings for this instance
-    this.db
-      .prepare('DELETE FROM im_session_mappings WHERE platform = ?')
-      .run(`dingtalk:${instanceId}`);
-    void now;
-  }
-
-  getDingTalkMultiInstanceConfig(): DingTalkMultiInstanceConfig {
-    const instances = this.getDingTalkInstances();
-    if (instances.length === 0) return DEFAULT_DINGTALK_MULTI_INSTANCE_CONFIG;
-    return { instances };
-  }
-
-  setDingTalkMultiInstanceConfig(config: DingTalkMultiInstanceConfig): void {
-    // Write each instance individually
-    for (const inst of config.instances) {
-      this.setDingTalkInstanceConfig(inst.instanceId, inst);
-    }
-  }
-
   // ==================== Feishu OpenClaw Config ====================
 
-  /** @deprecated Use getFeishuMultiInstanceConfig() or getFeishuInstances() instead */
   getFeishuOpenClawConfig(): FeishuOpenClawConfig {
     const stored = this.getConfigValue<FeishuOpenClawConfig>('feishuOpenClaw');
     return { ...DEFAULT_FEISHU_OPENCLAW_CONFIG, ...stored };
   }
 
-  /** @deprecated Use setFeishuInstanceConfig() instead */
   setFeishuOpenClawConfig(config: Partial<FeishuOpenClawConfig>): void {
     const current = this.getFeishuOpenClawConfig();
     this.setConfigValue('feishuOpenClaw', { ...current, ...config });
-  }
-
-  // ==================== Feishu Multi-Instance Config ====================
-
-  getFeishuInstances(): FeishuInstanceConfig[] {
-    const rows = this.db
-      .prepare('SELECT key, value FROM im_config WHERE key LIKE ?')
-      .all('feishu:%') as Array<{ key: string; value: string }>;
-    if (!rows.length) return [];
-    const instances: FeishuInstanceConfig[] = [];
-    for (const row of rows) {
-      try {
-        const config = JSON.parse(row.value) as FeishuInstanceConfig;
-        instances.push({ ...DEFAULT_FEISHU_OPENCLAW_CONFIG, ...config });
-      } catch {
-        // Ignore parse errors
-      }
-    }
-    return instances;
-  }
-
-  getFeishuInstanceConfig(instanceId: string): FeishuInstanceConfig | null {
-    const stored = this.getConfigValue<FeishuInstanceConfig>(`feishu:${instanceId}`);
-    if (!stored) return null;
-    return { ...DEFAULT_FEISHU_OPENCLAW_CONFIG, ...stored };
-  }
-
-  setFeishuInstanceConfig(instanceId: string, config: Partial<FeishuInstanceConfig>): void {
-    const current = this.getFeishuInstanceConfig(instanceId);
-    if (current) {
-      this.setConfigValue(`feishu:${instanceId}`, { ...current, ...config });
-    } else {
-      this.setConfigValue(`feishu:${instanceId}`, {
-        ...DEFAULT_FEISHU_OPENCLAW_CONFIG,
-        instanceId,
-        instanceName: config.instanceName || 'Feishu Bot',
-        ...config,
-      });
-    }
-  }
-
-  deleteFeishuInstance(instanceId: string): void {
-    const now = Date.now();
-    this.db.prepare('DELETE FROM im_config WHERE key = ?').run(`feishu:${instanceId}`);
-    // Clean up session mappings for this instance
-    this.db
-      .prepare('DELETE FROM im_session_mappings WHERE platform = ?')
-      .run(`feishu:${instanceId}`);
-    void now;
-  }
-
-  getFeishuMultiInstanceConfig(): FeishuMultiInstanceConfig {
-    const instances = this.getFeishuInstances();
-    if (instances.length === 0) return DEFAULT_FEISHU_MULTI_INSTANCE_CONFIG;
-    return { instances };
-  }
-
-  setFeishuMultiInstanceConfig(config: FeishuMultiInstanceConfig): void {
-    // Write each instance individually
-    for (const inst of config.instances) {
-      this.setFeishuInstanceConfig(inst.instanceId, inst);
-    }
   }
 
   // ==================== Discord OpenClaw Config ====================
@@ -826,16 +562,16 @@ export class IMStore {
     this.setConfigValue('nim', { ...current, ...config });
   }
 
-  // ==================== NeteaseBee Chan Config ====================
+  // ==================== Xiaomifeng Config ====================
 
-  getNeteaseBeeChanConfig(): NeteaseBeeChanConfig {
-    const stored = this.getConfigValue<NeteaseBeeChanConfig>('netease-bee');
-    return { ...DEFAULT_NETEASE_BEE_CONFIG, ...stored };
+  getXiaomifengConfig(): XiaomifengConfig {
+    const stored = this.getConfigValue<XiaomifengConfig>('xiaomifeng');
+    return { ...DEFAULT_XIAOMIFENG_CONFIG, ...stored };
   }
 
-  setNeteaseBeeChanConfig(config: Partial<NeteaseBeeChanConfig>): void {
-    const current = this.getNeteaseBeeChanConfig();
-    this.setConfigValue('netease-bee', { ...current, ...config });
+  setXiaomifengConfig(config: Partial<XiaomifengConfig>): void {
+    const current = this.getXiaomifengConfig();
+    this.setConfigValue('xiaomifeng', { ...current, ...config });
   }
 
   // ==================== Telegram OpenClaw Config ====================
@@ -850,76 +586,16 @@ export class IMStore {
     this.setConfigValue('telegramOpenClaw', { ...current, ...config });
   }
 
-  // ==================== QQ Multi-Instance Config ====================
+  // ==================== QQ Config ====================
 
-  /** @deprecated Use getQQMultiInstanceConfig() or getQQInstances() instead */
   getQQConfig(): QQConfig {
     const stored = this.getConfigValue<QQConfig>('qq');
     return { ...DEFAULT_QQ_CONFIG, ...stored };
   }
 
-  /** @deprecated Use setQQInstanceConfig() instead */
   setQQConfig(config: Partial<QQConfig>): void {
     const current = this.getQQConfig();
     this.setConfigValue('qq', { ...current, ...config });
-  }
-
-  getQQInstances(): QQInstanceConfig[] {
-    const rows = this.db
-      .prepare('SELECT key, value FROM im_config WHERE key LIKE ?')
-      .all('qq:%') as Array<{ key: string; value: string }>;
-    if (!rows.length) return [];
-    const instances: QQInstanceConfig[] = [];
-    for (const row of rows) {
-      try {
-        const config = JSON.parse(row.value) as QQInstanceConfig;
-        instances.push({ ...DEFAULT_QQ_CONFIG, ...config });
-      } catch {
-        // Ignore parse errors
-      }
-    }
-    return instances;
-  }
-
-  getQQInstanceConfig(instanceId: string): QQInstanceConfig | null {
-    const stored = this.getConfigValue<QQInstanceConfig>(`qq:${instanceId}`);
-    if (!stored) return null;
-    return { ...DEFAULT_QQ_CONFIG, ...stored };
-  }
-
-  setQQInstanceConfig(instanceId: string, config: Partial<QQInstanceConfig>): void {
-    const current = this.getQQInstanceConfig(instanceId);
-    if (current) {
-      this.setConfigValue(`qq:${instanceId}`, { ...current, ...config });
-    } else {
-      this.setConfigValue(`qq:${instanceId}`, {
-        ...DEFAULT_QQ_CONFIG,
-        instanceId,
-        instanceName: config.instanceName || `QQ Bot`,
-        ...config,
-      });
-    }
-  }
-
-  deleteQQInstance(instanceId: string): void {
-    const now = Date.now();
-    this.db.prepare('DELETE FROM im_config WHERE key = ?').run(`qq:${instanceId}`);
-    // Clean up session mappings for this instance
-    this.db.prepare('DELETE FROM im_session_mappings WHERE platform = ?').run(`qq:${instanceId}`);
-    void now;
-  }
-
-  getQQMultiInstanceConfig(): QQMultiInstanceConfig {
-    const instances = this.getQQInstances();
-    if (instances.length === 0) return DEFAULT_QQ_MULTI_INSTANCE_CONFIG;
-    return { instances };
-  }
-
-  setQQMultiInstanceConfig(config: QQMultiInstanceConfig): void {
-    // Write each instance individually
-    for (const inst of config.instances) {
-      this.setQQInstanceConfig(inst.instanceId, inst);
-    }
   }
 
   // ==================== WeCom OpenClaw Config ====================
@@ -958,6 +634,355 @@ export class IMStore {
     this.setConfigValue('weixin', { ...current, ...config });
   }
 
+  getWeixinCredential(accountId: string): WeixinStoredCredential | null {
+    const normalizedAccountId = accountId.trim();
+    if (!normalizedAccountId) return null;
+    return this.getConfigValue<WeixinStoredCredential>(`weixinCredential:${normalizedAccountId}`) ?? null;
+  }
+
+  setWeixinCredential(accountId: string, credential: {
+    token: string;
+    baseUrl: string;
+    userId: string;
+  }): WeixinStoredCredential {
+    const normalizedAccountId = accountId.trim();
+    const normalizedBaseUrl = credential.baseUrl.trim().replace(/\/+$/, '');
+    const record: WeixinStoredCredential = {
+      accountId: normalizedAccountId,
+      token: credential.token.trim(),
+      baseUrl: normalizedBaseUrl,
+      userId: credential.userId.trim(),
+      updatedAt: Date.now(),
+    };
+    this.setConfigValue(`weixinCredential:${normalizedAccountId}`, record);
+    return record;
+  }
+
+  getWeixinContextToken(accountId: string, conversationId: string): WeixinContextTokenRecord | null {
+    const normalizedAccountId = accountId.trim();
+    const normalizedConversationId = conversationId.trim();
+    if (!normalizedAccountId || !normalizedConversationId) return null;
+
+    const result = this.db.exec(
+      `SELECT account_id, conversation_id, context_token, status, updated_at, last_success_at, last_error_at, last_error_message
+       FROM weixin_context_tokens
+       WHERE account_id = ? AND conversation_id = ?
+       LIMIT 1`,
+      [normalizedAccountId, normalizedConversationId],
+    );
+    if (!result[0]?.values[0]) return null;
+    const row = result[0].values[0];
+    return {
+      accountId: row[0] as string,
+      conversationId: row[1] as string,
+      contextToken: row[2] as string,
+      status: row[3] as WeixinContextTokenStatus,
+      updatedAt: row[4] as number,
+      lastSuccessAt: (row[5] as number | null) ?? null,
+      lastErrorAt: (row[6] as number | null) ?? null,
+      lastErrorMessage: (row[7] as string | null) ?? null,
+    };
+  }
+
+  listWeixinContextTokens(accountId: string): WeixinContextTokenRecord[] {
+    const normalizedAccountId = accountId.trim();
+    if (!normalizedAccountId) return [];
+
+    const result = this.db.exec(
+      `SELECT account_id, conversation_id, context_token, status, updated_at, last_success_at, last_error_at, last_error_message
+       FROM weixin_context_tokens
+       WHERE account_id = ?
+       ORDER BY updated_at DESC`,
+      [normalizedAccountId],
+    );
+    if (!result[0]?.values) return [];
+
+    return result[0].values.map((row) => ({
+      accountId: row[0] as string,
+      conversationId: row[1] as string,
+      contextToken: row[2] as string,
+      status: row[3] as WeixinContextTokenStatus,
+      updatedAt: row[4] as number,
+      lastSuccessAt: (row[5] as number | null) ?? null,
+      lastErrorAt: (row[6] as number | null) ?? null,
+      lastErrorMessage: (row[7] as string | null) ?? null,
+    }));
+  }
+
+  upsertWeixinContextToken(params: {
+    accountId: string;
+    conversationId: string;
+    contextToken: string;
+    status?: WeixinContextTokenStatus;
+  }): WeixinContextTokenRecord | null {
+    const normalizedAccountId = params.accountId.trim();
+    const normalizedConversationId = params.conversationId.trim();
+    const normalizedContextToken = params.contextToken.trim();
+    if (!normalizedAccountId || !normalizedConversationId || !normalizedContextToken) {
+      return null;
+    }
+
+    const now = Date.now();
+    const status = params.status ?? WeixinContextTokenStatus.Active;
+    const previous = this.getWeixinContextToken(normalizedAccountId, normalizedConversationId);
+    this.db.run(
+      `INSERT INTO weixin_context_tokens (
+        account_id,
+        conversation_id,
+        context_token,
+        status,
+        updated_at,
+        last_success_at,
+        last_error_at,
+        last_error_message
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(account_id, conversation_id) DO UPDATE SET
+        context_token = excluded.context_token,
+        status = excluded.status,
+        updated_at = excluded.updated_at,
+        last_success_at = COALESCE(weixin_context_tokens.last_success_at, excluded.last_success_at),
+        last_error_at = excluded.last_error_at,
+        last_error_message = excluded.last_error_message`,
+      [
+        normalizedAccountId,
+        normalizedConversationId,
+        normalizedContextToken,
+        status,
+        now,
+        previous?.lastSuccessAt ?? null,
+        status === WeixinContextTokenStatus.Active ? null : now,
+        status === WeixinContextTokenStatus.Active ? null : previous?.lastErrorMessage ?? null,
+      ],
+    );
+    this.saveDb();
+    return this.getWeixinContextToken(normalizedAccountId, normalizedConversationId);
+  }
+
+  markWeixinContextTokenStale(params: {
+    accountId: string;
+    conversationId: string;
+    errorMessage?: string;
+  }): WeixinContextTokenRecord | null {
+    const normalizedAccountId = params.accountId.trim();
+    const normalizedConversationId = params.conversationId.trim();
+    if (!normalizedAccountId || !normalizedConversationId) return null;
+
+    const current = this.getWeixinContextToken(normalizedAccountId, normalizedConversationId);
+    if (!current) return null;
+
+    const now = Date.now();
+    this.db.run(
+      `UPDATE weixin_context_tokens
+       SET status = ?, updated_at = ?, last_error_at = ?, last_error_message = ?
+       WHERE account_id = ? AND conversation_id = ?`,
+      [
+        WeixinContextTokenStatus.Stale,
+        now,
+        now,
+        params.errorMessage?.trim() || null,
+        normalizedAccountId,
+        normalizedConversationId,
+      ],
+    );
+    this.saveDb();
+    return this.getWeixinContextToken(normalizedAccountId, normalizedConversationId);
+  }
+
+  markWeixinContextTokenSendSuccess(accountId: string, conversationId: string): void {
+    const normalizedAccountId = accountId.trim();
+    const normalizedConversationId = conversationId.trim();
+    if (!normalizedAccountId || !normalizedConversationId) return;
+
+    const now = Date.now();
+    this.db.run(
+      `UPDATE weixin_context_tokens
+       SET status = ?, updated_at = ?, last_success_at = ?, last_error_at = NULL, last_error_message = NULL
+       WHERE account_id = ? AND conversation_id = ?`,
+      [
+        WeixinContextTokenStatus.Active,
+        now,
+        now,
+        normalizedAccountId,
+        normalizedConversationId,
+      ],
+    );
+    this.saveDb();
+  }
+
+  enqueueWeixinPendingOutbound(params: {
+    id: string;
+    accountId: string;
+    conversationId: string;
+    text: string;
+    reason: WeixinPendingOutboundReason;
+    expireAt: number;
+  }): WeixinPendingOutboundRecord | null {
+    const id = params.id.trim();
+    const accountId = params.accountId.trim();
+    const conversationId = params.conversationId.trim();
+    const text = params.text.trim();
+    if (!id || !accountId || !conversationId || !text) {
+      return null;
+    }
+
+    const now = Date.now();
+    this.db.run(
+      `INSERT OR REPLACE INTO weixin_pending_outbound (
+        id,
+        account_id,
+        conversation_id,
+        text,
+        reason,
+        status,
+        created_at,
+        expire_at,
+        sent_at,
+        attempts,
+        last_error_message,
+        updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        accountId,
+        conversationId,
+        text,
+        params.reason,
+        WeixinPendingOutboundStatus.Pending,
+        now,
+        params.expireAt,
+        null,
+        0,
+        null,
+        now,
+      ],
+    );
+    this.saveDb();
+    return this.getWeixinPendingOutboundById(id);
+  }
+
+  private getWeixinPendingOutboundById(id: string): WeixinPendingOutboundRecord | null {
+    const result = this.db.exec(
+      `SELECT id, account_id, conversation_id, text, reason, status, created_at, expire_at, sent_at, attempts, last_error_message, updated_at
+       FROM weixin_pending_outbound
+       WHERE id = ?
+       LIMIT 1`,
+      [id],
+    );
+    if (!result[0]?.values[0]) return null;
+    const row = result[0].values[0];
+    return {
+      id: row[0] as string,
+      accountId: row[1] as string,
+      conversationId: row[2] as string,
+      text: row[3] as string,
+      reason: row[4] as WeixinPendingOutboundReason,
+      status: row[5] as WeixinPendingOutboundStatus,
+      createdAt: row[6] as number,
+      expireAt: row[7] as number,
+      sentAt: (row[8] as number | null) ?? null,
+      attempts: (row[9] as number) ?? 0,
+      lastErrorMessage: (row[10] as string | null) ?? null,
+      updatedAt: row[11] as number,
+    };
+  }
+
+  listWeixinPendingOutbound(accountId: string, conversationId: string, limit = 20): WeixinPendingOutboundRecord[] {
+    const normalizedAccountId = accountId.trim();
+    const normalizedConversationId = conversationId.trim();
+    if (!normalizedAccountId || !normalizedConversationId) return [];
+
+    const safeLimit = Math.max(1, Math.min(limit, 200));
+    const result = this.db.exec(
+      `SELECT id, account_id, conversation_id, text, reason, status, created_at, expire_at, sent_at, attempts, last_error_message, updated_at
+       FROM weixin_pending_outbound
+       WHERE account_id = ?
+         AND conversation_id = ?
+         AND status = ?
+         AND expire_at > ?
+       ORDER BY created_at ASC
+       LIMIT ?`,
+      [
+        normalizedAccountId,
+        normalizedConversationId,
+        WeixinPendingOutboundStatus.Pending,
+        Date.now(),
+        safeLimit,
+      ],
+    );
+    if (!result[0]?.values) return [];
+
+    return result[0].values.map((row) => ({
+      id: row[0] as string,
+      accountId: row[1] as string,
+      conversationId: row[2] as string,
+      text: row[3] as string,
+      reason: row[4] as WeixinPendingOutboundReason,
+      status: row[5] as WeixinPendingOutboundStatus,
+      createdAt: row[6] as number,
+      expireAt: row[7] as number,
+      sentAt: (row[8] as number | null) ?? null,
+      attempts: (row[9] as number) ?? 0,
+      lastErrorMessage: (row[10] as string | null) ?? null,
+      updatedAt: row[11] as number,
+    }));
+  }
+
+  markWeixinPendingOutboundSent(id: string): void {
+    const normalizedId = id.trim();
+    if (!normalizedId) return;
+    const now = Date.now();
+    this.db.run(
+      `UPDATE weixin_pending_outbound
+       SET status = ?, sent_at = ?, attempts = attempts + 1, last_error_message = NULL, updated_at = ?
+       WHERE id = ?`,
+      [
+        WeixinPendingOutboundStatus.Sent,
+        now,
+        now,
+        normalizedId,
+      ],
+    );
+    this.saveDb();
+  }
+
+  markWeixinPendingOutboundFailed(id: string, errorMessage: string): void {
+    const normalizedId = id.trim();
+    if (!normalizedId) return;
+    const now = Date.now();
+    this.db.run(
+      `UPDATE weixin_pending_outbound
+       SET status = ?, attempts = attempts + 1, last_error_message = ?, updated_at = ?
+       WHERE id = ?`,
+      [
+        WeixinPendingOutboundStatus.Failed,
+        errorMessage.trim() || null,
+        now,
+        normalizedId,
+      ],
+    );
+    this.saveDb();
+  }
+
+  expireWeixinPendingOutbound(now = Date.now()): number {
+    this.db.run(
+      `UPDATE weixin_pending_outbound
+       SET status = ?, updated_at = ?
+       WHERE status = ?
+         AND expire_at <= ?`,
+      [
+        WeixinPendingOutboundStatus.Expired,
+        now,
+        WeixinPendingOutboundStatus.Pending,
+        now,
+      ],
+    );
+    const affected = this.db.getRowsModified();
+    if (affected > 0) {
+      this.saveDb();
+    }
+    return affected;
+  }
+
   // ==================== IM Settings ====================
 
   getIMSettings(): IMSettings {
@@ -976,7 +1001,8 @@ export class IMStore {
    * Clear all IM configuration
    */
   clearConfig(): void {
-    this.db.prepare('DELETE FROM im_config').run();
+    this.db.run('DELETE FROM im_config');
+    this.saveDb();
   }
 
   /**
@@ -984,25 +1010,16 @@ export class IMStore {
    */
   isConfigured(): boolean {
     const config = this.getConfig();
-    const hasDingTalk =
-      config.dingtalk?.instances?.some(i => !!(i.clientId && i.clientSecret)) ?? false;
-    const hasFeishu = config.feishu?.instances?.some(i => !!(i.appId && i.appSecret)) ?? false;
+    const hasDingTalk = !!(config.dingtalk.clientId && config.dingtalk.clientSecret);
+    const hasFeishu = !!(config.feishu.appId && config.feishu.appSecret);
     const hasTelegram = !!config.telegram.botToken;
     const hasDiscord = !!config.discord.botToken;
     const hasNim = !!(config.nim.appKey && config.nim.account && config.nim.token);
-    const hasNeteaseBeeChan = !!(config['netease-bee']?.clientId && config['netease-bee']?.secret);
-    const hasQQ = config.qq?.instances?.some(i => !!(i.appId && i.appSecret)) ?? false;
+    const hasXiaomifeng = !!(config.xiaomifeng?.clientId && config.xiaomifeng?.secret);
+    const hasQQ = !!(config.qq?.appId && config.qq?.appSecret);
     const hasWecom = !!(config.wecom?.botId && config.wecom?.secret);
-    return (
-      hasDingTalk ||
-      hasFeishu ||
-      hasTelegram ||
-      hasDiscord ||
-      hasNim ||
-      hasNeteaseBeeChan ||
-      hasQQ ||
-      hasWecom
-    );
+    const hasWeixin = !!config.weixin?.accountId;
+    return hasDingTalk || hasFeishu || hasTelegram || hasDiscord || hasNim || hasXiaomifeng || hasQQ || hasWecom || hasWeixin;
   }
 
   // ==================== Notification Target Persistence ====================
@@ -1010,34 +1027,32 @@ export class IMStore {
   /**
    * Get persisted notification target for a platform
    */
-  getNotificationTarget(platform: Platform): any | null {
+  getNotificationTarget(platform: IMPlatform): any | null {
     return this.getConfigValue<any>(`notification_target:${platform}`) ?? null;
   }
 
   /**
    * Persist notification target for a platform
    */
-  setNotificationTarget(platform: Platform, target: any): void {
+  setNotificationTarget(platform: IMPlatform, target: any): void {
     this.setConfigValue(`notification_target:${platform}`, target);
   }
 
   getConversationReplyRoute(
-    platform: Platform,
+    platform: IMPlatform,
     conversationId: string,
   ): StoredConversationReplyRoute | null {
     const normalizedConversationId = conversationId.trim();
     if (!normalizedConversationId) {
       return null;
     }
-    return (
-      this.getConfigValue<StoredConversationReplyRoute>(
-        `conversation_reply_route:${platform}:${normalizedConversationId}`,
-      ) ?? null
-    );
+    return this.getConfigValue<StoredConversationReplyRoute>(
+      `conversation_reply_route:${platform}:${normalizedConversationId}`,
+    ) ?? null;
   }
 
   setConversationReplyRoute(
-    platform: Platform,
+    platform: IMPlatform,
     conversationId: string,
     route: StoredConversationReplyRoute,
   ): void {
@@ -1053,20 +1068,20 @@ export class IMStore {
   /**
    * Get session mapping by IM conversation ID and platform
    */
-  getSessionMapping(imConversationId: string, platform: Platform): IMSessionMapping | null {
-    const row = this.db
-      .prepare(
-        'SELECT im_conversation_id, platform, cowork_session_id, agent_id, created_at, last_active_at FROM im_session_mappings WHERE im_conversation_id = ? AND platform = ?',
-      )
-      .get(imConversationId, platform) as SessionMappingRow | undefined;
-    if (!row) return null;
+  getSessionMapping(imConversationId: string, platform: IMPlatform): IMSessionMapping | null {
+    const result = this.db.exec(
+      'SELECT im_conversation_id, platform, cowork_session_id, agent_id, created_at, last_active_at FROM im_session_mappings WHERE im_conversation_id = ? AND platform = ?',
+      [imConversationId, platform]
+    );
+    if (!result[0]?.values[0]) return null;
+    const row = result[0].values[0];
     return {
-      imConversationId: row.im_conversation_id,
-      platform: row.platform as Platform,
-      coworkSessionId: row.cowork_session_id,
-      agentId: row.agent_id || 'main',
-      createdAt: row.created_at,
-      lastActiveAt: row.last_active_at,
+      imConversationId: row[0] as string,
+      platform: row[1] as IMPlatform,
+      coworkSessionId: row[2] as string,
+      agentId: (row[3] as string) || 'main',
+      createdAt: row[4] as number,
+      lastActiveAt: row[5] as number,
     };
   }
 
@@ -1074,37 +1089,32 @@ export class IMStore {
    * Find the IM mapping that owns a given cowork session ID.
    */
   getSessionMappingByCoworkSessionId(coworkSessionId: string): IMSessionMapping | null {
-    const row = this.db
-      .prepare(
-        'SELECT im_conversation_id, platform, cowork_session_id, agent_id, created_at, last_active_at FROM im_session_mappings WHERE cowork_session_id = ? LIMIT 1',
-      )
-      .get(coworkSessionId) as SessionMappingRow | undefined;
-    if (!row) return null;
+    const result = this.db.exec(
+      'SELECT im_conversation_id, platform, cowork_session_id, agent_id, created_at, last_active_at FROM im_session_mappings WHERE cowork_session_id = ? LIMIT 1',
+      [coworkSessionId]
+    );
+    if (!result[0]?.values[0]) return null;
+    const row = result[0].values[0];
     return {
-      imConversationId: row.im_conversation_id,
-      platform: row.platform as Platform,
-      coworkSessionId: row.cowork_session_id,
-      agentId: row.agent_id || 'main',
-      createdAt: row.created_at,
-      lastActiveAt: row.last_active_at,
+      imConversationId: row[0] as string,
+      platform: row[1] as IMPlatform,
+      coworkSessionId: row[2] as string,
+      agentId: (row[3] as string) || 'main',
+      createdAt: row[4] as number,
+      lastActiveAt: row[5] as number,
     };
   }
 
   /**
    * Create a new session mapping
    */
-  createSessionMapping(
-    imConversationId: string,
-    platform: Platform,
-    coworkSessionId: string,
-    agentId: string = 'main',
-  ): IMSessionMapping {
+  createSessionMapping(imConversationId: string, platform: IMPlatform, coworkSessionId: string, agentId: string = 'main'): IMSessionMapping {
     const now = Date.now();
-    this.db
-      .prepare(
-        'INSERT INTO im_session_mappings (im_conversation_id, platform, cowork_session_id, agent_id, created_at, last_active_at) VALUES (?, ?, ?, ?, ?, ?)',
-      )
-      .run(imConversationId, platform, coworkSessionId, agentId, now, now);
+    this.db.run(
+      'INSERT INTO im_session_mappings (im_conversation_id, platform, cowork_session_id, agent_id, created_at, last_active_at) VALUES (?, ?, ?, ?, ?, ?)',
+      [imConversationId, platform, coworkSessionId, agentId, now, now]
+    );
+    this.saveDb();
     return {
       imConversationId,
       platform,
@@ -1118,40 +1128,37 @@ export class IMStore {
   /**
    * Update last active time for a session mapping
    */
-  updateSessionLastActive(imConversationId: string, platform: Platform): void {
+  updateSessionLastActive(imConversationId: string, platform: IMPlatform): void {
     const now = Date.now();
-    this.db
-      .prepare(
-        'UPDATE im_session_mappings SET last_active_at = ? WHERE im_conversation_id = ? AND platform = ?',
-      )
-      .run(now, imConversationId, platform);
+    this.db.run(
+      'UPDATE im_session_mappings SET last_active_at = ? WHERE im_conversation_id = ? AND platform = ?',
+      [now, imConversationId, platform]
+    );
+    this.saveDb();
   }
 
   /**
    * Update the target session and agent for an existing mapping.
    * Used when the platform's agent binding changes.
    */
-  updateSessionMappingTarget(
-    imConversationId: string,
-    platform: Platform,
-    newCoworkSessionId: string,
-    newAgentId: string,
-  ): void {
+  updateSessionMappingTarget(imConversationId: string, platform: IMPlatform, newCoworkSessionId: string, newAgentId: string): void {
     const now = Date.now();
-    this.db
-      .prepare(
-        'UPDATE im_session_mappings SET cowork_session_id = ?, agent_id = ?, last_active_at = ? WHERE im_conversation_id = ? AND platform = ?',
-      )
-      .run(newCoworkSessionId, newAgentId, now, imConversationId, platform);
+    this.db.run(
+      'UPDATE im_session_mappings SET cowork_session_id = ?, agent_id = ?, last_active_at = ? WHERE im_conversation_id = ? AND platform = ?',
+      [newCoworkSessionId, newAgentId, now, imConversationId, platform]
+    );
+    this.saveDb();
   }
 
   /**
    * Delete a session mapping
    */
-  deleteSessionMapping(imConversationId: string, platform: Platform): void {
-    this.db
-      .prepare('DELETE FROM im_session_mappings WHERE im_conversation_id = ? AND platform = ?')
-      .run(imConversationId, platform);
+  deleteSessionMapping(imConversationId: string, platform: IMPlatform): void {
+    this.db.run(
+      'DELETE FROM im_session_mappings WHERE im_conversation_id = ? AND platform = ?',
+      [imConversationId, platform]
+    );
+    this.saveDb();
   }
 
   /**
@@ -1160,28 +1167,571 @@ export class IMStore {
    * can be re-synced as a fresh session.
    */
   deleteSessionMappingByCoworkSessionId(coworkSessionId: string): void {
-    this.db
-      .prepare('DELETE FROM im_session_mappings WHERE cowork_session_id = ?')
-      .run(coworkSessionId);
+    this.db.run(
+      'DELETE FROM im_session_mappings WHERE cowork_session_id = ?',
+      [coworkSessionId]
+    );
+    this.saveDb();
   }
 
   /**
    * List all session mappings for a platform
    */
-  listSessionMappings(platform?: Platform): IMSessionMapping[] {
+  listSessionMappings(platform?: IMPlatform): IMSessionMapping[] {
     const query = platform
       ? 'SELECT im_conversation_id, platform, cowork_session_id, agent_id, created_at, last_active_at FROM im_session_mappings WHERE platform = ? ORDER BY last_active_at DESC'
       : 'SELECT im_conversation_id, platform, cowork_session_id, agent_id, created_at, last_active_at FROM im_session_mappings ORDER BY last_active_at DESC';
-    const rows = platform
-      ? (this.db.prepare(query).all(platform) as SessionMappingRow[])
-      : (this.db.prepare(query).all() as SessionMappingRow[]);
-    return rows.map(row => ({
-      imConversationId: row.im_conversation_id,
-      platform: row.platform as Platform,
-      coworkSessionId: row.cowork_session_id,
-      agentId: row.agent_id || 'main',
-      createdAt: row.created_at,
-      lastActiveAt: row.last_active_at,
+    const params = platform ? [platform] : [];
+    const result = this.db.exec(query, params);
+    if (!result[0]?.values) return [];
+    return result[0].values.map(row => ({
+      imConversationId: row[0] as string,
+      platform: row[1] as IMPlatform,
+      coworkSessionId: row[2] as string,
+      agentId: (row[3] as string) || 'main',
+      createdAt: row[4] as number,
+      lastActiveAt: row[5] as number,
     }));
+  }
+
+  // ==================== Session Route Operations ====================
+
+  getSessionRoute(routeKey: string): IMSessionRoute | null {
+    const result = this.db.exec(
+      'SELECT route_key, platform, conversation_id, thread_id, agent_id, provider, cowork_session_id, last_event_id, created_at, updated_at FROM im_session_routes WHERE route_key = ? LIMIT 1',
+      [routeKey],
+    );
+    if (!result[0]?.values[0]) return null;
+    const row = result[0].values[0];
+    return {
+      routeKey: row[0] as string,
+      platform: row[1] as IMPlatform,
+      conversationId: row[2] as string,
+      threadId: (row[3] as string | null) ?? null,
+      agentId: row[4] as string,
+      provider: row[5] as 'openclaw' | 'yd_cowork',
+      coworkSessionId: row[6] as string,
+      lastEventId: (row[7] as string | null) ?? null,
+      createdAt: row[8] as number,
+      updatedAt: row[9] as number,
+    };
+  }
+
+  findSessionRoute(params: {
+    platform: IMPlatform;
+    conversationId: string;
+    threadId?: string | null;
+    agentId: string;
+  }): IMSessionRoute | null {
+    const normalizedThreadId = params.threadId?.trim() || null;
+    const result = this.db.exec(
+      normalizedThreadId
+        ? 'SELECT route_key, platform, conversation_id, thread_id, agent_id, provider, cowork_session_id, last_event_id, created_at, updated_at FROM im_session_routes WHERE platform = ? AND conversation_id = ? AND thread_id = ? AND agent_id = ? ORDER BY updated_at DESC LIMIT 1'
+        : 'SELECT route_key, platform, conversation_id, thread_id, agent_id, provider, cowork_session_id, last_event_id, created_at, updated_at FROM im_session_routes WHERE platform = ? AND conversation_id = ? AND thread_id IS NULL AND agent_id = ? ORDER BY updated_at DESC LIMIT 1',
+      normalizedThreadId
+        ? [params.platform, params.conversationId, normalizedThreadId, params.agentId]
+        : [params.platform, params.conversationId, params.agentId],
+    );
+    if (!result[0]?.values[0]) return null;
+    const row = result[0].values[0];
+    return {
+      routeKey: row[0] as string,
+      platform: row[1] as IMPlatform,
+      conversationId: row[2] as string,
+      threadId: (row[3] as string | null) ?? null,
+      agentId: row[4] as string,
+      provider: row[5] as 'openclaw' | 'yd_cowork',
+      coworkSessionId: row[6] as string,
+      lastEventId: (row[7] as string | null) ?? null,
+      createdAt: row[8] as number,
+      updatedAt: row[9] as number,
+    };
+  }
+
+  upsertSessionRoute(route: {
+    routeKey: string;
+    platform: IMPlatform;
+    conversationId: string;
+    threadId?: string | null;
+    agentId: string;
+    provider: 'openclaw' | 'yd_cowork';
+    coworkSessionId: string;
+    lastEventId?: string | null;
+  }): IMSessionRoute {
+    const now = Date.now();
+    const threadId = route.threadId?.trim() || null;
+    const lastEventId = route.lastEventId?.trim() || null;
+    const previous = this.getSessionRoute(route.routeKey);
+    this.db.run(
+      `INSERT INTO im_session_routes (
+        route_key,
+        platform,
+        conversation_id,
+        thread_id,
+        agent_id,
+        provider,
+        cowork_session_id,
+        last_event_id,
+        created_at,
+        updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(route_key) DO UPDATE SET
+        platform = excluded.platform,
+        conversation_id = excluded.conversation_id,
+        thread_id = excluded.thread_id,
+        agent_id = excluded.agent_id,
+        provider = excluded.provider,
+        cowork_session_id = excluded.cowork_session_id,
+        last_event_id = excluded.last_event_id,
+        updated_at = excluded.updated_at`,
+      [
+        route.routeKey,
+        route.platform,
+        route.conversationId,
+        threadId,
+        route.agentId,
+        route.provider,
+        route.coworkSessionId,
+        lastEventId,
+        previous?.createdAt ?? now,
+        now,
+      ],
+    );
+    this.saveDb();
+    return {
+      routeKey: route.routeKey,
+      platform: route.platform,
+      conversationId: route.conversationId,
+      threadId,
+      agentId: route.agentId,
+      provider: route.provider,
+      coworkSessionId: route.coworkSessionId,
+      lastEventId,
+      createdAt: previous?.createdAt ?? now,
+      updatedAt: now,
+    };
+  }
+
+  updateSessionRouteLastEvent(routeKey: string, eventId: string | null): void {
+    const now = Date.now();
+    this.db.run(
+      'UPDATE im_session_routes SET last_event_id = ?, updated_at = ? WHERE route_key = ?',
+      [eventId, now, routeKey],
+    );
+    this.saveDb();
+  }
+
+  deleteSessionRoute(routeKey: string): void {
+    this.db.run('DELETE FROM im_session_routes WHERE route_key = ?', [routeKey]);
+    this.saveDb();
+  }
+
+  deleteSessionRoutesByCoworkSessionId(coworkSessionId: string): void {
+    this.db.run('DELETE FROM im_session_routes WHERE cowork_session_id = ?', [coworkSessionId]);
+    this.saveDb();
+  }
+
+  repairSessionRoutesFromLegacyMappings(provider: 'openclaw' | 'yd_cowork'): number {
+    const mappings = this.listSessionMappings();
+    if (!mappings.length) {
+      return 0;
+    }
+    const now = Date.now();
+    let repairedCount = 0;
+    for (const mapping of mappings) {
+      const agentId = mapping.agentId?.trim() || GatewayRoute.DefaultAgentId;
+      const routeKey = [
+        mapping.platform,
+        mapping.imConversationId,
+        GatewayRoute.NoThread,
+        agentId,
+      ].join(GatewayRoute.KeySeparator);
+      const previous = this.getSessionRoute(routeKey);
+      const shouldRepair = !previous
+        || previous.coworkSessionId !== mapping.coworkSessionId
+        || previous.provider !== provider;
+      if (!shouldRepair) {
+        continue;
+      }
+      this.db.run(
+        `INSERT INTO im_session_routes (
+          route_key,
+          platform,
+          conversation_id,
+          thread_id,
+          agent_id,
+          provider,
+          cowork_session_id,
+          last_event_id,
+          created_at,
+          updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(route_key) DO UPDATE SET
+          platform = excluded.platform,
+          conversation_id = excluded.conversation_id,
+          thread_id = excluded.thread_id,
+          agent_id = excluded.agent_id,
+          provider = excluded.provider,
+          cowork_session_id = excluded.cowork_session_id,
+          updated_at = excluded.updated_at`,
+        [
+          routeKey,
+          mapping.platform,
+          mapping.imConversationId,
+          null,
+          agentId,
+          provider,
+          mapping.coworkSessionId,
+          previous?.lastEventId ?? null,
+          previous?.createdAt ?? mapping.createdAt ?? now,
+          now,
+        ],
+      );
+      repairedCount += 1;
+    }
+    if (repairedCount > 0) {
+      this.saveDb();
+    }
+    return repairedCount;
+  }
+
+  // ==================== Inbound Event / Run Audit Operations ====================
+
+  insertInboundEvent(event: {
+    id: string;
+    platform: IMPlatform;
+    eventId: string;
+    conversationId: string;
+    threadId?: string | null;
+    senderId?: string | null;
+    eventType: 'message' | 'command' | 'system';
+    contentText?: string | null;
+    payloadJson?: string;
+    receivedAt: number;
+  }): { accepted: boolean } {
+    this.db.run(
+      `INSERT OR IGNORE INTO im_inbound_events (
+        id,
+        platform,
+        event_id,
+        conversation_id,
+        thread_id,
+        sender_id,
+        event_type,
+        content_text,
+        payload_json,
+        received_at,
+        dedup_status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        event.id,
+        event.platform,
+        event.eventId,
+        event.conversationId,
+        event.threadId?.trim() || null,
+        event.senderId?.trim() || null,
+        event.eventType,
+        event.contentText ?? null,
+        event.payloadJson ?? '{}',
+        event.receivedAt,
+        'accepted',
+      ],
+    );
+    const accepted = this.db.getRowsModified() > 0;
+    if (accepted) {
+      this.saveDb();
+    }
+    return { accepted };
+  }
+
+  createGatewayRun(params: {
+    runId: string;
+    provider: 'openclaw' | 'yd_cowork';
+    platform: IMPlatform;
+    routeKey: string;
+    inboundEventId?: string | null;
+    coworkSessionId?: string | null;
+    status: GatewayRunStatusType | 'timeout';
+    metadataJson?: string;
+  }): void {
+    const now = Date.now();
+    this.db.run(
+      `INSERT INTO im_gateway_runs (
+        run_id,
+        provider,
+        platform,
+        route_key,
+        inbound_event_id,
+        cowork_session_id,
+        status,
+        started_at,
+        metadata_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        params.runId,
+        params.provider,
+        params.platform,
+        params.routeKey,
+        params.inboundEventId?.trim() || null,
+        params.coworkSessionId?.trim() || 'unknown',
+        params.status,
+        now,
+        params.metadataJson ?? '{}',
+      ],
+    );
+    this.saveDb();
+  }
+
+  updateGatewayRun(params: {
+    runId: string;
+    status: GatewayRunStatusType | 'timeout';
+    errorCode?: string | null;
+    errorMessage?: string | null;
+    finishedAt?: number | null;
+    routeKey?: string | null;
+    coworkSessionId?: string | null;
+    metadataJson?: string | null;
+  }): void {
+    const finishedAt = params.finishedAt ?? null;
+    const startedResult = this.db.exec(
+      'SELECT started_at FROM im_gateway_runs WHERE run_id = ? LIMIT 1',
+      [params.runId],
+    );
+    const startedAt = (startedResult[0]?.values?.[0]?.[0] as number | undefined) ?? undefined;
+    const durationMs = finishedAt && startedAt ? Math.max(0, finishedAt - startedAt) : null;
+    this.db.run(
+      `UPDATE im_gateway_runs SET
+        status = ?,
+        error_code = ?,
+        error_message = ?,
+        finished_at = ?,
+        duration_ms = ?,
+        route_key = COALESCE(?, route_key),
+        cowork_session_id = COALESCE(?, cowork_session_id),
+        metadata_json = COALESCE(?, metadata_json)
+      WHERE run_id = ?`,
+      [
+        params.status,
+        params.errorCode?.trim() || null,
+        params.errorMessage?.trim() || null,
+        finishedAt,
+        durationMs,
+        params.routeKey?.trim() || null,
+        params.coworkSessionId?.trim() || null,
+        params.metadataJson?.trim() || null,
+        params.runId,
+      ],
+    );
+    this.saveDb();
+  }
+
+  listRecoverableGatewayRuns(options?: {
+    limit?: number;
+  }): IMRecoverableGatewayRunRecord[] {
+    const limit = options?.limit ?? 50;
+    const result = this.db.exec(
+      `SELECT
+        runs.run_id,
+        runs.platform,
+        COALESCE(routes.conversation_id, mappings.im_conversation_id, NULL) AS conversation_id,
+        runs.route_key,
+        runs.cowork_session_id,
+        runs.status,
+        runs.started_at
+      FROM im_gateway_runs AS runs
+      LEFT JOIN im_session_routes AS routes
+        ON routes.route_key = runs.route_key
+      LEFT JOIN im_session_mappings AS mappings
+        ON mappings.cowork_session_id = runs.cowork_session_id
+        AND mappings.platform = runs.platform
+      WHERE
+        runs.finished_at IS NULL
+        AND runs.status IN (?, ?)
+      ORDER BY runs.started_at ASC
+      LIMIT ?`,
+      [
+        GatewayRunStatus.Queued,
+        GatewayRunStatus.Running,
+        limit,
+      ],
+    );
+    if (!result[0]?.values?.length) {
+      return [];
+    }
+    return result[0].values.map((row) => ({
+      runId: row[0] as string,
+      platform: row[1] as IMPlatform,
+      conversationId: (row[2] as string | null) ?? null,
+      routeKey: row[3] as string,
+      coworkSessionId: row[4] as string,
+      status: row[5] as GatewayRunStatusType,
+      startedAt: row[6] as number,
+    }));
+  }
+
+  insertOutboundDelivery(params: {
+    id: string;
+    runId: string;
+    platform: IMPlatform;
+    conversationId: string;
+    threadId?: string | null;
+    payloadJson: string;
+    maxRetries?: number;
+  }): { inserted: boolean } {
+    const now = Date.now();
+    this.db.run(
+      `INSERT OR IGNORE INTO im_outbound_deliveries (
+        id,
+        run_id,
+        platform,
+        conversation_id,
+        thread_id,
+        payload_json,
+        status,
+        retry_count,
+        max_retries,
+        created_at,
+        updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        params.id,
+        params.runId,
+        params.platform,
+        params.conversationId,
+        params.threadId?.trim() || null,
+        params.payloadJson,
+        GatewayDeliveryStatus.Pending,
+        0,
+        params.maxRetries ?? 3,
+        now,
+        now,
+      ],
+    );
+    const inserted = this.db.getRowsModified() > 0;
+    if (inserted) {
+      this.saveDb();
+    }
+    return { inserted };
+  }
+
+  updateOutboundDeliveryState(params: {
+    id: string;
+    status: GatewayDeliveryStatusType;
+    retryCount?: number;
+    nextRetryAt?: number | null;
+    lastError?: string | null;
+    channelMessageId?: string | null;
+  }): void {
+    const now = Date.now();
+    this.db.run(
+      `UPDATE im_outbound_deliveries SET
+        status = ?,
+        retry_count = COALESCE(?, retry_count),
+        next_retry_at = ?,
+        last_error = ?,
+        channel_message_id = ?,
+        updated_at = ?
+      WHERE id = ?`,
+      [
+        params.status,
+        params.retryCount ?? null,
+        params.nextRetryAt ?? null,
+        params.lastError?.trim() || null,
+        params.channelMessageId?.trim() || null,
+        now,
+        params.id,
+      ],
+    );
+    this.saveDb();
+  }
+
+  listRecoverableOutboundDeliveries(options?: {
+    now?: number;
+    staleSendingMs?: number;
+    staleFailedMs?: number;
+    limit?: number;
+  }): IMOutboundDeliveryRecord[] {
+    const now = options?.now ?? Date.now();
+    const staleSendingMs = options?.staleSendingMs ?? 30_000;
+    const staleFailedMs = options?.staleFailedMs ?? 10_000;
+    const limit = options?.limit ?? 20;
+    const result = this.db.exec(
+      `SELECT
+        id,
+        run_id,
+        platform,
+        conversation_id,
+        thread_id,
+        payload_json,
+        status,
+        retry_count,
+        max_retries,
+        next_retry_at,
+        last_error,
+        created_at,
+        updated_at
+      FROM im_outbound_deliveries
+      WHERE
+        status = ?
+        OR (status = ? AND (next_retry_at IS NULL OR next_retry_at <= ?) AND updated_at <= ?)
+        OR (status = ? AND updated_at <= ?)
+      ORDER BY created_at ASC
+      LIMIT ?`,
+      [
+        GatewayDeliveryStatus.Pending,
+        GatewayDeliveryStatus.Failed,
+        now,
+        now - staleFailedMs,
+        GatewayDeliveryStatus.Sending,
+        now - staleSendingMs,
+        limit,
+      ],
+    );
+    if (!result[0]?.values?.length) {
+      return [];
+    }
+    return result[0].values.map((row) => ({
+      id: row[0] as string,
+      runId: row[1] as string,
+      platform: row[2] as IMPlatform,
+      conversationId: row[3] as string,
+      threadId: (row[4] as string | null) ?? null,
+      payloadJson: row[5] as string,
+      status: row[6] as GatewayDeliveryStatusType,
+      retryCount: Number(row[7] as number),
+      maxRetries: Number(row[8] as number),
+      nextRetryAt: (row[9] as number | null) ?? null,
+      lastError: (row[10] as string | null) ?? null,
+      createdAt: row[11] as number,
+      updatedAt: row[12] as number,
+    }));
+  }
+
+  resetSendingOutboundDeliveries(options?: {
+    nextRetryAt?: number;
+    lastError?: string;
+  }): number {
+    const now = options?.nextRetryAt ?? Date.now();
+    const lastError = options?.lastError?.trim() || 'Recovered after process restart';
+    this.db.run(
+      `UPDATE im_outbound_deliveries SET
+        status = ?,
+        next_retry_at = ?,
+        last_error = ?,
+        updated_at = ?
+      WHERE status = ?`,
+      [
+        GatewayDeliveryStatus.Failed,
+        now,
+        lastError,
+        now,
+        GatewayDeliveryStatus.Sending,
+      ],
+    );
+    const affected = this.db.getRowsModified();
+    if (affected > 0) {
+      this.saveDb();
+    }
+    return affected;
   }
 }

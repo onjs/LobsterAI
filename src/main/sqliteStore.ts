@@ -6,6 +6,17 @@ import path from 'path';
 import Database from 'better-sqlite3';
 import { DB_FILENAME } from './appConstants';
 
+type SqlJsExecResult = {
+  columns: string[];
+  values: unknown[][];
+};
+
+export type SqlJsCompatDatabase = Omit<Database.Database, 'exec'> & {
+  run(sql: string, params?: unknown[]): Database.RunResult;
+  exec(sql: string, params?: unknown[]): SqlJsExecResult[];
+  getRowsModified(): number;
+};
+
 type ChangePayload<T = unknown> = {
   key: string;
   newValue: T | undefined;
@@ -16,11 +27,13 @@ const USER_MEMORIES_MIGRATION_KEY = 'userMemories.migration.v1.completed';
 
 export class SqliteStore {
   private db: Database.Database;
+  private legacyDb: SqlJsCompatDatabase;
   private dbPath: string;
   private emitter = new EventEmitter();
 
-  private constructor(db: Database.Database, dbPath: string) {
+  private constructor(db: Database.Database, legacyDb: SqlJsCompatDatabase, dbPath: string) {
     this.db = db;
+    this.legacyDb = legacyDb;
     this.dbPath = dbPath;
   }
 
@@ -28,18 +41,60 @@ export class SqliteStore {
     const basePath = userDataPath ?? app.getPath('userData');
     const dbPath = path.join(basePath, DB_FILENAME);
 
-    const db = new Database(dbPath);
+    const rawDb = new Database(dbPath);
+    const legacyDb = SqliteStore.attachSqlJsCompatApi(rawDb);
 
     // WAL mode: persists across connections, never reverts. NORMAL sync is safe under WAL
     // (no data loss on OS crash; power-loss risk is the same as DELETE mode).
-    db.pragma('journal_mode = WAL');
-    db.pragma('synchronous = NORMAL');
-    db.pragma('cache_size = -8000'); // 8 MB; negative value = kibibytes
-    db.pragma('wal_autocheckpoint = 1000'); // checkpoint every ~4 MB of WAL writes
+    rawDb.pragma('journal_mode = WAL');
+    rawDb.pragma('synchronous = NORMAL');
+    rawDb.pragma('cache_size = -8000'); // 8 MB; negative value = kibibytes
+    rawDb.pragma('wal_autocheckpoint = 1000'); // checkpoint every ~4 MB of WAL writes
 
-    const store = new SqliteStore(db, dbPath);
+    const store = new SqliteStore(rawDb, legacyDb, dbPath);
     store.initializeTables(basePath);
     return store;
+  }
+
+  private static attachSqlJsCompatApi(db: Database.Database): SqlJsCompatDatabase {
+    const compat = db as unknown as SqlJsCompatDatabase;
+    let rowsModified = 0;
+
+    const runSql = (sql: string, params: unknown[] = []): Database.RunResult => {
+      if (!params.length && /;\s*\S/.test(sql.trim())) {
+        db.exec(sql);
+        rowsModified = 0;
+        return { changes: 0, lastInsertRowid: 0 };
+      }
+      const result = db.prepare(sql).run(...params);
+      rowsModified = result.changes;
+      return result;
+    };
+
+    const querySql = (sql: string, params: unknown[] = []): SqlJsExecResult[] => {
+      const normalized = sql.trim().toUpperCase();
+      const isQuery =
+        normalized.startsWith('SELECT') ||
+        normalized.startsWith('PRAGMA') ||
+        normalized.startsWith('WITH') ||
+        normalized.startsWith('EXPLAIN');
+
+      if (!isQuery) {
+        runSql(sql, params);
+        return [];
+      }
+
+      const stmt = db.prepare(sql);
+      const columns = stmt.columns().map((col) => col.name);
+      const rows = stmt.all(...params) as Array<Record<string, unknown>>;
+      const values = rows.map((row) => columns.map((column) => row[column]));
+      return [{ columns, values }];
+    };
+
+    compat.run = (sql: string, params: unknown[] = []) => runSql(sql, params);
+    compat.exec = (sql: string, params: unknown[] = []) => querySql(sql, params);
+    compat.getRowsModified = () => rowsModified;
+    return compat;
   }
 
   private initializeTables(basePath: string) {
@@ -136,7 +191,7 @@ export class SqliteStore {
       ON user_memory_sources(memory_id, is_active);
     `);
 
-    this.db.run(`
+    this.db.exec(`
       CREATE TABLE IF NOT EXISTS user_memory_vector_refs (
         memory_id TEXT NOT NULL,
         provider TEXT NOT NULL,
@@ -146,11 +201,11 @@ export class SqliteStore {
         FOREIGN KEY (memory_id) REFERENCES user_memories(id) ON DELETE CASCADE
       );
     `);
-    this.db.run(`
+    this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_user_memory_vector_refs_provider
       ON user_memory_vector_refs(provider, updated_at DESC);
     `);
-    this.db.run(`
+    this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_user_memory_vector_refs_remote_id
       ON user_memory_vector_refs(provider, remote_id);
     `);
@@ -347,6 +402,16 @@ export class SqliteStore {
 
   getDatabase(): Database.Database {
     return this.db;
+  }
+
+  getLegacyDatabase(): SqlJsCompatDatabase {
+    return this.legacyDb;
+  }
+
+  getSaveFunction(): () => void {
+    return () => {
+      // better-sqlite3 writes through immediately; explicit save is unnecessary.
+    };
   }
 
   close(): void {
