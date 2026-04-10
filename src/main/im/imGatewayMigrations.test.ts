@@ -12,6 +12,10 @@ class DbStub {
   run(sql: string) {
     this.runs.push(sql);
   }
+
+  exec(sql: string) {
+    this.runs.push(sql);
+  }
 }
 
 describe('imGatewayMigrations', () => {

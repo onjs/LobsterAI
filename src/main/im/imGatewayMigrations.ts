@@ -1,4 +1,4 @@
-import type { SqlJsCompatDatabase } from '../sqliteStore';
+import Database from 'better-sqlite3';
 
 export const ImGatewayMigrationPhase = {
   Disabled: 'disabled',
@@ -268,12 +268,12 @@ const PHASE3_STATEMENTS = [
   `,
 ] as const;
 
-const applyStatements = (db: SqlJsCompatDatabase, statements: readonly string[]): void => {
-  statements.forEach((sql) => db.run(sql));
+const applyStatements = (db: Database.Database, statements: readonly string[]): void => {
+  statements.forEach((sql) => db.exec(sql));
 };
 
 export const ensureImGatewayMigrationSchema = (options: {
-  db: SqlJsCompatDatabase;
+  db: Database.Database;
   saveDb: () => void;
   envPhase?: string | null;
   storedPhase?: string | null;

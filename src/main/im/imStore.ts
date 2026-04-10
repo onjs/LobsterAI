@@ -3,7 +3,7 @@
  * SQLite operations for IM configuration storage
  */
 
-import type { SqlJsCompatDatabase } from '../sqliteStore';
+import Database from 'better-sqlite3';
 import {
   IMGatewayConfig,
   DingTalkOpenClawConfig,
@@ -85,18 +85,39 @@ export interface IMRecoverableGatewayRunRecord {
 }
 
 export class IMStore {
-  private db: SqlJsCompatDatabase;
+  private db: Database.Database;
   private saveDb: () => void;
+  private lastRowsModified = 0;
 
-  constructor(db: SqlJsCompatDatabase, saveDb: () => void = () => {}) {
+  constructor(db: Database.Database, saveDb: () => void = () => {}) {
     this.db = db;
     this.saveDb = saveDb;
     this.initializeTables();
     this.migrateDefaults();
   }
 
+  private run(sql: string, params: unknown[] = []): Database.RunResult {
+    if (!params.length && /;\s*\S/.test(sql.trim())) {
+      this.db.exec(sql);
+      this.lastRowsModified = 0;
+      return { changes: 0, lastInsertRowid: 0 };
+    }
+    const result = this.db.prepare(sql).run(...params);
+    this.lastRowsModified = result.changes;
+    return result;
+  }
+
+  private getOne<T>(sql: string, params: unknown[] = []): T | null {
+    const row = this.db.prepare(sql).get(...params) as T | undefined;
+    return row ?? null;
+  }
+
+  private getAll<T>(sql: string, params: unknown[] = []): T[] {
+    return this.db.prepare(sql).all(...params) as T[];
+  }
+
   private initializeTables() {
-    this.db.run(`
+    this.run(`
       CREATE TABLE IF NOT EXISTS im_config (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL,
@@ -105,7 +126,7 @@ export class IMStore {
     `);
 
     // IM session mappings table for Cowork mode
-    this.db.run(`
+    this.run(`
       CREATE TABLE IF NOT EXISTS im_session_mappings (
         im_conversation_id TEXT NOT NULL,
         platform TEXT NOT NULL,
@@ -116,7 +137,7 @@ export class IMStore {
       );
     `);
 
-    this.db.run(`
+    this.run(`
       CREATE TABLE IF NOT EXISTS weixin_context_tokens (
         account_id TEXT NOT NULL,
         conversation_id TEXT NOT NULL,
@@ -130,7 +151,7 @@ export class IMStore {
       );
     `);
 
-    this.db.run(`
+    this.run(`
       CREATE TABLE IF NOT EXISTS weixin_pending_outbound (
         id TEXT PRIMARY KEY,
         account_id TEXT NOT NULL,
@@ -148,10 +169,10 @@ export class IMStore {
     `);
 
     // Migration: Add agent_id column to im_session_mappings
-    const mappingCols = this.db.exec('PRAGMA table_info(im_session_mappings)');
-    const mappingColNames = (mappingCols[0]?.values ?? []).map((r) => r[1] as string);
+    const mappingCols = this.getAll<{ name: string }>('PRAGMA table_info(im_session_mappings)');
+    const mappingColNames = mappingCols.map((column) => column.name);
     if (!mappingColNames.includes('agent_id')) {
-      this.db.run("ALTER TABLE im_session_mappings ADD COLUMN agent_id TEXT NOT NULL DEFAULT 'main'");
+      this.run("ALTER TABLE im_session_mappings ADD COLUMN agent_id TEXT NOT NULL DEFAULT 'main'");
     }
 
     const storedPhase = this.getConfigValue<string>(ImGatewayMigrationConfigKey.Phase);
@@ -175,15 +196,15 @@ export class IMStore {
     let changed = false;
 
     for (const platform of platforms) {
-      const result = this.db.exec('SELECT value FROM im_config WHERE key = ?', [platform]);
-      if (!result[0]?.values[0]) continue;
+      const result = this.getOne<{ value: string }>('SELECT value FROM im_config WHERE key = ?', [platform]);
+      if (!result?.value) continue;
 
       try {
-        const config = JSON.parse(result[0].values[0][0] as string);
+        const config = JSON.parse(result.value);
         if (config.debug === undefined || config.debug === false) {
           config.debug = true;
           const now = Date.now();
-          this.db.run(
+          this.run(
             'UPDATE im_config SET value = ?, updated_at = ? WHERE key = ?',
             [JSON.stringify(config), now, platform]
           );
@@ -194,16 +215,16 @@ export class IMStore {
       }
     }
 
-    const settingsResult = this.db.exec('SELECT value FROM im_config WHERE key = ?', ['settings']);
-    if (settingsResult[0]?.values[0]) {
+    const settingsResult = this.getOne<{ value: string }>('SELECT value FROM im_config WHERE key = ?', ['settings']);
+    if (settingsResult?.value) {
       try {
-        const settings = JSON.parse(settingsResult[0].values[0][0] as string) as Partial<IMSettings>;
+        const settings = JSON.parse(settingsResult.value) as Partial<IMSettings>;
         // Keep IM and desktop behavior aligned: skills auto-routing should be on by default.
         // Historical renderer default could persist `skillsEnabled: false` unintentionally.
         if (settings.skillsEnabled !== true) {
           settings.skillsEnabled = true;
           const now = Date.now();
-          this.db.run(
+          this.run(
             'UPDATE im_config SET value = ?, updated_at = ? WHERE key = ?',
             [JSON.stringify(settings), now, 'settings']
           );
@@ -215,14 +236,14 @@ export class IMStore {
     }
 
     // Migrate feishu renderMode from 'text' to 'card' (previous renderer default was incorrect)
-    const feishuResult = this.db.exec('SELECT value FROM im_config WHERE key = ?', ['feishu']);
-    if (feishuResult[0]?.values[0]) {
+    const feishuResult = this.getOne<{ value: string }>('SELECT value FROM im_config WHERE key = ?', ['feishu']);
+    if (feishuResult?.value) {
       try {
-        const feishuConfig = JSON.parse(feishuResult[0].values[0][0] as string) as Partial<{ renderMode: string }>;
+        const feishuConfig = JSON.parse(feishuResult.value) as Partial<{ renderMode: string }>;
         if (feishuConfig.renderMode === 'text') {
           feishuConfig.renderMode = 'card';
           const now = Date.now();
-          this.db.run(
+          this.run(
             'UPDATE im_config SET value = ?, updated_at = ? WHERE key = ?',
             [JSON.stringify(feishuConfig), now, 'feishu']
           );
@@ -234,11 +255,11 @@ export class IMStore {
     }
 
     // Migrate old native Telegram config to new OpenClaw format
-    const oldTelegramResult = this.db.exec('SELECT value FROM im_config WHERE key = ?', ['telegram']);
-    const newTelegramResult = this.db.exec('SELECT value FROM im_config WHERE key = ?', ['telegramOpenClaw']);
-    if (oldTelegramResult[0]?.values[0] && !newTelegramResult[0]?.values[0]) {
+    const oldTelegramResult = this.getOne<{ value: string }>('SELECT value FROM im_config WHERE key = ?', ['telegram']);
+    const newTelegramResult = this.getOne<{ value: string }>('SELECT value FROM im_config WHERE key = ?', ['telegramOpenClaw']);
+    if (oldTelegramResult?.value && !newTelegramResult?.value) {
       try {
-        const oldConfig = JSON.parse(oldTelegramResult[0].values[0][0] as string) as {
+        const oldConfig = JSON.parse(oldTelegramResult.value) as {
           enabled?: boolean;
           botToken?: string;
           allowedUserIds?: string[];
@@ -255,11 +276,11 @@ export class IMStore {
             debug: oldConfig.debug ?? true,
           };
           const now = Date.now();
-          this.db.run(
+          this.run(
             'INSERT OR REPLACE INTO im_config (key, value, updated_at) VALUES (?, ?, ?)',
             ['telegramOpenClaw', JSON.stringify(newConfig), now]
           );
-          this.db.run('DELETE FROM im_config WHERE key = ?', ['telegram']);
+          this.run('DELETE FROM im_config WHERE key = ?', ['telegram']);
           changed = true;
           console.log('[IMStore] Migrated old Telegram config to OpenClaw format');
         }
@@ -269,11 +290,11 @@ export class IMStore {
     }
 
     // Migrate old native Discord config to new OpenClaw format
-    const oldDiscordResult = this.db.exec('SELECT value FROM im_config WHERE key = ?', ['discord']);
-    const newDiscordResult = this.db.exec('SELECT value FROM im_config WHERE key = ?', ['discordOpenClaw']);
-    if (oldDiscordResult[0]?.values[0] && !newDiscordResult[0]?.values[0]) {
+    const oldDiscordResult = this.getOne<{ value: string }>('SELECT value FROM im_config WHERE key = ?', ['discord']);
+    const newDiscordResult = this.getOne<{ value: string }>('SELECT value FROM im_config WHERE key = ?', ['discordOpenClaw']);
+    if (oldDiscordResult?.value && !newDiscordResult?.value) {
       try {
-        const oldConfig = JSON.parse(oldDiscordResult[0].values[0][0] as string) as {
+        const oldConfig = JSON.parse(oldDiscordResult.value) as {
           enabled?: boolean;
           botToken?: string;
           debug?: boolean;
@@ -286,11 +307,11 @@ export class IMStore {
             debug: oldConfig.debug ?? true,
           };
           const now = Date.now();
-          this.db.run(
+          this.run(
             'INSERT OR REPLACE INTO im_config (key, value, updated_at) VALUES (?, ?, ?)',
             ['discordOpenClaw', JSON.stringify(newConfig), now]
           );
-          this.db.run('DELETE FROM im_config WHERE key = ?', ['discord']);
+          this.run('DELETE FROM im_config WHERE key = ?', ['discord']);
           changed = true;
           console.log('[IMStore] Migrated old Discord config to OpenClaw format');
         }
@@ -300,11 +321,11 @@ export class IMStore {
     }
 
     // Migrate old native Feishu config to new OpenClaw format
-    const oldFeishuResult2 = this.db.exec('SELECT value FROM im_config WHERE key = ?', ['feishu']);
-    const newFeishuResult = this.db.exec('SELECT value FROM im_config WHERE key = ?', ['feishuOpenClaw']);
-    if (oldFeishuResult2[0]?.values[0] && !newFeishuResult[0]?.values[0]) {
+    const oldFeishuResult2 = this.getOne<{ value: string }>('SELECT value FROM im_config WHERE key = ?', ['feishu']);
+    const newFeishuResult = this.getOne<{ value: string }>('SELECT value FROM im_config WHERE key = ?', ['feishuOpenClaw']);
+    if (oldFeishuResult2?.value && !newFeishuResult?.value) {
       try {
-        const oldConfig = JSON.parse(oldFeishuResult2[0].values[0][0] as string) as Partial<{ enabled: boolean; appId: string; appSecret: string; domain: string; debug: boolean }>;
+        const oldConfig = JSON.parse(oldFeishuResult2.value) as Partial<{ enabled: boolean; appId: string; appSecret: string; domain: string; debug: boolean }>;
         if (oldConfig.appId) {
           const newConfig: FeishuOpenClawConfig = {
             ...DEFAULT_FEISHU_OPENCLAW_CONFIG,
@@ -315,11 +336,11 @@ export class IMStore {
             debug: oldConfig.debug ?? true,
           };
           const now = Date.now();
-          this.db.run(
+          this.run(
             'INSERT OR REPLACE INTO im_config (key, value, updated_at) VALUES (?, ?, ?)',
             ['feishuOpenClaw', JSON.stringify(newConfig), now]
           );
-          this.db.run('DELETE FROM im_config WHERE key = ?', ['feishu']);
+          this.run('DELETE FROM im_config WHERE key = ?', ['feishu']);
           changed = true;
           console.log('[IMStore] Migrated old Feishu config to OpenClaw format');
         }
@@ -329,11 +350,11 @@ export class IMStore {
     }
 
     // Migrate old native DingTalk config to new OpenClaw format
-    const oldDingtalkResult = this.db.exec('SELECT value FROM im_config WHERE key = ?', ['dingtalk']);
-    const newDingtalkResult = this.db.exec('SELECT value FROM im_config WHERE key = ?', ['dingtalkOpenClaw']);
-    if (oldDingtalkResult[0]?.values[0] && !newDingtalkResult[0]?.values[0]) {
+    const oldDingtalkResult = this.getOne<{ value: string }>('SELECT value FROM im_config WHERE key = ?', ['dingtalk']);
+    const newDingtalkResult = this.getOne<{ value: string }>('SELECT value FROM im_config WHERE key = ?', ['dingtalkOpenClaw']);
+    if (oldDingtalkResult?.value && !newDingtalkResult?.value) {
       try {
-        const oldConfig = JSON.parse(oldDingtalkResult[0].values[0][0] as string) as Partial<{ enabled: boolean; clientId: string; clientSecret: string; debug: boolean }>;
+        const oldConfig = JSON.parse(oldDingtalkResult.value) as Partial<{ enabled: boolean; clientId: string; clientSecret: string; debug: boolean }>;
         if (oldConfig.clientId) {
           const newConfig: DingTalkOpenClawConfig = {
             ...DEFAULT_DINGTALK_OPENCLAW_CONFIG,
@@ -343,11 +364,11 @@ export class IMStore {
             debug: oldConfig.debug ?? false,
           };
           const now = Date.now();
-          this.db.run(
+          this.run(
             'INSERT OR REPLACE INTO im_config (key, value, updated_at) VALUES (?, ?, ?)',
             ['dingtalkOpenClaw', JSON.stringify(newConfig), now]
           );
-          this.db.run('DELETE FROM im_config WHERE key = ?', ['dingtalk']);
+          this.run('DELETE FROM im_config WHERE key = ?', ['dingtalk']);
           changed = true;
           console.log('[IMStore] Migrated old DingTalk config to OpenClaw format');
         }
@@ -357,11 +378,11 @@ export class IMStore {
     }
 
     // Migrate old native WeCom config to new OpenClaw format
-    const oldWecomResult = this.db.exec('SELECT value FROM im_config WHERE key = ?', ['wecom']);
-    const newWecomResult = this.db.exec('SELECT value FROM im_config WHERE key = ?', ['wecomOpenClaw']);
-    if (oldWecomResult[0]?.values[0] && !newWecomResult[0]?.values[0]) {
+    const oldWecomResult = this.getOne<{ value: string }>('SELECT value FROM im_config WHERE key = ?', ['wecom']);
+    const newWecomResult = this.getOne<{ value: string }>('SELECT value FROM im_config WHERE key = ?', ['wecomOpenClaw']);
+    if (oldWecomResult?.value && !newWecomResult?.value) {
       try {
-        const oldConfig = JSON.parse(oldWecomResult[0].values[0][0] as string) as Partial<{ enabled: boolean; botId: string; secret: string; debug: boolean }>;
+        const oldConfig = JSON.parse(oldWecomResult.value) as Partial<{ enabled: boolean; botId: string; secret: string; debug: boolean }>;
         if (oldConfig.botId) {
           const newConfig: WecomOpenClawConfig = {
             ...DEFAULT_WECOM_CONFIG,
@@ -371,11 +392,11 @@ export class IMStore {
             debug: oldConfig.debug ?? true,
           };
           const now = Date.now();
-          this.db.run(
+          this.run(
             'INSERT OR REPLACE INTO im_config (key, value, updated_at) VALUES (?, ?, ?)',
             ['wecomOpenClaw', JSON.stringify(newConfig), now]
           );
-          this.db.run('DELETE FROM im_config WHERE key = ?', ['wecom']);
+          this.run('DELETE FROM im_config WHERE key = ?', ['wecom']);
           changed = true;
           console.log('[IMStore] Migrated old WeCom config to OpenClaw format');
         }
@@ -387,14 +408,14 @@ export class IMStore {
     // Migrate popo configs that have token but no connectionMode:
     // These are existing webhook users from before connectionMode was introduced.
     // Preserve their setup by explicitly setting connectionMode to 'webhook'.
-    const popoResult = this.db.exec('SELECT value FROM im_config WHERE key = ?', ['popo']);
-    if (popoResult[0]?.values[0]) {
+    const popoResult = this.getOne<{ value: string }>('SELECT value FROM im_config WHERE key = ?', ['popo']);
+    if (popoResult?.value) {
       try {
-        const popoConfig = JSON.parse(popoResult[0].values[0][0] as string) as Partial<PopoOpenClawConfig>;
+        const popoConfig = JSON.parse(popoResult.value) as Partial<PopoOpenClawConfig>;
         if (popoConfig.token && !popoConfig.connectionMode) {
           popoConfig.connectionMode = 'webhook';
           const now = Date.now();
-          this.db.run(
+          this.run(
             'UPDATE im_config SET value = ?, updated_at = ? WHERE key = ?',
             [JSON.stringify(popoConfig), now, 'popo']
           );
@@ -414,9 +435,9 @@ export class IMStore {
   // ==================== Generic Config Operations ====================
 
   private getConfigValue<T>(key: string): T | undefined {
-    const result = this.db.exec('SELECT value FROM im_config WHERE key = ?', [key]);
-    if (!result[0]?.values[0]) return undefined;
-    const value = result[0].values[0][0] as string;
+    const result = this.getOne<{ value: string }>('SELECT value FROM im_config WHERE key = ?', [key]);
+    if (!result?.value) return undefined;
+    const value = result.value;
     try {
       return JSON.parse(value) as T;
     } catch (error) {
@@ -427,7 +448,7 @@ export class IMStore {
 
   private setConfigValue<T>(key: string, value: T): void {
     const now = Date.now();
-    this.db.run(`
+    this.run(`
       INSERT INTO im_config (key, value, updated_at)
       VALUES (?, ?, ?)
       ON CONFLICT(key) DO UPDATE SET
@@ -663,24 +684,32 @@ export class IMStore {
     const normalizedConversationId = conversationId.trim();
     if (!normalizedAccountId || !normalizedConversationId) return null;
 
-    const result = this.db.exec(
+    const row = this.getOne<{
+      account_id: string;
+      conversation_id: string;
+      context_token: string;
+      status: WeixinContextTokenStatus;
+      updated_at: number;
+      last_success_at: number | null;
+      last_error_at: number | null;
+      last_error_message: string | null;
+    }>(
       `SELECT account_id, conversation_id, context_token, status, updated_at, last_success_at, last_error_at, last_error_message
        FROM weixin_context_tokens
        WHERE account_id = ? AND conversation_id = ?
        LIMIT 1`,
       [normalizedAccountId, normalizedConversationId],
     );
-    if (!result[0]?.values[0]) return null;
-    const row = result[0].values[0];
+    if (!row) return null;
     return {
-      accountId: row[0] as string,
-      conversationId: row[1] as string,
-      contextToken: row[2] as string,
-      status: row[3] as WeixinContextTokenStatus,
-      updatedAt: row[4] as number,
-      lastSuccessAt: (row[5] as number | null) ?? null,
-      lastErrorAt: (row[6] as number | null) ?? null,
-      lastErrorMessage: (row[7] as string | null) ?? null,
+      accountId: row.account_id,
+      conversationId: row.conversation_id,
+      contextToken: row.context_token,
+      status: row.status,
+      updatedAt: row.updated_at,
+      lastSuccessAt: row.last_success_at ?? null,
+      lastErrorAt: row.last_error_at ?? null,
+      lastErrorMessage: row.last_error_message ?? null,
     };
   }
 
@@ -688,24 +717,31 @@ export class IMStore {
     const normalizedAccountId = accountId.trim();
     if (!normalizedAccountId) return [];
 
-    const result = this.db.exec(
+    const rows = this.getAll<{
+      account_id: string;
+      conversation_id: string;
+      context_token: string;
+      status: WeixinContextTokenStatus;
+      updated_at: number;
+      last_success_at: number | null;
+      last_error_at: number | null;
+      last_error_message: string | null;
+    }>(
       `SELECT account_id, conversation_id, context_token, status, updated_at, last_success_at, last_error_at, last_error_message
        FROM weixin_context_tokens
        WHERE account_id = ?
        ORDER BY updated_at DESC`,
       [normalizedAccountId],
     );
-    if (!result[0]?.values) return [];
-
-    return result[0].values.map((row) => ({
-      accountId: row[0] as string,
-      conversationId: row[1] as string,
-      contextToken: row[2] as string,
-      status: row[3] as WeixinContextTokenStatus,
-      updatedAt: row[4] as number,
-      lastSuccessAt: (row[5] as number | null) ?? null,
-      lastErrorAt: (row[6] as number | null) ?? null,
-      lastErrorMessage: (row[7] as string | null) ?? null,
+    return rows.map((row) => ({
+      accountId: row.account_id,
+      conversationId: row.conversation_id,
+      contextToken: row.context_token,
+      status: row.status,
+      updatedAt: row.updated_at,
+      lastSuccessAt: row.last_success_at ?? null,
+      lastErrorAt: row.last_error_at ?? null,
+      lastErrorMessage: row.last_error_message ?? null,
     }));
   }
 
@@ -725,7 +761,7 @@ export class IMStore {
     const now = Date.now();
     const status = params.status ?? WeixinContextTokenStatus.Active;
     const previous = this.getWeixinContextToken(normalizedAccountId, normalizedConversationId);
-    this.db.run(
+    this.run(
       `INSERT INTO weixin_context_tokens (
         account_id,
         conversation_id,
@@ -771,7 +807,7 @@ export class IMStore {
     if (!current) return null;
 
     const now = Date.now();
-    this.db.run(
+    this.run(
       `UPDATE weixin_context_tokens
        SET status = ?, updated_at = ?, last_error_at = ?, last_error_message = ?
        WHERE account_id = ? AND conversation_id = ?`,
@@ -794,7 +830,7 @@ export class IMStore {
     if (!normalizedAccountId || !normalizedConversationId) return;
 
     const now = Date.now();
-    this.db.run(
+    this.run(
       `UPDATE weixin_context_tokens
        SET status = ?, updated_at = ?, last_success_at = ?, last_error_at = NULL, last_error_message = NULL
        WHERE account_id = ? AND conversation_id = ?`,
@@ -826,7 +862,7 @@ export class IMStore {
     }
 
     const now = Date.now();
-    this.db.run(
+    this.run(
       `INSERT OR REPLACE INTO weixin_pending_outbound (
         id,
         account_id,
@@ -861,28 +897,40 @@ export class IMStore {
   }
 
   private getWeixinPendingOutboundById(id: string): WeixinPendingOutboundRecord | null {
-    const result = this.db.exec(
+    const row = this.getOne<{
+      id: string;
+      account_id: string;
+      conversation_id: string;
+      text: string;
+      reason: WeixinPendingOutboundReason;
+      status: WeixinPendingOutboundStatus;
+      created_at: number;
+      expire_at: number;
+      sent_at: number | null;
+      attempts: number;
+      last_error_message: string | null;
+      updated_at: number;
+    }>(
       `SELECT id, account_id, conversation_id, text, reason, status, created_at, expire_at, sent_at, attempts, last_error_message, updated_at
        FROM weixin_pending_outbound
        WHERE id = ?
        LIMIT 1`,
       [id],
     );
-    if (!result[0]?.values[0]) return null;
-    const row = result[0].values[0];
+    if (!row) return null;
     return {
-      id: row[0] as string,
-      accountId: row[1] as string,
-      conversationId: row[2] as string,
-      text: row[3] as string,
-      reason: row[4] as WeixinPendingOutboundReason,
-      status: row[5] as WeixinPendingOutboundStatus,
-      createdAt: row[6] as number,
-      expireAt: row[7] as number,
-      sentAt: (row[8] as number | null) ?? null,
-      attempts: (row[9] as number) ?? 0,
-      lastErrorMessage: (row[10] as string | null) ?? null,
-      updatedAt: row[11] as number,
+      id: row.id,
+      accountId: row.account_id,
+      conversationId: row.conversation_id,
+      text: row.text,
+      reason: row.reason,
+      status: row.status,
+      createdAt: row.created_at,
+      expireAt: row.expire_at,
+      sentAt: row.sent_at ?? null,
+      attempts: row.attempts ?? 0,
+      lastErrorMessage: row.last_error_message ?? null,
+      updatedAt: row.updated_at,
     };
   }
 
@@ -892,7 +940,20 @@ export class IMStore {
     if (!normalizedAccountId || !normalizedConversationId) return [];
 
     const safeLimit = Math.max(1, Math.min(limit, 200));
-    const result = this.db.exec(
+    const rows = this.getAll<{
+      id: string;
+      account_id: string;
+      conversation_id: string;
+      text: string;
+      reason: WeixinPendingOutboundReason;
+      status: WeixinPendingOutboundStatus;
+      created_at: number;
+      expire_at: number;
+      sent_at: number | null;
+      attempts: number;
+      last_error_message: string | null;
+      updated_at: number;
+    }>(
       `SELECT id, account_id, conversation_id, text, reason, status, created_at, expire_at, sent_at, attempts, last_error_message, updated_at
        FROM weixin_pending_outbound
        WHERE account_id = ?
@@ -909,21 +970,19 @@ export class IMStore {
         safeLimit,
       ],
     );
-    if (!result[0]?.values) return [];
-
-    return result[0].values.map((row) => ({
-      id: row[0] as string,
-      accountId: row[1] as string,
-      conversationId: row[2] as string,
-      text: row[3] as string,
-      reason: row[4] as WeixinPendingOutboundReason,
-      status: row[5] as WeixinPendingOutboundStatus,
-      createdAt: row[6] as number,
-      expireAt: row[7] as number,
-      sentAt: (row[8] as number | null) ?? null,
-      attempts: (row[9] as number) ?? 0,
-      lastErrorMessage: (row[10] as string | null) ?? null,
-      updatedAt: row[11] as number,
+    return rows.map((row) => ({
+      id: row.id,
+      accountId: row.account_id,
+      conversationId: row.conversation_id,
+      text: row.text,
+      reason: row.reason,
+      status: row.status,
+      createdAt: row.created_at,
+      expireAt: row.expire_at,
+      sentAt: row.sent_at ?? null,
+      attempts: row.attempts ?? 0,
+      lastErrorMessage: row.last_error_message ?? null,
+      updatedAt: row.updated_at,
     }));
   }
 
@@ -931,7 +990,7 @@ export class IMStore {
     const normalizedId = id.trim();
     if (!normalizedId) return;
     const now = Date.now();
-    this.db.run(
+    this.run(
       `UPDATE weixin_pending_outbound
        SET status = ?, sent_at = ?, attempts = attempts + 1, last_error_message = NULL, updated_at = ?
        WHERE id = ?`,
@@ -949,7 +1008,7 @@ export class IMStore {
     const normalizedId = id.trim();
     if (!normalizedId) return;
     const now = Date.now();
-    this.db.run(
+    this.run(
       `UPDATE weixin_pending_outbound
        SET status = ?, attempts = attempts + 1, last_error_message = ?, updated_at = ?
        WHERE id = ?`,
@@ -964,7 +1023,7 @@ export class IMStore {
   }
 
   expireWeixinPendingOutbound(now = Date.now()): number {
-    this.db.run(
+    this.run(
       `UPDATE weixin_pending_outbound
        SET status = ?, updated_at = ?
        WHERE status = ?
@@ -976,7 +1035,7 @@ export class IMStore {
         now,
       ],
     );
-    const affected = this.db.getRowsModified();
+    const affected = this.lastRowsModified;
     if (affected > 0) {
       this.saveDb();
     }
@@ -1001,7 +1060,7 @@ export class IMStore {
    * Clear all IM configuration
    */
   clearConfig(): void {
-    this.db.run('DELETE FROM im_config');
+    this.run('DELETE FROM im_config');
     this.saveDb();
   }
 
@@ -1069,19 +1128,25 @@ export class IMStore {
    * Get session mapping by IM conversation ID and platform
    */
   getSessionMapping(imConversationId: string, platform: IMPlatform): IMSessionMapping | null {
-    const result = this.db.exec(
+    const row = this.getOne<{
+      im_conversation_id: string;
+      platform: IMPlatform;
+      cowork_session_id: string;
+      agent_id: string | null;
+      created_at: number;
+      last_active_at: number;
+    }>(
       'SELECT im_conversation_id, platform, cowork_session_id, agent_id, created_at, last_active_at FROM im_session_mappings WHERE im_conversation_id = ? AND platform = ?',
       [imConversationId, platform]
     );
-    if (!result[0]?.values[0]) return null;
-    const row = result[0].values[0];
+    if (!row) return null;
     return {
-      imConversationId: row[0] as string,
-      platform: row[1] as IMPlatform,
-      coworkSessionId: row[2] as string,
-      agentId: (row[3] as string) || 'main',
-      createdAt: row[4] as number,
-      lastActiveAt: row[5] as number,
+      imConversationId: row.im_conversation_id,
+      platform: row.platform,
+      coworkSessionId: row.cowork_session_id,
+      agentId: row.agent_id || 'main',
+      createdAt: row.created_at,
+      lastActiveAt: row.last_active_at,
     };
   }
 
@@ -1089,19 +1154,25 @@ export class IMStore {
    * Find the IM mapping that owns a given cowork session ID.
    */
   getSessionMappingByCoworkSessionId(coworkSessionId: string): IMSessionMapping | null {
-    const result = this.db.exec(
+    const row = this.getOne<{
+      im_conversation_id: string;
+      platform: IMPlatform;
+      cowork_session_id: string;
+      agent_id: string | null;
+      created_at: number;
+      last_active_at: number;
+    }>(
       'SELECT im_conversation_id, platform, cowork_session_id, agent_id, created_at, last_active_at FROM im_session_mappings WHERE cowork_session_id = ? LIMIT 1',
       [coworkSessionId]
     );
-    if (!result[0]?.values[0]) return null;
-    const row = result[0].values[0];
+    if (!row) return null;
     return {
-      imConversationId: row[0] as string,
-      platform: row[1] as IMPlatform,
-      coworkSessionId: row[2] as string,
-      agentId: (row[3] as string) || 'main',
-      createdAt: row[4] as number,
-      lastActiveAt: row[5] as number,
+      imConversationId: row.im_conversation_id,
+      platform: row.platform,
+      coworkSessionId: row.cowork_session_id,
+      agentId: row.agent_id || 'main',
+      createdAt: row.created_at,
+      lastActiveAt: row.last_active_at,
     };
   }
 
@@ -1110,7 +1181,7 @@ export class IMStore {
    */
   createSessionMapping(imConversationId: string, platform: IMPlatform, coworkSessionId: string, agentId: string = 'main'): IMSessionMapping {
     const now = Date.now();
-    this.db.run(
+    this.run(
       'INSERT INTO im_session_mappings (im_conversation_id, platform, cowork_session_id, agent_id, created_at, last_active_at) VALUES (?, ?, ?, ?, ?, ?)',
       [imConversationId, platform, coworkSessionId, agentId, now, now]
     );
@@ -1130,7 +1201,7 @@ export class IMStore {
    */
   updateSessionLastActive(imConversationId: string, platform: IMPlatform): void {
     const now = Date.now();
-    this.db.run(
+    this.run(
       'UPDATE im_session_mappings SET last_active_at = ? WHERE im_conversation_id = ? AND platform = ?',
       [now, imConversationId, platform]
     );
@@ -1143,7 +1214,7 @@ export class IMStore {
    */
   updateSessionMappingTarget(imConversationId: string, platform: IMPlatform, newCoworkSessionId: string, newAgentId: string): void {
     const now = Date.now();
-    this.db.run(
+    this.run(
       'UPDATE im_session_mappings SET cowork_session_id = ?, agent_id = ?, last_active_at = ? WHERE im_conversation_id = ? AND platform = ?',
       [newCoworkSessionId, newAgentId, now, imConversationId, platform]
     );
@@ -1154,7 +1225,7 @@ export class IMStore {
    * Delete a session mapping
    */
   deleteSessionMapping(imConversationId: string, platform: IMPlatform): void {
-    this.db.run(
+    this.run(
       'DELETE FROM im_session_mappings WHERE im_conversation_id = ? AND platform = ?',
       [imConversationId, platform]
     );
@@ -1167,7 +1238,7 @@ export class IMStore {
    * can be re-synced as a fresh session.
    */
   deleteSessionMappingByCoworkSessionId(coworkSessionId: string): void {
-    this.db.run(
+    this.run(
       'DELETE FROM im_session_mappings WHERE cowork_session_id = ?',
       [coworkSessionId]
     );
@@ -1182,38 +1253,54 @@ export class IMStore {
       ? 'SELECT im_conversation_id, platform, cowork_session_id, agent_id, created_at, last_active_at FROM im_session_mappings WHERE platform = ? ORDER BY last_active_at DESC'
       : 'SELECT im_conversation_id, platform, cowork_session_id, agent_id, created_at, last_active_at FROM im_session_mappings ORDER BY last_active_at DESC';
     const params = platform ? [platform] : [];
-    const result = this.db.exec(query, params);
-    if (!result[0]?.values) return [];
-    return result[0].values.map(row => ({
-      imConversationId: row[0] as string,
-      platform: row[1] as IMPlatform,
-      coworkSessionId: row[2] as string,
-      agentId: (row[3] as string) || 'main',
-      createdAt: row[4] as number,
-      lastActiveAt: row[5] as number,
+    const rows = this.getAll<{
+      im_conversation_id: string;
+      platform: IMPlatform;
+      cowork_session_id: string;
+      agent_id: string | null;
+      created_at: number;
+      last_active_at: number;
+    }>(query, params);
+    return rows.map((row) => ({
+      imConversationId: row.im_conversation_id,
+      platform: row.platform,
+      coworkSessionId: row.cowork_session_id,
+      agentId: row.agent_id || 'main',
+      createdAt: row.created_at,
+      lastActiveAt: row.last_active_at,
     }));
   }
 
   // ==================== Session Route Operations ====================
 
   getSessionRoute(routeKey: string): IMSessionRoute | null {
-    const result = this.db.exec(
+    const row = this.getOne<{
+      route_key: string;
+      platform: IMPlatform;
+      conversation_id: string;
+      thread_id: string | null;
+      agent_id: string;
+      provider: 'openclaw' | 'yd_cowork';
+      cowork_session_id: string;
+      last_event_id: string | null;
+      created_at: number;
+      updated_at: number;
+    }>(
       'SELECT route_key, platform, conversation_id, thread_id, agent_id, provider, cowork_session_id, last_event_id, created_at, updated_at FROM im_session_routes WHERE route_key = ? LIMIT 1',
       [routeKey],
     );
-    if (!result[0]?.values[0]) return null;
-    const row = result[0].values[0];
+    if (!row) return null;
     return {
-      routeKey: row[0] as string,
-      platform: row[1] as IMPlatform,
-      conversationId: row[2] as string,
-      threadId: (row[3] as string | null) ?? null,
-      agentId: row[4] as string,
-      provider: row[5] as 'openclaw' | 'yd_cowork',
-      coworkSessionId: row[6] as string,
-      lastEventId: (row[7] as string | null) ?? null,
-      createdAt: row[8] as number,
-      updatedAt: row[9] as number,
+      routeKey: row.route_key,
+      platform: row.platform,
+      conversationId: row.conversation_id,
+      threadId: row.thread_id ?? null,
+      agentId: row.agent_id,
+      provider: row.provider,
+      coworkSessionId: row.cowork_session_id,
+      lastEventId: row.last_event_id ?? null,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
     };
   }
 
@@ -1224,7 +1311,18 @@ export class IMStore {
     agentId: string;
   }): IMSessionRoute | null {
     const normalizedThreadId = params.threadId?.trim() || null;
-    const result = this.db.exec(
+    const row = this.getOne<{
+      route_key: string;
+      platform: IMPlatform;
+      conversation_id: string;
+      thread_id: string | null;
+      agent_id: string;
+      provider: 'openclaw' | 'yd_cowork';
+      cowork_session_id: string;
+      last_event_id: string | null;
+      created_at: number;
+      updated_at: number;
+    }>(
       normalizedThreadId
         ? 'SELECT route_key, platform, conversation_id, thread_id, agent_id, provider, cowork_session_id, last_event_id, created_at, updated_at FROM im_session_routes WHERE platform = ? AND conversation_id = ? AND thread_id = ? AND agent_id = ? ORDER BY updated_at DESC LIMIT 1'
         : 'SELECT route_key, platform, conversation_id, thread_id, agent_id, provider, cowork_session_id, last_event_id, created_at, updated_at FROM im_session_routes WHERE platform = ? AND conversation_id = ? AND thread_id IS NULL AND agent_id = ? ORDER BY updated_at DESC LIMIT 1',
@@ -1232,19 +1330,18 @@ export class IMStore {
         ? [params.platform, params.conversationId, normalizedThreadId, params.agentId]
         : [params.platform, params.conversationId, params.agentId],
     );
-    if (!result[0]?.values[0]) return null;
-    const row = result[0].values[0];
+    if (!row) return null;
     return {
-      routeKey: row[0] as string,
-      platform: row[1] as IMPlatform,
-      conversationId: row[2] as string,
-      threadId: (row[3] as string | null) ?? null,
-      agentId: row[4] as string,
-      provider: row[5] as 'openclaw' | 'yd_cowork',
-      coworkSessionId: row[6] as string,
-      lastEventId: (row[7] as string | null) ?? null,
-      createdAt: row[8] as number,
-      updatedAt: row[9] as number,
+      routeKey: row.route_key,
+      platform: row.platform,
+      conversationId: row.conversation_id,
+      threadId: row.thread_id ?? null,
+      agentId: row.agent_id,
+      provider: row.provider,
+      coworkSessionId: row.cowork_session_id,
+      lastEventId: row.last_event_id ?? null,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
     };
   }
 
@@ -1262,7 +1359,7 @@ export class IMStore {
     const threadId = route.threadId?.trim() || null;
     const lastEventId = route.lastEventId?.trim() || null;
     const previous = this.getSessionRoute(route.routeKey);
-    this.db.run(
+    this.run(
       `INSERT INTO im_session_routes (
         route_key,
         platform,
@@ -1314,7 +1411,7 @@ export class IMStore {
 
   updateSessionRouteLastEvent(routeKey: string, eventId: string | null): void {
     const now = Date.now();
-    this.db.run(
+    this.run(
       'UPDATE im_session_routes SET last_event_id = ?, updated_at = ? WHERE route_key = ?',
       [eventId, now, routeKey],
     );
@@ -1322,12 +1419,12 @@ export class IMStore {
   }
 
   deleteSessionRoute(routeKey: string): void {
-    this.db.run('DELETE FROM im_session_routes WHERE route_key = ?', [routeKey]);
+    this.run('DELETE FROM im_session_routes WHERE route_key = ?', [routeKey]);
     this.saveDb();
   }
 
   deleteSessionRoutesByCoworkSessionId(coworkSessionId: string): void {
-    this.db.run('DELETE FROM im_session_routes WHERE cowork_session_id = ?', [coworkSessionId]);
+    this.run('DELETE FROM im_session_routes WHERE cowork_session_id = ?', [coworkSessionId]);
     this.saveDb();
   }
 
@@ -1353,7 +1450,7 @@ export class IMStore {
       if (!shouldRepair) {
         continue;
       }
-      this.db.run(
+      this.run(
         `INSERT INTO im_session_routes (
           route_key,
           platform,
@@ -1409,7 +1506,7 @@ export class IMStore {
     payloadJson?: string;
     receivedAt: number;
   }): { accepted: boolean } {
-    this.db.run(
+    this.run(
       `INSERT OR IGNORE INTO im_inbound_events (
         id,
         platform,
@@ -1437,7 +1534,7 @@ export class IMStore {
         'accepted',
       ],
     );
-    const accepted = this.db.getRowsModified() > 0;
+    const accepted = this.lastRowsModified > 0;
     if (accepted) {
       this.saveDb();
     }
@@ -1455,7 +1552,7 @@ export class IMStore {
     metadataJson?: string;
   }): void {
     const now = Date.now();
-    this.db.run(
+    this.run(
       `INSERT INTO im_gateway_runs (
         run_id,
         provider,
@@ -1493,13 +1590,13 @@ export class IMStore {
     metadataJson?: string | null;
   }): void {
     const finishedAt = params.finishedAt ?? null;
-    const startedResult = this.db.exec(
+    const startedResult = this.getOne<{ started_at: number }>(
       'SELECT started_at FROM im_gateway_runs WHERE run_id = ? LIMIT 1',
       [params.runId],
     );
-    const startedAt = (startedResult[0]?.values?.[0]?.[0] as number | undefined) ?? undefined;
+    const startedAt = startedResult?.started_at;
     const durationMs = finishedAt && startedAt ? Math.max(0, finishedAt - startedAt) : null;
-    this.db.run(
+    this.run(
       `UPDATE im_gateway_runs SET
         status = ?,
         error_code = ?,
@@ -1529,7 +1626,15 @@ export class IMStore {
     limit?: number;
   }): IMRecoverableGatewayRunRecord[] {
     const limit = options?.limit ?? 50;
-    const result = this.db.exec(
+    const rows = this.getAll<{
+      run_id: string;
+      platform: IMPlatform;
+      conversation_id: string | null;
+      route_key: string;
+      cowork_session_id: string;
+      status: GatewayRunStatusType;
+      started_at: number;
+    }>(
       `SELECT
         runs.run_id,
         runs.platform,
@@ -1555,17 +1660,17 @@ export class IMStore {
         limit,
       ],
     );
-    if (!result[0]?.values?.length) {
+    if (!rows.length) {
       return [];
     }
-    return result[0].values.map((row) => ({
-      runId: row[0] as string,
-      platform: row[1] as IMPlatform,
-      conversationId: (row[2] as string | null) ?? null,
-      routeKey: row[3] as string,
-      coworkSessionId: row[4] as string,
-      status: row[5] as GatewayRunStatusType,
-      startedAt: row[6] as number,
+    return rows.map((row) => ({
+      runId: row.run_id,
+      platform: row.platform,
+      conversationId: row.conversation_id ?? null,
+      routeKey: row.route_key,
+      coworkSessionId: row.cowork_session_id,
+      status: row.status,
+      startedAt: row.started_at,
     }));
   }
 
@@ -1579,7 +1684,7 @@ export class IMStore {
     maxRetries?: number;
   }): { inserted: boolean } {
     const now = Date.now();
-    this.db.run(
+    this.run(
       `INSERT OR IGNORE INTO im_outbound_deliveries (
         id,
         run_id,
@@ -1607,7 +1712,7 @@ export class IMStore {
         now,
       ],
     );
-    const inserted = this.db.getRowsModified() > 0;
+    const inserted = this.lastRowsModified > 0;
     if (inserted) {
       this.saveDb();
     }
@@ -1623,7 +1728,7 @@ export class IMStore {
     channelMessageId?: string | null;
   }): void {
     const now = Date.now();
-    this.db.run(
+    this.run(
       `UPDATE im_outbound_deliveries SET
         status = ?,
         retry_count = COALESCE(?, retry_count),
@@ -1655,7 +1760,21 @@ export class IMStore {
     const staleSendingMs = options?.staleSendingMs ?? 30_000;
     const staleFailedMs = options?.staleFailedMs ?? 10_000;
     const limit = options?.limit ?? 20;
-    const result = this.db.exec(
+    const rows = this.getAll<{
+      id: string;
+      run_id: string;
+      platform: IMPlatform;
+      conversation_id: string;
+      thread_id: string | null;
+      payload_json: string;
+      status: GatewayDeliveryStatusType;
+      retry_count: number;
+      max_retries: number;
+      next_retry_at: number | null;
+      last_error: string | null;
+      created_at: number;
+      updated_at: number;
+    }>(
       `SELECT
         id,
         run_id,
@@ -1687,23 +1806,23 @@ export class IMStore {
         limit,
       ],
     );
-    if (!result[0]?.values?.length) {
+    if (!rows.length) {
       return [];
     }
-    return result[0].values.map((row) => ({
-      id: row[0] as string,
-      runId: row[1] as string,
-      platform: row[2] as IMPlatform,
-      conversationId: row[3] as string,
-      threadId: (row[4] as string | null) ?? null,
-      payloadJson: row[5] as string,
-      status: row[6] as GatewayDeliveryStatusType,
-      retryCount: Number(row[7] as number),
-      maxRetries: Number(row[8] as number),
-      nextRetryAt: (row[9] as number | null) ?? null,
-      lastError: (row[10] as string | null) ?? null,
-      createdAt: row[11] as number,
-      updatedAt: row[12] as number,
+    return rows.map((row) => ({
+      id: row.id,
+      runId: row.run_id,
+      platform: row.platform,
+      conversationId: row.conversation_id,
+      threadId: row.thread_id ?? null,
+      payloadJson: row.payload_json,
+      status: row.status,
+      retryCount: Number(row.retry_count),
+      maxRetries: Number(row.max_retries),
+      nextRetryAt: row.next_retry_at ?? null,
+      lastError: row.last_error ?? null,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
     }));
   }
 
@@ -1713,7 +1832,7 @@ export class IMStore {
   }): number {
     const now = options?.nextRetryAt ?? Date.now();
     const lastError = options?.lastError?.trim() || 'Recovered after process restart';
-    this.db.run(
+    this.run(
       `UPDATE im_outbound_deliveries SET
         status = ?,
         next_retry_at = ?,
@@ -1728,7 +1847,7 @@ export class IMStore {
         GatewayDeliveryStatus.Sending,
       ],
     );
-    const affected = this.db.getRowsModified();
+    const affected = this.lastRowsModified;
     if (affected > 0) {
       this.saveDb();
     }

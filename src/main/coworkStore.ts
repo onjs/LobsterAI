@@ -3,8 +3,8 @@ import crypto from 'crypto';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import Database from 'better-sqlite3';
 import { v4 as uuidv4 } from 'uuid';
-import type { SqlJsCompatDatabase } from './sqliteStore';
 import {
   extractTurnMemoryChanges,
   isQuestionLikeMemoryText,
@@ -585,13 +585,17 @@ export interface CoworkUserMemoryVectorRef {
 }
 
 export class CoworkStore {
-  private db: SqlJsCompatDatabase;
+  private db: Database.Database;
   private saveDb: () => void;
 
-  constructor(db: SqlJsCompatDatabase, saveDb: () => void) {
+  constructor(db: Database.Database, saveDb: () => void = () => {}) {
     this.db = db;
     this.saveDb = saveDb;
     this.ensureDefaultConfigEntries();
+  }
+
+  private run(sql: string, params: unknown[] = []): Database.RunResult {
+    return this.db.prepare(sql).run(...params);
   }
 
   private ensureDefaultConfigEntries(): void {
@@ -613,7 +617,7 @@ export class CoworkStore {
     if (existing) {
       return false;
     }
-    this.db.run(`
+    this.run(`
       INSERT INTO cowork_config (key, value, updated_at)
       VALUES (?, ?, ?)
       ON CONFLICT(key) DO NOTHING
@@ -621,29 +625,13 @@ export class CoworkStore {
     return true;
   }
 
-  private getOne<T>(sql: string, params: (string | number | null)[] = []): T | undefined {
-    const result = this.db.exec(sql, params);
-    if (!result[0]?.values[0]) return undefined;
-    const columns = result[0].columns;
-    const values = result[0].values[0];
-    const row: Record<string, unknown> = {};
-    columns.forEach((col, i) => {
-      row[col] = values[i];
-    });
-    return row as T;
+  private getOne<T>(sql: string, params: unknown[] = []): T | undefined {
+    const row = this.db.prepare(sql).get(...params) as T | undefined;
+    return row;
   }
 
-  private getAll<T>(sql: string, params: (string | number | null)[] = []): T[] {
-    const result = this.db.exec(sql, params);
-    if (!result[0]?.values) return [];
-    const columns = result[0].columns;
-    return result[0].values.map((values) => {
-      const row: Record<string, unknown> = {};
-      columns.forEach((col, i) => {
-        row[col] = values[i];
-      });
-      return row as T;
-    });
+  private getAll<T>(sql: string, params: unknown[] = []): T[] {
+    return this.db.prepare(sql).all(...params) as T[];
   }
 
   createSession(
@@ -657,7 +645,7 @@ export class CoworkStore {
     const id = uuidv4();
     const now = Date.now();
 
-    this.db.run(`
+    this.run(`
       INSERT INTO cowork_sessions (id, title, claude_session_id, status, cwd, system_prompt, execution_mode, active_skill_ids, agent_id, pinned, created_at, updated_at)
       VALUES (?, ?, NULL, 'idle', ?, ?, ?, ?, ?, 0, ?, ?)
     `, [id, title, cwd, systemPrompt, executionMode, JSON.stringify(activeSkillIds), agentId, now, now]);
@@ -767,7 +755,7 @@ export class CoworkStore {
     }
 
     values.push(id);
-    this.db.run(`
+    this.run(`
       UPDATE cowork_sessions
       SET ${setClauses.join(', ')}
       WHERE id = ?
@@ -778,7 +766,7 @@ export class CoworkStore {
 
   deleteSession(id: string): void {
     this.markMemorySourcesInactiveBySession(id);
-    this.db.run('DELETE FROM cowork_sessions WHERE id = ?', [id]);
+    this.run('DELETE FROM cowork_sessions WHERE id = ?', [id]);
     this.markOrphanImplicitMemoriesStale();
     this.saveDb();
   }
@@ -789,13 +777,13 @@ export class CoworkStore {
       this.markMemorySourcesInactiveBySession(id);
     }
     const placeholders = ids.map(() => '?').join(',');
-    this.db.run(`DELETE FROM cowork_sessions WHERE id IN (${placeholders})`, ids);
+    this.run(`DELETE FROM cowork_sessions WHERE id IN (${placeholders})`, ids);
     this.markOrphanImplicitMemoriesStale();
     this.saveDb();
   }
 
   setSessionPinned(id: string, pinned: boolean): void {
-    this.db.run('UPDATE cowork_sessions SET pinned = ? WHERE id = ?', [pinned ? 1 : 0, id]);
+    this.run('UPDATE cowork_sessions SET pinned = ? WHERE id = ?', [pinned ? 1 : 0, id]);
     this.saveDb();
   }
 
@@ -839,15 +827,13 @@ export class CoworkStore {
 
   resetRunningSessions(): number {
     const now = Date.now();
-    this.db.run(`
+    const result = this.run(`
       UPDATE cowork_sessions
       SET status = 'idle', updated_at = ?
       WHERE status = 'running'
     `, [now]);
     this.saveDb();
-
-    const changes = this.db.getRowsModified?.();
-    return typeof changes === 'number' ? changes : 0;
+    return result.changes;
   }
 
   listRecentCwds(limit: number = 8): string[] {
@@ -919,14 +905,14 @@ export class CoworkStore {
     const id = uuidv4();
     const now = Date.now();
 
-    const sequenceRow = this.db.exec(`
+    const sequenceRow = this.getOne<{ next_seq: number }>(`
       SELECT COALESCE(MAX(sequence), 0) + 1 as next_seq
       FROM cowork_messages
       WHERE session_id = ?
     `, [sessionId]);
-    const sequence = sequenceRow[0]?.values[0]?.[0] as number || 1;
+    const sequence = sequenceRow?.next_seq || 1;
 
-    this.db.run(`
+    this.run(`
       INSERT INTO cowork_messages (id, session_id, type, content, metadata, created_at, sequence)
       VALUES (?, ?, ?, ?, ?, ?, ?)
     `, [
@@ -939,7 +925,7 @@ export class CoworkStore {
       sequence,
     ]);
 
-    this.db.run('UPDATE cowork_sessions SET updated_at = ? WHERE id = ?', [now, sessionId]);
+    this.run('UPDATE cowork_sessions SET updated_at = ? WHERE id = ?', [now, sessionId]);
 
     this.saveDb();
 
@@ -962,11 +948,11 @@ export class CoworkStore {
     const now = Date.now();
 
     // Get the target message's sequence
-    const targetRow = this.db.exec(
+    const targetRow = this.getOne<{ sequence: number }>(
       'SELECT sequence FROM cowork_messages WHERE id = ? AND session_id = ?',
       [beforeMessageId, sessionId],
     );
-    const targetSequence = targetRow[0]?.values[0]?.[0] as number | undefined;
+    const targetSequence = targetRow?.sequence;
 
     if (targetSequence === undefined) {
       // Fallback to normal append if the target message is not found
@@ -974,13 +960,13 @@ export class CoworkStore {
     }
 
     // Shift all messages with sequence >= target up by 1
-    this.db.run(
+    this.run(
       'UPDATE cowork_messages SET sequence = sequence + 1 WHERE session_id = ? AND sequence >= ?',
       [sessionId, targetSequence],
     );
 
     // Insert at the target's original sequence
-    this.db.run(`
+    this.run(`
       INSERT INTO cowork_messages (id, session_id, type, content, metadata, created_at, sequence)
       VALUES (?, ?, ?, ?, ?, ?, ?)
     `, [
@@ -993,7 +979,7 @@ export class CoworkStore {
       targetSequence,
     ]);
 
-    this.db.run('UPDATE cowork_sessions SET updated_at = ? WHERE id = ?', [now, sessionId]);
+    this.run('UPDATE cowork_sessions SET updated_at = ? WHERE id = ?', [now, sessionId]);
     this.saveDb();
 
     return {
@@ -1010,11 +996,11 @@ export class CoworkStore {
    * Used by reconciliation to remove duplicate or spurious messages.
    */
   deleteMessage(sessionId: string, messageId: string): boolean {
-    this.db.run(
+    const result = this.run(
       'DELETE FROM cowork_messages WHERE id = ? AND session_id = ?',
       [messageId, sessionId],
     );
-    const deleted = (this.db.getRowsModified?.() || 0) > 0;
+    const deleted = result.changes > 0;
     if (deleted) {
       this.saveDb();
     }
@@ -1033,22 +1019,22 @@ export class CoworkStore {
     const now = Date.now();
 
     // Delete all existing user/assistant messages for this session
-    this.db.run(
+    this.run(
       "DELETE FROM cowork_messages WHERE session_id = ? AND type IN ('user', 'assistant')",
       [sessionId],
     );
 
     // Re-insert authoritative messages with correct sequence numbers
     // First, get the current max sequence from remaining messages (tool_use, tool_result, system)
-    const seqRow = this.db.exec(
+    const seqRow = this.getOne<{ max_seq: number }>(
       'SELECT COALESCE(MAX(sequence), 0) as max_seq FROM cowork_messages WHERE session_id = ?',
       [sessionId],
     );
-    let nextSeq = ((seqRow[0]?.values[0]?.[0] as number) || 0) + 1;
+    let nextSeq = (seqRow?.max_seq || 0) + 1;
 
     for (const entry of authoritative) {
       const id = uuidv4();
-      this.db.run(`
+      this.run(`
         INSERT INTO cowork_messages (id, session_id, type, content, metadata, created_at, sequence)
         VALUES (?, ?, ?, ?, ?, ?, ?)
       `, [
@@ -1062,7 +1048,7 @@ export class CoworkStore {
       ]);
     }
 
-    this.db.run('UPDATE cowork_sessions SET updated_at = ? WHERE id = ?', [now, sessionId]);
+    this.run('UPDATE cowork_sessions SET updated_at = ? WHERE id = ?', [now, sessionId]);
     this.saveDb();
   }
 
@@ -1083,7 +1069,7 @@ export class CoworkStore {
 
     values.push(messageId);
     values.push(sessionId);
-    this.db.run(`
+    this.run(`
       UPDATE cowork_messages
       SET ${setClauses.join(', ')}
       WHERE id = ? AND session_id = ?
@@ -1140,7 +1126,7 @@ export class CoworkStore {
     const now = Date.now();
 
     if (config.workingDirectory !== undefined) {
-      this.db.run(`
+      this.run(`
         INSERT INTO cowork_config (key, value, updated_at)
         VALUES ('workingDirectory', ?, ?)
         ON CONFLICT(key) DO UPDATE SET
@@ -1150,7 +1136,7 @@ export class CoworkStore {
     }
 
     if (config.executionMode !== undefined) {
-      this.db.run(`
+      this.run(`
         INSERT INTO cowork_config (key, value, updated_at)
         VALUES ('executionMode', ?, ?)
         ON CONFLICT(key) DO UPDATE SET
@@ -1161,7 +1147,7 @@ export class CoworkStore {
 
     if (config.agentEngine !== undefined) {
       const normalizedAgentEngine = normalizeCoworkAgentEngineValue(config.agentEngine);
-      this.db.run(`
+      this.run(`
         INSERT INTO cowork_config (key, value, updated_at)
         VALUES ('agentEngine', ?, ?)
         ON CONFLICT(key) DO UPDATE SET
@@ -1174,7 +1160,7 @@ export class CoworkStore {
     // source of truth for runtime routing.
 
     if (config.memoryEnabled !== undefined) {
-      this.db.run(`
+      this.run(`
         INSERT INTO cowork_config (key, value, updated_at)
         VALUES ('memoryEnabled', ?, ?)
         ON CONFLICT(key) DO UPDATE SET
@@ -1184,7 +1170,7 @@ export class CoworkStore {
     }
 
     if (config.memoryImplicitUpdateEnabled !== undefined) {
-      this.db.run(`
+      this.run(`
         INSERT INTO cowork_config (key, value, updated_at)
         VALUES ('memoryImplicitUpdateEnabled', ?, ?)
         ON CONFLICT(key) DO UPDATE SET
@@ -1194,7 +1180,7 @@ export class CoworkStore {
     }
 
     if (config.memoryLlmJudgeEnabled !== undefined) {
-      this.db.run(`
+      this.run(`
         INSERT INTO cowork_config (key, value, updated_at)
         VALUES ('memoryLlmJudgeEnabled', ?, ?)
         ON CONFLICT(key) DO UPDATE SET
@@ -1204,7 +1190,7 @@ export class CoworkStore {
     }
 
     if (config.memoryGuardLevel !== undefined) {
-      this.db.run(`
+      this.run(`
         INSERT INTO cowork_config (key, value, updated_at)
         VALUES ('memoryGuardLevel', ?, ?)
         ON CONFLICT(key) DO UPDATE SET
@@ -1214,7 +1200,7 @@ export class CoworkStore {
     }
 
     if (config.memoryUserMemoriesMaxItems !== undefined) {
-      this.db.run(`
+      this.run(`
         INSERT INTO cowork_config (key, value, updated_at)
         VALUES ('memoryUserMemoriesMaxItems', ?, ?)
         ON CONFLICT(key) DO UPDATE SET
@@ -1224,7 +1210,7 @@ export class CoworkStore {
     }
 
     if (config.skipMissedJobs !== undefined) {
-      this.db.run(
+      this.run(
         `
         INSERT INTO cowork_config (key, value, updated_at)
         VALUES ('skipMissedJobs', ?, ?)
@@ -1272,7 +1258,7 @@ export class CoworkStore {
 
   private addMemorySource(memoryId: string, source?: CoworkUserMemorySourceInput): void {
     const now = Date.now();
-    this.db.run(`
+    this.run(`
       INSERT INTO user_memory_sources (id, memory_id, session_id, message_id, role, is_active, created_at)
       VALUES (?, ?, ?, ?, ?, 1, ?)
     `, [
@@ -1339,7 +1325,7 @@ export class CoworkStore {
       const mergedText = choosePreferredMemoryText(existing.text, normalizedText);
       const mergedExplicit = existing.is_explicit ? 1 : explicitFlag;
       const mergedConfidence = Math.max(Number(existing.confidence) || 0, confidence);
-      this.db.run(`
+      this.run(`
         UPDATE user_memories
         SET text = ?, fingerprint = ?, confidence = ?, is_explicit = ?, status = 'created', updated_at = ?
         WHERE id = ?
@@ -1357,7 +1343,7 @@ export class CoworkStore {
     }
 
     const id = uuidv4();
-    this.db.run(`
+    this.run(`
       INSERT INTO user_memories (
         id, text, fingerprint, confidence, is_explicit, status, created_at, updated_at, last_used_at
       ) VALUES (?, ?, ?, ?, ?, 'created', ?, ?, NULL)
@@ -1455,7 +1441,7 @@ export class CoworkStore {
       : current.status;
     const nextExplicit = input.isExplicit !== undefined ? (input.isExplicit ? 1 : 0) : current.is_explicit;
 
-    this.db.run(`
+    this.run(`
       UPDATE user_memories
       SET text = ?, fingerprint = ?, confidence = ?, is_explicit = ?, status = ?, updated_at = ?
       WHERE id = ?
@@ -1473,18 +1459,18 @@ export class CoworkStore {
 
   deleteUserMemory(id: string): boolean {
     const now = Date.now();
-    this.db.run(`
+    const result = this.run(`
       UPDATE user_memories
       SET status = 'deleted', updated_at = ?
       WHERE id = ?
     `, [now, id]);
-    this.db.run(`
+    this.run(`
       UPDATE user_memory_sources
       SET is_active = 0
       WHERE memory_id = ?
     `, [id]);
     this.saveDb();
-    return (this.db.getRowsModified?.() || 0) > 0;
+    return result.changes > 0;
   }
 
   getMemoryVectorRef(memoryId: string, provider: string): CoworkUserMemoryVectorRef | null {
@@ -1520,7 +1506,7 @@ export class CoworkStore {
 
   upsertMemoryVectorRef(input: { memoryId: string; provider: string; remoteId: string }): void {
     const now = Date.now();
-    this.db.run(`
+    this.run(`
       INSERT INTO user_memory_vector_refs (memory_id, provider, remote_id, updated_at)
       VALUES (?, ?, ?, ?)
       ON CONFLICT(memory_id, provider) DO UPDATE SET
@@ -1531,7 +1517,7 @@ export class CoworkStore {
   }
 
   deleteMemoryVectorRef(memoryId: string, provider: string): void {
-    this.db.run(`
+    this.run(`
       DELETE FROM user_memory_vector_refs
       WHERE memory_id = ? AND provider = ?
     `, [memoryId, provider]);
@@ -1583,12 +1569,12 @@ export class CoworkStore {
       if (!shouldAutoDeleteMemoryText(row.text)) {
         continue;
       }
-      this.db.run(`
+      this.run(`
         UPDATE user_memories
         SET status = 'deleted', updated_at = ?
         WHERE id = ?
       `, [now, row.id]);
-      this.db.run(`
+      this.run(`
         UPDATE user_memory_sources
         SET is_active = 0
         WHERE memory_id = ?
@@ -1603,7 +1589,7 @@ export class CoworkStore {
   }
 
   markMemorySourcesInactiveBySession(sessionId: string): void {
-    this.db.run(`
+    this.run(`
       UPDATE user_memory_sources
       SET is_active = 0
       WHERE session_id = ? AND is_active = 1
@@ -1612,7 +1598,7 @@ export class CoworkStore {
 
   markOrphanImplicitMemoriesStale(): void {
     const now = Date.now();
-    this.db.run(`
+    this.run(`
       UPDATE user_memories
       SET status = 'stale', updated_at = ?
       WHERE is_explicit = 0
@@ -2010,7 +1996,7 @@ export class CoworkStore {
       return this.createAgent({ ...request, id: `${id}-${Date.now()}` });
     }
 
-    this.db.run(`
+    this.run(`
       INSERT INTO agents (id, name, description, system_prompt, identity, model, icon, skill_ids, enabled, is_default, source, preset_id, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?, ?, ?)
     `, [
@@ -2074,7 +2060,7 @@ export class CoworkStore {
     }
 
     values.push(id);
-    this.db.run(`UPDATE agents SET ${setClauses.join(', ')} WHERE id = ?`, values);
+    this.run(`UPDATE agents SET ${setClauses.join(', ')} WHERE id = ?`, values);
     this.saveDb();
 
     return this.getAgent(id);
@@ -2082,7 +2068,7 @@ export class CoworkStore {
 
   deleteAgent(id: string): boolean {
     if (id === 'main') return false; // Cannot delete default agent
-    this.db.run('DELETE FROM agents WHERE id = ? AND is_default = 0', [id]);
+    this.run('DELETE FROM agents WHERE id = ? AND is_default = 0', [id]);
     this.saveDb();
     return true;
   }

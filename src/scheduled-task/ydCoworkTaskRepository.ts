@@ -1,5 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
-import type { SqlJsCompatDatabase } from '../main/sqliteStore';
+import type Database from 'better-sqlite3';
 import { TaskStatus } from './constants';
 import type {
   Schedule,
@@ -123,14 +123,18 @@ function toRun(row: RunRow): ScheduledTaskRun {
 
 export class YdCoworkTaskRepository {
   constructor(
-    private readonly db: SqlJsCompatDatabase,
+    private readonly db: Database.Database,
     private readonly saveDb: () => void,
   ) {
     this.ensureTables();
   }
 
+  private run(sql: string, params: unknown[] = []): void {
+    this.db.prepare(sql).run(...params);
+  }
+
   private ensureTables(): void {
-    this.db.run(`
+    this.run(`
       CREATE TABLE IF NOT EXISTS ${TASK_TABLE} (
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
@@ -148,7 +152,7 @@ export class YdCoworkTaskRepository {
         updated_at INTEGER NOT NULL
       )
     `);
-    this.db.run(`
+    this.run(`
       CREATE TABLE IF NOT EXISTS ${RUN_TABLE} (
         id TEXT PRIMARY KEY,
         task_id TEXT NOT NULL,
@@ -161,15 +165,15 @@ export class YdCoworkTaskRepository {
         error TEXT
       )
     `);
-    this.db.run(`
+    this.run(`
       CREATE INDEX IF NOT EXISTS idx_${TASK_TABLE}_enabled_updated
       ON ${TASK_TABLE}(enabled, updated_at DESC)
     `);
-    this.db.run(`
+    this.run(`
       CREATE INDEX IF NOT EXISTS idx_${RUN_TABLE}_task_started
       ON ${RUN_TABLE}(task_id, started_at DESC)
     `);
-    this.db.run(`
+    this.run(`
       CREATE INDEX IF NOT EXISTS idx_${RUN_TABLE}_started
       ON ${RUN_TABLE}(started_at DESC)
     `);
@@ -177,28 +181,12 @@ export class YdCoworkTaskRepository {
   }
 
   private getOne<T>(sql: string, params: RowValue[] = []): T | null {
-    const result = this.db.exec(sql, params);
-    const row = result[0]?.values?.[0];
-    if (!row) return null;
-    const columns = result[0].columns;
-    const object: Record<string, unknown> = {};
-    columns.forEach((column, index) => {
-      object[column] = row[index];
-    });
-    return object as T;
+    const row = this.db.prepare(sql).get(...params) as T | undefined;
+    return row ?? null;
   }
 
   private getAll<T>(sql: string, params: RowValue[] = []): T[] {
-    const result = this.db.exec(sql, params);
-    if (!result[0]?.values) return [];
-    const columns = result[0].columns;
-    return result[0].values.map((row) => {
-      const object: Record<string, unknown> = {};
-      columns.forEach((column, index) => {
-        object[column] = row[index];
-      });
-      return object as T;
-    });
+    return this.db.prepare(sql).all(...params) as T[];
   }
 
   listTasks(): ScheduledTask[] {
@@ -226,7 +214,7 @@ export class YdCoworkTaskRepository {
   addTask(input: ScheduledTaskInput, state: TaskState): ScheduledTask {
     const now = Date.now();
     const id = uuidv4();
-    this.db.run(`
+    this.run(`
       INSERT INTO ${TASK_TABLE} (
         id, name, description, enabled, schedule_json, session_target, wake_mode,
         payload_json, delivery_json, agent_id, session_key, state_json, created_at, updated_at
@@ -272,7 +260,7 @@ export class YdCoworkTaskRepository {
     };
 
     const now = Date.now();
-    this.db.run(`
+    this.run(`
       UPDATE ${TASK_TABLE}
       SET
         name = ?,
@@ -309,7 +297,7 @@ export class YdCoworkTaskRepository {
 
   updateTaskState(id: string, state: TaskState): ScheduledTask | null {
     const now = Date.now();
-    this.db.run(`
+    this.run(`
       UPDATE ${TASK_TABLE}
       SET state_json = ?, updated_at = ?
       WHERE id = ?
@@ -320,7 +308,7 @@ export class YdCoworkTaskRepository {
 
   updateTaskSessionKey(id: string, sessionKey: string | null): ScheduledTask | null {
     const now = Date.now();
-    this.db.run(`
+    this.run(`
       UPDATE ${TASK_TABLE}
       SET session_key = ?, updated_at = ?
       WHERE id = ?
@@ -330,8 +318,8 @@ export class YdCoworkTaskRepository {
   }
 
   deleteTask(id: string): void {
-    this.db.run(`DELETE FROM ${TASK_TABLE} WHERE id = ?`, [id]);
-    this.db.run(`DELETE FROM ${RUN_TABLE} WHERE task_id = ?`, [id]);
+    this.run(`DELETE FROM ${TASK_TABLE} WHERE id = ?`, [id]);
+    this.run(`DELETE FROM ${RUN_TABLE} WHERE task_id = ?`, [id]);
     this.saveDb();
   }
 
@@ -343,7 +331,7 @@ export class YdCoworkTaskRepository {
     startedAtMs: number;
   }): ScheduledTaskRun {
     const id = uuidv4();
-    this.db.run(`
+    this.run(`
       INSERT INTO ${RUN_TABLE} (
         id, task_id, session_id, session_key, status, started_at, finished_at, duration_ms, error
       )
@@ -380,7 +368,7 @@ export class YdCoworkTaskRepository {
     const nextDurationMs = patch.durationMs !== undefined ? patch.durationMs : current.durationMs;
     const nextError = patch.error !== undefined ? patch.error : current.error;
 
-    this.db.run(`
+    this.run(`
       UPDATE ${RUN_TABLE}
       SET
         session_id = ?,

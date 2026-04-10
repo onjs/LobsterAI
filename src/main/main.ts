@@ -833,7 +833,7 @@ const ensureOpenClawRunningForCowork = async () => {
 const getCoworkStore = () => {
   if (!coworkStore) {
     const sqliteStore = getStore();
-    coworkStore = new CoworkStore(sqliteStore.getLegacyDatabase(), sqliteStore.getSaveFunction());
+    coworkStore = new CoworkStore(sqliteStore.getDatabase(), sqliteStore.getSaveFunction());
     const cleaned = coworkStore.autoDeleteNonPersonalMemories();
     if (cleaned > 0) {
       console.info(`[cowork-memory] Auto-deleted ${cleaned} non-personal/procedural memories`);
@@ -1445,7 +1445,7 @@ const getIMGatewayManager = () => {
     const store = getCoworkStore();
 
     imGatewayManager = new IMGatewayManager(
-      sqliteStore.getLegacyDatabase(),
+      sqliteStore.getDatabase(),
       {
         coworkRuntime: runtime,
         coworkStore: store,

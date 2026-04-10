@@ -1,7 +1,5 @@
-import * as fs from 'node:fs';
-import * as path from 'node:path';
-import initSqlJs, { type Database, type SqlJsStatic } from 'sql.js';
-import { beforeAll, describe, expect, test, vi } from 'vitest';
+import BetterSqlite3 from 'better-sqlite3';
+import { describe, expect, test, vi } from 'vitest';
 import { GatewayRoute, GatewayRunStatus } from './gateway/constants';
 import { IMStore } from './imStore';
 import {
@@ -10,10 +8,8 @@ import {
   WeixinPendingOutboundStatus,
 } from './types';
 
-let SQL: SqlJsStatic;
-
 const createStore = (): { store: IMStore } => {
-  const db = new SQL.Database() as unknown as Database;
+  const db = new BetterSqlite3(':memory:');
   const saveDb = vi.fn();
   return {
     store: new IMStore(db, saveDb),
@@ -23,12 +19,6 @@ const createStore = (): { store: IMStore } => {
 const buildRouteKey = (platform: string, conversationId: string, agentId: string): string => (
   [platform, conversationId, GatewayRoute.NoThread, agentId].join(GatewayRoute.KeySeparator)
 );
-
-beforeAll(async () => {
-  const wasmPath = path.resolve(process.cwd(), 'node_modules/sql.js/dist/sql-wasm.wasm');
-  const wasmBinary = fs.readFileSync(wasmPath);
-  SQL = await initSqlJs({ wasmBinary });
-});
 
 describe('imStore', () => {
   test('repairs session routes from legacy mappings', () => {
