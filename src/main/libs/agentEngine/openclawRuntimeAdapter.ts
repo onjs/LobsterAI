@@ -587,6 +587,9 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
   private readonly pendingAgentEventsByRunId = new Map<string, AgentEventPayload[]>();
   private readonly lastChatSeqByRunId = new Map<string, number>();
   private readonly lastAgentSeqByRunId = new Map<string, number>();
+  // Tracks runIds that have received a lifecycle phase=error, so gateway retries
+  // (which reuse the same runId) don't re-create an ActiveTurn and surface duplicate errors.
+  private readonly terminatedRunIds = new Set<string>();
   private readonly pendingApprovals = new Map<string, PendingApprovalEntry>();
   private readonly pendingTurns = new Map<string, { resolve: () => void; reject: (error: Error) => void }>();
   private readonly confirmationModeBySession = new Map<string, 'modal' | 'text'>();
@@ -1962,7 +1965,9 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     // Re-create ActiveTurn for channel session follow-up turns.
     // Exclude stream=error events (e.g. seq gap notifications) — they are diagnostic alerts,
     // not new run events, and must not create a ghost ActiveTurn that blocks the next user turn.
-    if (sessionId && !this.activeTurns.has(sessionId) && sessionKey && stream !== 'error') {
+    // Also exclude runIds that have already been terminated (lifecycle phase=error received),
+    // which prevents gateway retries from spawning new turns and surfacing duplicate errors.
+    if (sessionId && !this.activeTurns.has(sessionId) && sessionKey && stream !== 'error' && !this.terminatedRunIds.has(runId)) {
       console.log('[Debug:handleAgentEvent] re-creating ActiveTurn for follow-up turn, sessionId:', sessionId);
       this.ensureActiveTurn(sessionId, sessionKey, runId);
     }
@@ -2063,6 +2068,13 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       return;
     }
     if (stream === 'lifecycle') {
+      // Mark runId as terminated immediately on phase=error so that subsequent retries
+      // (which reuse the same runId) are blocked from re-creating an ActiveTurn.
+      const lifecycleData = agentPayload.data;
+      const lifecycleRunId = typeof agentPayload.runId === 'string' ? agentPayload.runId.trim() : '';
+      if (isRecord(lifecycleData) && typeof lifecycleData.phase === 'string' && lifecycleData.phase.trim() === 'error' && lifecycleRunId) {
+        this.terminatedRunIds.add(lifecycleRunId);
+      }
       this.handleAgentLifecycleEvent(sessionId, agentPayload.data);
     }
   }
