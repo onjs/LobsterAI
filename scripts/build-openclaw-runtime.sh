@@ -235,6 +235,7 @@ const electronRoot = process.argv[2];
 const runtimeRoot = process.argv[3];
 const requireFromElectronRoot = createRequire(path.join(electronRoot, 'package.json'));
 const asar = requireFromElectronRoot('@electron/asar');
+const runtimePackaging = require(path.join(electronRoot, 'scripts', 'openclaw-runtime-packaging.cjs'));
 const stageDir = fs.mkdtempSync(path.join(os.tmpdir(), 'openclaw-gateway-asar-'));
 const stageRoot = path.join(stageDir, 'gateway');
 const gatewayAsarPath = path.join(runtimeRoot, 'gateway.asar');
@@ -250,13 +251,10 @@ const copyEntry = (name) => {
 };
 
 const listAsarEntries = () => {
-  const entries = new Set(asar.listPackage(gatewayAsarPath).map(e => e.replace(/\\/g, '/')));
-  const hasOpenClawEntry = entries.has('/openclaw.mjs');
-  const hasControlUiIndex = entries.has('/dist/control-ui/index.html');
-  const hasGatewayEntry = entries.has('/dist/entry.js') || entries.has('/dist/entry.mjs');
-  if (!hasOpenClawEntry || !hasControlUiIndex || !hasGatewayEntry) {
+  const summary = runtimePackaging.summarizeGatewayAsarEntries(asar.listPackage(gatewayAsarPath));
+  if (!summary.hasOpenClawEntry || !summary.hasControlUiIndex || !summary.hasGatewayEntry || summary.hasBundledExtensions) {
     throw new Error(
-      `gateway.asar validation failed (openclaw.mjs=${hasOpenClawEntry}, control-ui=${hasControlUiIndex}, entry=${hasGatewayEntry}).`,
+      `gateway.asar validation failed (openclaw.mjs=${summary.hasOpenClawEntry}, control-ui=${summary.hasControlUiIndex}, entry=${summary.hasGatewayEntry}, extensions=${summary.hasBundledExtensions}).`,
     );
   }
 };
@@ -267,21 +265,16 @@ const listAsarEntries = () => {
     for (const name of requiredSourceEntries) {
       copyEntry(name);
     }
+    runtimePackaging.pruneGatewayAsarStage(stageRoot);
 
     fs.rmSync(gatewayAsarPath, { force: true });
     await asar.createPackageWithOptions(stageRoot, gatewayAsarPath, {});
     listAsarEntries();
 
     fs.rmSync(path.join(runtimeRoot, 'openclaw.mjs'), { force: true });
-    // Preserve dist/control-ui/ (needed bare at runtime for gateway admin UI).
-    // Remove everything else in dist/ (JS modules are packed in gateway.asar).
-    const distDir = path.join(runtimeRoot, 'dist');
-    if (fs.existsSync(distDir)) {
-      for (const entry of fs.readdirSync(distDir)) {
-        if (entry === 'control-ui') continue;
-        fs.rmSync(path.join(distDir, entry), { recursive: true, force: true });
-      }
-    }
+    // Preserve dist/control-ui/ for the gateway admin UI and dist/extensions/
+    // for bundled plugins loaded from the real filesystem.
+    runtimePackaging.pruneBareDistAfterGatewayPack(runtimeRoot);
   } finally {
     fs.rmSync(stageDir, { recursive: true, force: true });
   }
@@ -306,6 +299,14 @@ if [[ -f "$OUT_DIR/dist/entry.js" || -f "$OUT_DIR/dist/entry.mjs" ]]; then
 fi
 if [[ ! -f "$OUT_DIR/dist/control-ui/index.html" ]]; then
   echo "dist/control-ui/index.html is missing after asar packing. The selective cleanup may have removed it." >&2
+  exit 1
+fi
+if [[ ! -d "$OUT_DIR/dist/extensions" ]]; then
+  echo "dist/extensions is missing after asar packing. Bundled plugins must stay on disk." >&2
+  exit 1
+fi
+if [[ -d "$OUT_DIR/dist/extensions/diffs" ]]; then
+  echo "dist/extensions/diffs should be removed from the bare runtime layout." >&2
   exit 1
 fi
 

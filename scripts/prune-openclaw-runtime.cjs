@@ -73,12 +73,16 @@ const BUNDLED_EXTENSIONS_TO_KEEP = new Set([
   // --- Channels (managed via entries or third-party replacements) ---
   'telegram', 'discord', 'feishu', 'qqbot',
   // --- Core features ---
-  'browser', 'memory-core', 'diffs', 'lobster', 'llm-task', 'zai',
+  'browser', 'memory-core', 'lobster', 'llm-task', 'zai',
   // --- Media / voice (bundled defaults, may be used by agents) ---
   'image-generation-core', 'media-understanding-core', 'speech-core', 'talk-voice',
   // --- Internal ---
   'acpx', 'thread-ownership', 'memory-lancedb', 'memory-wiki',
 ]);
+
+function shouldKeepBundledExtension(extensionId) {
+  return BUNDLED_EXTENSIONS_TO_KEEP.has(extensionId);
+}
 
 // ─── Strategy 3: Stub replacements ───
 // Packages not needed in headless gateway mode, replaced with lightweight stubs.
@@ -88,6 +92,12 @@ const BUNDLED_EXTENSIONS_TO_KEEP = new Set([
 const PACKAGES_TO_STUB = [
   'koffi',                  // Windows FFI for terminal PTY — not needed in gateway mode
   '@tloncorp/tlon-skill',   // Tlon channel pruned from dist/extensions; native binary not needed
+  '@lancedb',
+  '@jimp',
+  '@napi-rs',
+  'pdfjs-dist',
+  '@matrix-org',
+  '@img'
 ];
 
 const GENERIC_STUB_INDEX_CJS = `// Stub (CJS): this package is not needed for headless gateway operation.
@@ -241,7 +251,7 @@ function main() {
     try {
       for (const entry of fs.readdirSync(distExtDir, { withFileTypes: true })) {
         if (!entry.isDirectory()) continue;
-        if (BUNDLED_EXTENSIONS_TO_KEEP.has(entry.name)) continue;
+        if (shouldKeepBundledExtension(entry.name)) continue;
         const fullPath = path.join(distExtDir, entry.name);
         fs.rmSync(fullPath, { recursive: true, force: true });
         stats.extensionsPruned.push(entry.name);
@@ -352,4 +362,11 @@ function main() {
   );
 }
 
-main();
+module.exports = {
+  BUNDLED_EXTENSIONS_TO_KEEP,
+  shouldKeepBundledExtension,
+};
+
+if (require.main === module) {
+  main();
+}

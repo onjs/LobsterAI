@@ -35,8 +35,6 @@ const LABEL = '[install-openclaw-channel-deps]';
 const CHANNEL_DEPS = [
   '@buape/carbon',                  // discord
   '@larksuiteoapi/node-sdk',        // feishu / lark
-  '@slack/web-api',                 // slack
-  '@slack/bolt',                    // slack
   'grammy',                         // telegram
   '@grammyjs/runner',               // telegram
   '@grammyjs/transformer-throttler', // telegram
