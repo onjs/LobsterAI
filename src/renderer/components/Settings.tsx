@@ -31,25 +31,7 @@ import ErrorMessage from './ErrorMessage';
 import BrainIcon from './icons/BrainIcon';
 import PencilIcon from './icons/PencilIcon';
 import PlusCircleIcon from './icons/PlusCircleIcon';
-import {
-  AnthropicIcon,
-  CustomProviderIcon,
-  DeepSeekIcon,
-  GeminiIcon,
-  GitHubCopilotIcon,
-  MiniMaxIcon,
-  MoonshotIcon,
-  OllamaIcon,
-  OpenAIIcon,
-  OpenRouterIcon,
-  QianfanIcon,
-  QwenIcon,
-  StepfunIcon,
-  VolcengineIcon,
-  XiaomiIcon,
-  YouDaoZhiYunIcon,
-  ZhipuIcon,
-} from './icons/providers';
+import { GitHubCopilotIcon } from './icons/providers';
 import TrashIcon from './icons/TrashIcon';
 import IMSettings from './im/IMSettings';
 import EmailSkillConfig from './skills/EmailSkillConfig';
