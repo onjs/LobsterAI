@@ -1986,6 +1986,14 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     // Also exclude runIds that have already been terminated (lifecycle phase=error received),
     // which prevents gateway retries from spawning new turns and surfacing duplicate errors.
     if (sessionId && !this.activeTurns.has(sessionId) && sessionKey && stream !== 'error' && !this.terminatedRunIds.has(runId)) {
+      // Desktop sessions (lobsterai:*) that were manually stopped must not be
+      // re-activated by late-arriving gateway events (e.g. MCP tool results that
+      // arrive after the user clicked Stop).  Only channel/cron sessions are
+      // allowed to re-create turns after the stop cooldown expires.
+      if (this.manuallyStoppedSessions.has(sessionId) && isManagedSessionKey(sessionKey)) {
+        console.log('[Debug:handleAgentEvent] suppressed — desktop session was manually stopped, sessionId:', sessionId);
+        return;
+      }
       console.log('[Debug:handleAgentEvent] re-creating ActiveTurn for follow-up turn, sessionId:', sessionId);
       this.ensureActiveTurn(sessionId, sessionKey, runId);
     }
@@ -3942,9 +3950,20 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     // `manuallyStoppedSessions` (a permanent Set) would block all future
     // channel events for this session until `runTurn` or `onSessionDeleted`
     // happens to clear it.
+    // Only clear for channel/cron sessions.  Desktop sessions (lobsterai:*)
+    // must stay suppressed — the gateway may still push late MCP tool results
+    // long after the 10s cooldown expires.
     if (this.manuallyStoppedSessions.has(sessionId)) {
-      console.log('[Debug:ensureActiveTurn] cooldown expired, clearing manuallyStoppedSessions for channel re-activation, sessionId:', sessionId);
-      this.manuallyStoppedSessions.delete(sessionId);
+      const isChannel = this.channelSessionSync
+        && !isManagedSessionKey(sessionKey)
+        && this.channelSessionSync.isChannelSessionKey(sessionKey);
+      if (isChannel) {
+        console.log('[Debug:ensureActiveTurn] cooldown expired, clearing manuallyStoppedSessions for channel re-activation, sessionId:', sessionId);
+        this.manuallyStoppedSessions.delete(sessionId);
+      } else {
+        console.log('[Debug:ensureActiveTurn] suppressed — desktop session was manually stopped, sessionId:', sessionId);
+        return;
+      }
     }
     const turnRunId = runId || randomUUID();
     const turnToken = this.nextTurnToken(sessionId);
