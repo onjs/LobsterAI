@@ -18,6 +18,8 @@ import type {
   IMSettings,
   NeteaseBeeChanConfig,
   NimConfig,
+  NimInstanceConfig,
+  NimMultiInstanceConfig,
   PopoOpenClawConfig,
   QQInstanceConfig,
   QQMultiInstanceConfig,
@@ -141,8 +143,30 @@ const imSlice = createSlice({
     setDiscordConfig: (state, action: PayloadAction<Partial<DiscordOpenClawConfig>>) => {
       state.config.discord = { ...state.config.discord, ...action.payload };
     },
+    /** @deprecated Use setNimInstanceConfig instead */
     setNimConfig: (state, action: PayloadAction<Partial<NimConfig>>) => {
-      state.config.nim = { ...state.config.nim, ...action.payload };
+      const first = state.config.nim.instances[0];
+      if (first) {
+        Object.assign(first, action.payload);
+      }
+    },
+    setNimInstances: (state, action: PayloadAction<NimInstanceConfig[]>) => {
+      state.config.nim = { instances: action.payload };
+    },
+    setNimMultiInstanceConfig: (state, action: PayloadAction<NimMultiInstanceConfig>) => {
+      state.config.nim = action.payload;
+    },
+    setNimInstanceConfig: (state, action: PayloadAction<{ instanceId: string; config: Partial<NimConfig> }>) => {
+      const inst = state.config.nim.instances.find(i => i.instanceId === action.payload.instanceId);
+      if (inst) Object.assign(inst, action.payload.config);
+    },
+    addNimInstance: (state, action: PayloadAction<NimInstanceConfig>) => {
+      state.config.nim.instances.push(action.payload);
+    },
+    removeNimInstance: (state, action: PayloadAction<string>) => {
+      state.config.nim.instances = state.config.nim.instances.filter(
+        i => i.instanceId !== action.payload
+      );
     },
     setNeteaseBeeChanConfig: (state, action: PayloadAction<Partial<NeteaseBeeChanConfig>>) => {
       state.config['netease-bee'] = { ...state.config['netease-bee'], ...action.payload };
@@ -220,6 +244,11 @@ export const {
   removeQQInstance,
   setDiscordConfig,
   setNimConfig,
+  setNimInstances,
+  setNimMultiInstanceConfig,
+  setNimInstanceConfig,
+  addNimInstance,
+  removeNimInstance,
   setNeteaseBeeChanConfig,
   setWecomConfig,
   setWecomInstances,

@@ -219,17 +219,32 @@ export interface NimAdvancedConfig {
   mediaMaxMb?: number;
   textChunkLimit?: number;
   debug?: boolean;
+  legacyLogin?: boolean;
+  weblbsUrl?: string;
+  link_web?: string;
+  nos_uploader?: string;
+  nos_downloader_v2?: string;
+  nosSsl?: boolean;
+  nos_accelerate?: string;
+  nos_accelerate_host?: string;
 }
 
-export interface NimConfig {
+export interface NimOpenClawConfig {
   enabled: boolean;
+  nimToken?: string;
   appKey: string;
   account: string;
   token: string;
+  antispamEnabled?: boolean;
   p2p?: NimP2pConfig;
   team?: NimTeamConfig;
   qchat?: NimQChatConfig;
   advanced?: NimAdvancedConfig;
+}
+
+export interface NimInstanceConfig extends NimOpenClawConfig {
+  instanceId: string;
+  instanceName: string;
 }
 
 export interface NimGatewayStatus {
@@ -240,6 +255,24 @@ export interface NimGatewayStatus {
   lastInboundAt: number | null;
   lastOutboundAt: number | null;
 }
+
+export const MAX_NIM_INSTANCES = 3;
+
+export interface NimInstanceStatus extends NimGatewayStatus {
+  instanceId: string;
+  instanceName: string;
+}
+
+export interface NimMultiInstanceConfig {
+  instances: NimInstanceConfig[];
+}
+
+export interface NimMultiInstanceStatus {
+  instances: NimInstanceStatus[];
+}
+
+/** @deprecated Use NimOpenClawConfig instead. */
+export type NimConfig = NimOpenClawConfig;
 
 // ==================== NeteaseBee (小蜜蜂) Types ====================
 
@@ -413,7 +446,7 @@ export interface IMGatewayConfig {
   telegram: TelegramOpenClawConfig;
   qq: QQMultiInstanceConfig;
   discord: DiscordOpenClawConfig;
-  nim: NimConfig;
+  nim: NimMultiInstanceConfig;
   'netease-bee': NeteaseBeeChanConfig;
   wecom: WecomMultiInstanceConfig;
   popo: PopoOpenClawConfig;
@@ -434,7 +467,7 @@ export interface IMGatewayStatus {
   qq: QQMultiInstanceStatus;
   telegram: TelegramGatewayStatus;
   discord: DiscordGatewayStatus;
-  nim: NimGatewayStatus;
+  nim: NimMultiInstanceStatus;
   'netease-bee': NeteaseBeeChanGatewayStatus;
   wecom: WecomMultiInstanceStatus;
   popo: PopoGatewayStatus;
@@ -606,12 +639,21 @@ export const DEFAULT_DISCORD_OPENCLAW_CONFIG: DiscordOpenClawConfig = {
   debug: false,
 };
 
-export const DEFAULT_NIM_CONFIG: NimConfig = {
+export const DEFAULT_NIM_OPENCLAW_CONFIG: NimOpenClawConfig = {
   enabled: false,
+  nimToken: '',
   appKey: '',
   account: '',
   token: '',
+  antispamEnabled: true,
 };
+
+export const DEFAULT_NIM_MULTI_INSTANCE_CONFIG: NimMultiInstanceConfig = {
+  instances: [],
+};
+
+/** @deprecated Use DEFAULT_NIM_OPENCLAW_CONFIG instead. */
+export const DEFAULT_NIM_CONFIG = DEFAULT_NIM_OPENCLAW_CONFIG;
 
 // ==================== NetEase Bee Types ====================
 
@@ -716,7 +758,7 @@ export const DEFAULT_IM_CONFIG: IMGatewayConfig = {
   telegram: DEFAULT_TELEGRAM_OPENCLAW_CONFIG,
   qq: DEFAULT_QQ_MULTI_INSTANCE_CONFIG,
   discord: DEFAULT_DISCORD_OPENCLAW_CONFIG,
-  nim: DEFAULT_NIM_CONFIG,
+  nim: DEFAULT_NIM_MULTI_INSTANCE_CONFIG,
   'netease-bee': DEFAULT_NETEASE_BEE_CONFIG,
   wecom: DEFAULT_WECOM_MULTI_INSTANCE_CONFIG,
   popo: DEFAULT_POPO_CONFIG,
@@ -758,6 +800,10 @@ export const DEFAULT_NIM_STATUS: NimGatewayStatus = {
   botAccount: null,
   lastInboundAt: null,
   lastOutboundAt: null,
+};
+
+export const DEFAULT_NIM_MULTI_INSTANCE_STATUS: NimMultiInstanceStatus = {
+  instances: [],
 };
 
 export const DEFAULT_NETEASE_BEE_STATUS: NeteaseBeeChanGatewayStatus = {
@@ -815,7 +861,7 @@ export const DEFAULT_IM_STATUS: IMGatewayStatus = {
   },
   qq: { instances: [] },
   discord: DEFAULT_DISCORD_STATUS,
-  nim: DEFAULT_NIM_STATUS,
+  nim: DEFAULT_NIM_MULTI_INSTANCE_STATUS,
   'netease-bee': DEFAULT_NETEASE_BEE_STATUS,
   wecom: { instances: [] },
   popo: DEFAULT_POPO_STATUS,

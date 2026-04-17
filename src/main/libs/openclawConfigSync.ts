@@ -6,7 +6,7 @@ import { buildScheduledTaskEnginePrompt } from '../../scheduledTask/enginePrompt
 import { AuthType, OpenClawApi as OpenClawApiConst, OpenClawProviderId, ProviderName } from '../../shared/providers';
 import type { Agent, CoworkConfig, CoworkExecutionMode } from '../coworkStore';
 import type { DiscordOpenClawConfig, IMSettings, TelegramOpenClawConfig } from '../im/types';
-import type { DingTalkInstanceConfig, FeishuInstanceConfig, NeteaseBeeChanConfig, NimConfig, PopoOpenClawConfig, QQInstanceConfig, WecomInstanceConfig, WeixinOpenClawConfig } from '../im/types';
+import type { DingTalkInstanceConfig, FeishuInstanceConfig, NeteaseBeeChanConfig, NimInstanceConfig, PopoOpenClawConfig, QQInstanceConfig, WecomInstanceConfig, WeixinOpenClawConfig } from '../im/types';
 import { OpenClawSessionKeepAlive } from '../openclawSessionPolicy/constants';
 import { buildOpenClawSessionConfig } from '../openclawSessionPolicy/store';
 import { getAllServerModelMetadata, resolveAllEnabledProviderConfigs, resolveAllProviderApiKeys, resolveRawApiConfig } from './claudeSettings';
@@ -47,6 +47,30 @@ const mapExecutionModeToSandboxMode = (mode: CoworkExecutionMode, isEnterprise: 
  */
 export const OPENCLAW_AGENT_TIMEOUT_SECONDS = 3600;
 const DINGTALK_OPENCLAW_CHANNEL = 'dingtalk-connector';
+
+function deriveNimAccountId(instance: Pick<NimInstanceConfig, 'nimToken' | 'appKey' | 'account'>): string | null {
+  const nimToken = instance.nimToken?.trim();
+  if (nimToken) {
+    const delimiter = nimToken.includes('|') ? '|' : '-';
+    const parts = nimToken.split(delimiter).map((part) => part.trim());
+    if (parts.length === 3 && parts[0] && parts[1]) {
+      return `${parts[0]}:${parts[1]}`;
+    }
+  }
+  if (instance.appKey && instance.account) {
+    return `${instance.appKey}:${instance.account}`;
+  }
+  return null;
+}
+
+function deriveNimAccountConfigKey(
+  instance: Pick<NimInstanceConfig, 'instanceId' | 'nimToken' | 'appKey' | 'account'>,
+): string | null {
+  if (instance.instanceId?.trim()) {
+    return instance.instanceId.trim().slice(0, 8);
+  }
+  return deriveNimAccountId(instance);
+}
 
 function shouldUseOpenAIResponsesApi(providerName?: string, baseURL?: string): boolean {
   if (providerName !== ProviderName.OpenAI) return false;
@@ -722,12 +746,12 @@ type OpenClawConfigSyncDeps = {
   getOpenClawSessionPolicy?: () => { keepAlive: OpenClawSessionKeepAlive };
   getTelegramOpenClawConfig?: () => TelegramOpenClawConfig | null;
   getDiscordOpenClawConfig?: () => DiscordOpenClawConfig | null;
-  getDingTalkInstances: () => DingTalkInstanceConfig[];
-  getFeishuInstances: () => FeishuInstanceConfig[];
-  getQQInstances: () => QQInstanceConfig[];
-  getWecomInstances: () => WecomInstanceConfig[];
+  getDingTalkInstances?: () => DingTalkInstanceConfig[];
+  getFeishuInstances?: () => FeishuInstanceConfig[];
+  getQQInstances?: () => QQInstanceConfig[];
+  getWecomInstances?: () => WecomInstanceConfig[];
   getPopoConfig: () => PopoOpenClawConfig | null;
-  getNimConfig: () => NimConfig | null;
+  getNimInstances?: () => NimInstanceConfig[];
   getNeteaseBeeChanConfig: () => NeteaseBeeChanConfig | null;
   getWeixinConfig: () => WeixinOpenClawConfig | null;
   getIMSettings?: () => IMSettings | null;
@@ -749,7 +773,7 @@ export class OpenClawConfigSync {
   private readonly getQQInstances: () => QQInstanceConfig[];
   private readonly getWecomInstances: () => WecomInstanceConfig[];
   private readonly getPopoConfig: () => PopoOpenClawConfig | null;
-  private readonly getNimConfig: () => NimConfig | null;
+  private readonly getNimInstances: () => NimInstanceConfig[];
   private readonly getNeteaseBeeChanConfig: () => NeteaseBeeChanConfig | null;
   private readonly getWeixinConfig: () => WeixinOpenClawConfig | null;
   private readonly getIMSettings?: () => IMSettings | null;
@@ -767,12 +791,12 @@ export class OpenClawConfigSync {
     this.getOpenClawSessionPolicy = deps.getOpenClawSessionPolicy;
     this.getTelegramOpenClawConfig = deps.getTelegramOpenClawConfig;
     this.getDiscordOpenClawConfig = deps.getDiscordOpenClawConfig;
-    this.getDingTalkInstances = deps.getDingTalkInstances;
-    this.getFeishuInstances = deps.getFeishuInstances;
-    this.getQQInstances = deps.getQQInstances;
-    this.getWecomInstances = deps.getWecomInstances;
+    this.getDingTalkInstances = deps.getDingTalkInstances ?? (() => []);
+    this.getFeishuInstances = deps.getFeishuInstances ?? (() => []);
+    this.getQQInstances = deps.getQQInstances ?? (() => []);
+    this.getWecomInstances = deps.getWecomInstances ?? (() => []);
     this.getPopoConfig = deps.getPopoConfig;
-    this.getNimConfig = deps.getNimConfig;
+    this.getNimInstances = deps.getNimInstances ?? (() => []);
     this.getNeteaseBeeChanConfig = deps.getNeteaseBeeChanConfig;
     this.getWeixinConfig = deps.getWeixinConfig;
     this.getIMSettings = deps.getIMSettings;
@@ -952,7 +976,7 @@ export class OpenClawConfigSync {
 
     const popoConfig = this.getPopoConfig();
 
-    const nimConfig = this.getNimConfig();
+    const nimInstances = this.getNimInstances();
 
     const neteaseBeeChanConfig = this.getNeteaseBeeChanConfig();
 
@@ -1071,7 +1095,7 @@ export class OpenClawConfigSync {
                 if (id === 'openclaw-qqbot') return qqInstances.some(i => i.enabled && i.appId);
                 if (id === 'wecom-openclaw-plugin') return wecomInstances.some(i => i.enabled && i.botId);
                 if (id === 'moltbot-popo') return !!(popoConfig?.enabled && popoConfig.appKey);
-                if (id === 'nim') return !!(nimConfig?.enabled && nimConfig.appKey && nimConfig.account && nimConfig.token);
+                if (id === 'nim') return nimInstances.some(i => i.enabled && ((i.nimToken && i.nimToken.trim()) || (i.appKey && i.account && i.token)));
                 if (id === 'openclaw-netease-bee') return !!(neteaseBeeChanConfig?.enabled && neteaseBeeChanConfig.clientId && neteaseBeeChanConfig.secret);
                 if (id === 'openclaw-weixin') return true; // Always keep enabled for QR login discovery
                 return true; // other plugins stay enabled
@@ -1422,20 +1446,31 @@ export class OpenClawConfigSync {
       }
       managedConfig.channels = { ...(managedConfig.channels as Record<string, unknown> || {}), 'moltbot-popo': popoChannel };
     }
-    // Sync NIM OpenClaw channel config (via openclaw-nim plugin)
-    if (nimConfig?.enabled && nimConfig.appKey && nimConfig.account && nimConfig.token) {
-      const nimChannel: Record<string, unknown> = {
-        enabled: true,
-        appKey: nimConfig.appKey,
-        account: nimConfig.account,
-        token: '${LOBSTER_NIM_TOKEN}',
-      };
-      // Pass structured sub-configs directly — the plugin's Zod schema validates them
-      if (nimConfig.p2p) nimChannel.p2p = nimConfig.p2p;
-      if (nimConfig.team) nimChannel.team = nimConfig.team;
-      if (nimConfig.qchat) nimChannel.qchat = nimConfig.qchat;
-      if (nimConfig.advanced) nimChannel.advanced = nimConfig.advanced;
-      managedConfig.channels = { ...(managedConfig.channels as Record<string, unknown> || {}), 'nim': nimChannel };
+    // Sync NIM OpenClaw channel config (via openclaw-nim plugin) — multi-instance via accounts
+    const configuredNimInstances = nimInstances.filter((inst) =>
+      Boolean((inst.nimToken && inst.nimToken.trim()) || (inst.appKey && inst.account && inst.token))
+    );
+    if (configuredNimInstances.length > 0) {
+      const accounts: Record<string, Record<string, unknown>> = {};
+      configuredNimInstances.forEach((inst, idx) => {
+        const tokenEnvVar = idx === 0 ? 'LOBSTER_NIM_TOKEN' : `LOBSTER_NIM_TOKEN_${idx}`;
+        const nimToken = inst.nimToken?.trim()
+          ? inst.nimToken.trim()
+          : `${inst.appKey}|${inst.account}|\${${tokenEnvVar}}`;
+        const nimInstance: Record<string, unknown> = {
+          enabled: inst.enabled ?? false,
+          nimToken,
+          antispamEnabled: inst.antispamEnabled ?? true,
+        };
+        if (inst.p2p) nimInstance.p2p = inst.p2p;
+        if (inst.team) nimInstance.team = inst.team;
+        if (inst.qchat) nimInstance.qchat = inst.qchat;
+        if (inst.advanced) nimInstance.advanced = inst.advanced;
+        const preferredKey = deriveNimAccountConfigKey(inst) || deriveNimAccountId(inst) || `nim_${idx + 1}`;
+        const accountKey = accounts[preferredKey] ? (deriveNimAccountId(inst) || `${preferredKey}_${idx + 1}`) : preferredKey;
+        accounts[accountKey] = nimInstance;
+      });
+      managedConfig.channels = { ...(managedConfig.channels as Record<string, unknown> || {}), nim: { accounts } };
     }
 
     // Sync NeteaseBee OpenClaw channel config (via openclaw-netease-bee plugin)
@@ -1684,9 +1719,10 @@ export class OpenClawConfigSync {
     }
 
     // NIM
-    const nimConfig = this.getNimConfig();
-    if (nimConfig?.enabled && nimConfig.token) {
-      env.LOBSTER_NIM_TOKEN = nimConfig.token;
+    const nimInstances = this.getNimInstances().filter((inst) => inst.enabled && inst.token);
+    for (let idx = 0; idx < nimInstances.length; idx++) {
+      const key = idx === 0 ? 'LOBSTER_NIM_TOKEN' : `LOBSTER_NIM_TOKEN_${idx}`;
+      env[key] = nimInstances[idx].token;
     }
 
     const D = '[GW-RESTART-DIAG]';
@@ -2062,10 +2098,11 @@ export class OpenClawConfigSync {
     const bindings: Array<Record<string, unknown>> = [];
 
     // Handle per-instance bindings for multi-instance platforms
-    const multiInstanceChannels: Record<string, { channel: string; getInstances: () => Array<{ instanceId: string; enabled: boolean }> }> = {
+    const multiInstanceChannels: Record<string, { channel: string; getInstances: () => Array<{ instanceId: string; enabled: boolean; appKey?: string; account?: string; nimToken?: string }> }> = {
       dingtalk: { channel: DINGTALK_OPENCLAW_CHANNEL, getInstances: () => this.getDingTalkInstances() },
       feishu: { channel: 'feishu', getInstances: () => this.getFeishuInstances() },
       qq: { channel: 'qqbot', getInstances: () => this.getQQInstances() },
+      nim: { channel: 'nim', getInstances: () => this.getNimInstances() },
       wecom: { channel: 'wecom', getInstances: () => this.getWecomInstances() },
     };
 
@@ -2080,7 +2117,11 @@ export class OpenClawConfigSync {
           if (!agentId || agentId === 'main') continue;
           const targetAgent = agents.find((a) => a.id === agentId && a.enabled);
           if (!targetAgent) continue;
-          bindings.push({ agentId, match: { channel, accountId: inst.instanceId.slice(0, 8) } });
+          const accountId = platform === 'nim'
+            ? deriveNimAccountId(inst as NimInstanceConfig)
+            : inst.instanceId.slice(0, 8);
+          if (!accountId) continue;
+          bindings.push({ agentId, match: { channel, accountId } });
         }
         // Also check legacy platform-level binding
         const platformAgentId = platformBindings[platform];
@@ -2100,7 +2141,6 @@ export class OpenClawConfigSync {
       { getter: () => this.getTelegramOpenClawConfig?.() ?? null, channel: 'telegram', platform: 'telegram' },
       { getter: () => this.getDiscordOpenClawConfig?.() ?? null, channel: 'discord', platform: 'discord' },
       { getter: () => this.getPopoConfig(), channel: 'moltbot-popo', platform: 'popo' },
-      { getter: () => this.getNimConfig(), channel: 'nim', platform: 'nim' },
       { getter: () => this.getNeteaseBeeChanConfig(), channel: 'netease-bee', platform: 'netease-bee' },
       { getter: () => this.getWeixinConfig(), channel: 'openclaw-weixin', platform: 'weixin' },
     ];

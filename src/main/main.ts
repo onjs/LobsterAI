@@ -20,7 +20,9 @@ import {
   readAllowFromStore,
   rejectPairingRequest,
 } from './im/imPairingStore';
-import type { DingTalkInstanceConfig, FeishuInstanceConfig, Platform, QQInstanceConfig, WecomInstanceConfig } from './im/types';
+import { pollNimQrLogin, startNimQrLogin } from './im/nimQrLoginService';
+import type { DingTalkInstanceConfig, FeishuInstanceConfig, NimInstanceConfig, Platform, QQInstanceConfig, WecomInstanceConfig } from './im/types';
+import { registerNimQrLoginHandlers } from './ipcHandlers/nimQrLogin';
 import {
   getCronJobService,
   initCronJobServiceManager,
@@ -1000,11 +1002,11 @@ const getOpenClawConfigSync = (): OpenClawConfigSync => {
           return null;
         }
       },
-      getNimConfig: () => {
+      getNimInstances: () => {
         try {
-          return getIMGatewayManager().getConfig().nim;
+          return getIMGatewayManager().getIMStore().getNimInstances();
         } catch {
-          return null;
+          return [];
         }
       },
       getNeteaseBeeChanConfig: () => {
@@ -3563,6 +3565,11 @@ if (!gotTheLock) {
     getOpenClawRuntimeAdapter: () => openClawRuntimeAdapter,
   });
 
+  registerNimQrLoginHandlers({
+    startNimQrLogin,
+    pollNimQrLogin,
+  });
+
   // ==================== Permissions IPC Handlers ====================
 
   ipcMain.handle('permissions:checkCalendar', async () => {
@@ -3930,6 +3937,56 @@ if (!gotTheLock) {
       return {
         success: false,
         error: error instanceof Error ? error.message : 'Failed to set DingTalk instance config',
+      };
+    }
+  });
+
+  // NIM Multi-Instance handlers
+  ipcMain.handle('im:nim:instance:add', async (_event, name: string) => {
+    try {
+      const instanceId = crypto.randomUUID();
+      const { DEFAULT_NIM_OPENCLAW_CONFIG: defaults } = await import('./im/types');
+      const instance = {
+        ...defaults,
+        instanceId,
+        instanceName: name || 'NIM Bot',
+      };
+      getIMGatewayManager().getIMStore().setNimInstanceConfig(instanceId, instance);
+      return { success: true, instance };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to add NIM instance',
+      };
+    }
+  });
+
+  ipcMain.handle('im:nim:instance:delete', async (_event, instanceId: string) => {
+    try {
+      getIMGatewayManager().getIMStore().deleteNimInstance(instanceId);
+      if (getOpenClawEngineManager().getStatus().phase === 'running') {
+        scheduleImConfigSync();
+      }
+      return { success: true };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to delete NIM instance',
+      };
+    }
+  });
+
+  ipcMain.handle('im:nim:instance:config:set', async (_event, instanceId: string, config: Partial<NimInstanceConfig>, options?: { syncGateway?: boolean }) => {
+    try {
+      getIMGatewayManager().getIMStore().setNimInstanceConfig(instanceId, config);
+      if (options?.syncGateway && getOpenClawEngineManager().getStatus().phase === 'running') {
+        scheduleImConfigSync();
+      }
+      return { success: true };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to set NIM instance config',
       };
     }
   });

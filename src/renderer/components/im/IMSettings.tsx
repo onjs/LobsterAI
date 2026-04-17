@@ -16,16 +16,17 @@ import { useDispatch, useSelector } from 'react-redux';
 import { i18nService } from '../../services/i18n';
 import { imService } from '../../services/im';
 import { RootState } from '../../store';
-import { clearError,setDingTalkConfig, setDingTalkInstanceConfig, setDiscordConfig, setFeishuConfig, setFeishuInstanceConfig, setNeteaseBeeChanConfig, setNimConfig, setPopoConfig, setQQConfig, setQQInstanceConfig, setTelegramOpenClawConfig, setWecomConfig, setWecomInstanceConfig, setWeixinConfig } from '../../store/slices/imSlice';
+import { clearError,setDingTalkConfig, setDingTalkInstanceConfig, setDiscordConfig, setFeishuConfig, setFeishuInstanceConfig, setNeteaseBeeChanConfig, setNimConfig, setNimInstanceConfig, setPopoConfig, setQQConfig, setQQInstanceConfig, setTelegramOpenClawConfig, setWecomConfig, setWecomInstanceConfig, setWeixinConfig } from '../../store/slices/imSlice';
 import type { DiscordOpenClawConfig, IMConnectivityCheck, IMConnectivityTestResult, IMGatewayConfig, PopoOpenClawConfig,TelegramOpenClawConfig } from '../../types/im';
-import { MAX_DINGTALK_INSTANCES, MAX_FEISHU_INSTANCES, MAX_QQ_INSTANCES, MAX_WECOM_INSTANCES } from '../../types/im';
+import { MAX_DINGTALK_INSTANCES, MAX_FEISHU_INSTANCES, MAX_NIM_INSTANCES, MAX_QQ_INSTANCES, MAX_WECOM_INSTANCES } from '../../types/im';
 import { getVisibleIMPlatforms } from '../../utils/regionFilter';
 import Modal from '../common/Modal';
 import DingTalkInstanceSettings from './DingTalkInstanceSettings';
 import FeishuInstanceSettings from './FeishuInstanceSettings';
+import NimInstanceSettings from './NimInstanceSettings';
 import QQInstanceSettings from './QQInstanceSettings';
 import type { UiHint } from './SchemaForm';
-import { SchemaForm } from './SchemaForm';
+import { nimFallbackInstanceSchema, nimFallbackUiHints } from './nimSchemaFallback';
 import WecomInstanceSettings from './WecomInstanceSettings';
 
 
@@ -90,19 +91,6 @@ function translateIMError(error: string | null): string {
   return error;
 }
 
-// Helper function to deep-set a value in nested object by dot path
-function deepSet(obj: Record<string, unknown>, path: string, value: unknown): Record<string, unknown> {
-  const keys = path.split('.');
-  const result = { ...obj };
-  let current: Record<string, unknown> = result;
-  for (let i = 0; i < keys.length - 1; i++) {
-    current[keys[i]] = { ...(current[keys[i]] as Record<string, unknown> || {}) };
-    current = current[keys[i]] as Record<string, unknown>;
-  }
-  current[keys[keys.length - 1]] = value;
-  return result;
-}
-
 const IMSettings: React.FC = () => {
   const dispatch = useDispatch();
   const { config, status, isLoading } = useSelector((state: RootState) => state.im);
@@ -115,6 +103,8 @@ const IMSettings: React.FC = () => {
   const [dingtalkExpanded, setDingtalkExpanded] = useState(false);
   const [activeWecomInstanceId, setActiveWecomInstanceId] = useState<string | null>(null);
   const [wecomExpanded, setWecomExpanded] = useState(false);
+  const [activeNimInstanceId, setActiveNimInstanceId] = useState<string | null>(null);
+  const [nimExpanded, setNimExpanded] = useState(false);
   const [testingPlatform, setTestingPlatform] = useState<Platform | null>(null);
   const [connectivityResults, setConnectivityResults] = useState<Partial<Record<Platform, IMConnectivityTestResult>>>({});
   const [connectivityModalPlatform, setConnectivityModalPlatform] = useState<Platform | null>(null);
@@ -305,27 +295,57 @@ const IMSettings: React.FC = () => {
 
   // Extract NIM channel schema and hints from the full OpenClaw config schema
   const nimSchemaData = useMemo(() => {
-    if (!openclawSchema) return null;
+    if (!openclawSchema) {
+      return { schema: nimFallbackInstanceSchema, hints: nimFallbackUiHints };
+    }
     const { schema, uiHints } = openclawSchema;
 
     // Find the NIM channel key — could be 'nim' or 'openclaw-nim'
     const channelsProps = (schema as any)?.properties?.channels?.properties ?? {};
     const channelKey = channelsProps['openclaw-nim'] ? 'openclaw-nim' : channelsProps['nim'] ? 'nim' : null;
-    if (!channelKey) return null;
+    if (!channelKey) {
+      return { schema: nimFallbackInstanceSchema, hints: nimFallbackUiHints };
+    }
 
     const channelSchema = channelsProps[channelKey] as Record<string, unknown>;
-    if (!channelSchema) return null;
+    const instanceSchema =
+      ((channelSchema?.properties as Record<string, any> | undefined)?.accounts?.additionalProperties as Record<string, unknown> | undefined)
+      || ((channelSchema?.properties as Record<string, any> | undefined)?.instances?.items as Record<string, unknown> | undefined);
+    if (!instanceSchema) {
+      return { schema: nimFallbackInstanceSchema, hints: nimFallbackUiHints };
+    }
 
-    // Filter and strip prefix from uiHints
-    const prefix = `channels.${channelKey}.`;
     const hints: Record<string, UiHint> = {};
-    for (const [key, value] of Object.entries(uiHints)) {
-      if (key.startsWith(prefix)) {
-        hints[key.slice(prefix.length)] = value as unknown as UiHint;
+    const accountHintPrefix = `channels.${channelKey}.accounts.`;
+    const legacyInstancePrefix = `channels.${channelKey}.instances.0.`;
+    let nextOrder = 0;
+
+    for (const [key, rawValue] of Object.entries(uiHints)) {
+      let relativePath: string | null = null;
+      if (key.startsWith(accountHintPrefix)) {
+        const suffix = key.slice(accountHintPrefix.length);
+        const firstDot = suffix.indexOf('.');
+        relativePath = firstDot >= 0 ? suffix.slice(firstDot + 1) : null;
+      } else if (key.startsWith(legacyInstancePrefix)) {
+        relativePath = key.slice(legacyInstancePrefix.length);
+      }
+
+      if (relativePath) {
+        const value = rawValue as unknown as UiHint;
+        hints[relativePath] = {
+          ...value,
+          order: value.order ?? nextOrder,
+        };
+        nextOrder += 1;
       }
     }
 
-    return { schema: channelSchema, hints };
+    delete hints.nimToken;
+
+    return {
+      schema: instanceSchema,
+      hints: Object.keys(hints).length > 0 ? hints : nimFallbackUiHints,
+    };
   }, [openclawSchema]);
 
   // Handle DingTalk multi-instance config
@@ -666,13 +686,8 @@ const IMSettings: React.FC = () => {
         return;
       }
 
-      if (platform === 'qq') {
-        // QQ multi-instance: toggle is handled per-instance in QQInstanceSettings
-        return;
-      }
-
-      if (platform === 'wecom') {
-        // WeCom multi-instance: toggle is handled per-instance in WecomInstanceSettings
+      if (platform === 'qq' || platform === 'wecom' || platform === 'nim') {
+        // Multi-instance platforms toggle per instance in their detail panels
         return;
       }
 
@@ -692,16 +707,6 @@ const IMSettings: React.FC = () => {
         const success = await imService.updateConfig({ popo: { ...popoConfig, enabled: newEnabled } });
         if (success) {
           dispatch(setPopoConfig({ enabled: newEnabled }));
-          if (newEnabled) dispatch(clearError());
-          await imService.loadStatus();
-        }
-        return;
-      }
-      if (platform === 'nim') {
-        const newEnabled = !config.nim.enabled;
-        const success = await imService.updateConfig({ nim: { ...config.nim, enabled: newEnabled } });
-        if (success) {
-          dispatch(setNimConfig({ enabled: newEnabled }));
           if (newEnabled) dispatch(clearError());
           await imService.loadStatus();
         }
@@ -744,7 +749,7 @@ const IMSettings: React.FC = () => {
   const feishuConnected = status.feishu?.instances?.some(i => i.connected) ?? false;
   const telegramConnected = status.telegram.connected;
   const discordConnected = status.discord.connected;
-  const nimConnected = status.nim.connected;
+  const nimConnected = status.nim?.instances?.some(i => i.connected) ?? false;
   const neteaseBeeChanConnected = status['netease-bee']?.connected ?? false;
   const qqConnected = status.qq?.instances?.some(i => i.connected) ?? false;
   const wecomConnected = status.wecom?.instances?.some(i => i.connected) ?? false;
@@ -776,7 +781,7 @@ const IMSettings: React.FC = () => {
       return !!config.discord.botToken;
     }
     if (platform === 'nim') {
-      return !!(config.nim.appKey && config.nim.account && config.nim.token);
+      return config.nim.instances.some(i => !!(i.nimToken || (i.appKey && i.account && i.token)));
     }
     if (platform === 'netease-bee') {
       return !!(config['netease-bee'].clientId && config['netease-bee'].secret);
@@ -806,6 +811,9 @@ const IMSettings: React.FC = () => {
     }
     if (platform === 'feishu') {
       return config.feishu.instances?.some(i => i.enabled);
+    }
+    if (platform === 'nim') {
+      return config.nim.instances?.some(i => i.enabled);
     }
     if (platform === 'wecom') {
       return config.wecom.instances?.some(i => i.enabled);
@@ -946,6 +954,26 @@ const IMSettings: React.FC = () => {
           if (authCheck && authCheck.level === 'pass') {
             dispatch(setFeishuInstanceConfig({ instanceId: activeFeishuInstanceId, config: { enabled: true } }));
             await imService.updateFeishuInstanceConfig(activeFeishuInstanceId, { enabled: true });
+          }
+        }
+      }
+      return;
+    }
+
+    // For NIM, persist nim config and test (OpenClaw mode)
+    if (platform === 'nim') {
+      const nimMultiConfig = config.nim;
+      await imService.persistConfig({ nim: nimMultiConfig });
+      const result = await runConnectivityTest(platform, {
+        nim: nimMultiConfig,
+      } as Partial<IMGatewayConfig>);
+      if (activeNimInstanceId && result) {
+        const inst = nimMultiConfig.instances.find(i => i.instanceId === activeNimInstanceId);
+        if (inst && !inst.enabled) {
+          const authCheck = result.checks.find((c) => c.code === 'auth_check');
+          if (authCheck && authCheck.level === 'pass') {
+            dispatch(setNimInstanceConfig({ instanceId: activeNimInstanceId, config: { enabled: true } }));
+            await imService.updateNimInstanceConfig(activeNimInstanceId, { enabled: true });
           }
         }
       }
@@ -1260,6 +1288,56 @@ const IMSettings: React.FC = () => {
             );
           }
 
+          if (platform === 'nim') {
+            return (
+              <div key="nim">
+                <div
+                  onClick={() => { setActivePlatform('nim'); setActiveNimInstanceId(null); setNimExpanded(!nimExpanded); }}
+                  className={`flex items-center p-2 rounded-xl cursor-pointer transition-colors ${
+                    activePlatform === 'nim'
+                      ? 'bg-primary-muted border border-primary shadow-subtle'
+                      : 'bg-surface hover:bg-surface-raised border border-transparent'
+                  }`}
+                >
+                  <div className="flex flex-1 items-center">
+                    <div className="mr-2 flex h-7 w-7 items-center justify-center">
+                      <img src={PlatformRegistry.logo('nim')} alt="NIM" className="w-6 h-6 object-contain rounded-md" />
+                    </div>
+                    <span className={`text-sm font-medium truncate ${activePlatform === 'nim' ? 'text-primary' : 'text-foreground'}`}>
+                      {i18nService.t('nim')}
+                    </span>
+                  </div>
+                  <span className="text-xs opacity-50">{nimExpanded ? '\u25BC' : '\u25B6'}</span>
+                </div>
+                {nimExpanded && (
+                  <div className="ml-5 mt-1 space-y-1">
+                    {config.nim.instances.map((inst) => {
+                      const instStatus = status.nim?.instances?.find(s => s.instanceId === inst.instanceId);
+                      const isSelected = activePlatform === 'nim' && activeNimInstanceId === inst.instanceId;
+                      const dotColor = !inst.enabled ? 'bg-gray-400' : (instStatus?.connected ? 'bg-green-500' : 'bg-yellow-500');
+                      return (
+                        <div
+                          key={inst.instanceId}
+                          onClick={() => { setActivePlatform('nim'); setActiveNimInstanceId(inst.instanceId); }}
+                          className={`flex items-center p-1.5 pl-2 rounded-lg cursor-pointer transition-colors text-sm ${
+                            isSelected
+                              ? 'bg-primary/10 dark:bg-primary/20'
+                              : 'hover:bg-surface-raised'
+                          }`}
+                        >
+                          <span className={`w-2 h-2 rounded-full ${dotColor} mr-2 flex-shrink-0`} />
+                          <span className={`truncate flex-1 ${isSelected ? 'text-primary font-medium' : 'text-foreground'}`}>
+                            {inst.instanceName}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          }
+
           if (platform === 'wecom') {
             return (
               <div key="wecom">
@@ -1364,8 +1442,8 @@ const IMSettings: React.FC = () => {
 
       {/* Platform Settings - Right Side */}
       <div className="flex-1 min-w-0 pl-4 pr-2 space-y-4 overflow-y-auto [scrollbar-gutter:stable]">
-        {/* Header with status (hidden for QQ which has per-instance headers) */}
-        {activePlatform !== 'qq' && activePlatform !== 'feishu' && activePlatform !== 'dingtalk' && activePlatform !== 'wecom' && (
+        {/* Header with status (hidden for multi-instance platforms that render per-instance headers) */}
+        {activePlatform !== 'qq' && activePlatform !== 'feishu' && activePlatform !== 'dingtalk' && activePlatform !== 'wecom' && activePlatform !== 'nim' && (
         <div className="flex items-center gap-3 pb-3 border-b border-border-subtle">
           <div className="flex items-center gap-2">
              <div className="flex h-7 w-7 items-center justify-center rounded-md bg-surface border border-border-subtle p-1">
@@ -2258,87 +2336,76 @@ const IMSettings: React.FC = () => {
         )}
 
         {/* NIM (NetEase IM) Settings */}
-        {activePlatform === 'nim' && (
-          <div className="space-y-3">
-            <PlatformGuide
-              title={i18nService.t('nimCredentialsGuide')}
-              steps={[
-                i18nService.t('nimGuideStep1'),
-                i18nService.t('nimGuideStep2'),
-                i18nService.t('nimGuideStep3'),
-                i18nService.t('nimGuideStep4'),
-              ]}
-            />
-
-            {nimSchemaData ? (
-              <SchemaForm
-                schema={nimSchemaData.schema}
-                hints={nimSchemaData.hints}
-                value={config.nim as unknown as Record<string, unknown>}
-                onChange={(path, value) => {
-                  const updated = deepSet({ ...config.nim } as unknown as Record<string, unknown>, path, value);
-                  dispatch(setNimConfig(updated as any));
+        {activePlatform === 'nim' && !activeNimInstanceId && (
+          <div className="flex flex-col items-center justify-center py-12 text-center">
+            <img src={PlatformRegistry.logo('nim')} alt="NIM" className="w-12 h-12 object-contain rounded-md mb-4 opacity-50" />
+            <p className="text-sm text-secondary mb-4">
+              {config.nim.instances.length === 0
+                ? (language === 'zh' ? '尚未添加云信实例，点击下方按钮添加' : 'No NIM instances yet. Click below to add one.')
+                : (language === 'zh' ? '请在左侧选择一个云信实例' : 'Select a NIM instance from the sidebar.')}
+            </p>
+            {config.nim.instances.length < MAX_NIM_INSTANCES && (
+              <button
+                type="button"
+                onClick={async (e) => {
+                  e.stopPropagation();
+                  const inst = await imService.addNimInstance(`NIM Bot ${config.nim.instances.length + 1}`);
+                  if (inst) { setActiveNimInstanceId(inst.instanceId); setNimExpanded(true); }
                 }}
-                onBlur={handleSaveConfig}
-                showSecrets={showSecrets}
-                onToggleSecret={(path) => setShowSecrets(prev => ({ ...prev, [path]: !prev[path] }))}
-              />
-            ) : (
-              /* Fallback: minimal credential inputs when schema not yet loaded */
-              <div className="space-y-3">
-                <div className="space-y-1.5">
-                  <label className="block text-xs font-medium text-secondary">App Key</label>
-                  <input
-                    type="text"
-                    value={config.nim.appKey}
-                    onChange={(e) => dispatch(setNimConfig({ appKey: e.target.value }))}
-                    onBlur={handleSaveConfig}
-                    className="block w-full rounded-lg bg-surface border-border-subtle border focus:border-primary focus:ring-1 focus:ring-primary/30 text-foreground px-3 py-2 text-sm transition-colors"
-                    placeholder="your_app_key"
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <label className="block text-xs font-medium text-secondary">Account</label>
-                  <input
-                    type="text"
-                    value={config.nim.account}
-                    onChange={(e) => dispatch(setNimConfig({ account: e.target.value }))}
-                    onBlur={handleSaveConfig}
-                    className="block w-full rounded-lg bg-surface border-border-subtle border focus:border-primary focus:ring-1 focus:ring-primary/30 text-foreground px-3 py-2 text-sm transition-colors"
-                    placeholder="bot_account_id"
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <label className="block text-xs font-medium text-secondary">Token</label>
-                  <input
-                    type="password"
-                    value={config.nim.token}
-                    onChange={(e) => dispatch(setNimConfig({ token: e.target.value }))}
-                    onBlur={handleSaveConfig}
-                    className="block w-full rounded-lg bg-surface border-border-subtle border focus:border-primary focus:ring-1 focus:ring-primary/30 text-foreground px-3 py-2 text-sm transition-colors"
-                    placeholder="••••••••••••"
-                  />
-                </div>
-              </div>
-            )}
-
-            <div className="pt-1">
-              {renderConnectivityTestButton('nim')}
-            </div>
-
-            {status.nim.botAccount && (
-              <div className="text-xs text-green-600 dark:text-green-400 bg-green-500/10 px-3 py-2 rounded-lg">
-                Account: {status.nim.botAccount}
-              </div>
-            )}
-
-            {status.nim.lastError && (
-              <div className="text-xs text-red-500 bg-red-500/10 px-3 py-2 rounded-lg">
-                {translateIMError(status.nim.lastError)}
-              </div>
+                className="px-4 py-2 rounded-lg text-sm font-medium bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
+              >
+                + {i18nService.t('imNimAddInstance')}
+              </button>
             )}
           </div>
         )}
+        {activePlatform === 'nim' && activeNimInstanceId && (() => {
+          const selectedInstance = config.nim.instances.find(i => i.instanceId === activeNimInstanceId);
+          if (!selectedInstance) return null;
+          const selectedStatus = status.nim?.instances?.find(s => s.instanceId === activeNimInstanceId);
+          return (
+            <NimInstanceSettings
+              instance={selectedInstance}
+              instanceStatus={selectedStatus}
+              schemaData={nimSchemaData}
+              onConfigChange={(update) => {
+                dispatch(setNimInstanceConfig({ instanceId: activeNimInstanceId, config: update }));
+              }}
+              onSave={async (override) => {
+                const configToSave = override ? { ...selectedInstance, ...override } : selectedInstance;
+                if (selectedInstance.enabled) {
+                  await imService.updateNimInstanceConfig(activeNimInstanceId, configToSave);
+                } else {
+                  await imService.persistNimInstanceConfig(activeNimInstanceId, configToSave);
+                }
+              }}
+              onRename={async (newName) => {
+                dispatch(setNimInstanceConfig({ instanceId: activeNimInstanceId, config: { instanceName: newName } as any }));
+                await imService.persistNimInstanceConfig(activeNimInstanceId, { instanceName: newName } as any);
+              }}
+              onDelete={async () => {
+                await imService.deleteNimInstance(activeNimInstanceId);
+                const remaining = config.nim.instances.filter(i => i.instanceId !== activeNimInstanceId);
+                setActiveNimInstanceId(remaining.length > 0 ? remaining[0].instanceId : null);
+              }}
+              onToggleEnabled={async () => {
+                const newEnabled = !selectedInstance.enabled;
+                if (newEnabled && !(selectedInstance.nimToken || (selectedInstance.appKey && selectedInstance.account && selectedInstance.token))) return;
+                const success = await imService.updateNimInstanceConfig(activeNimInstanceId, { enabled: newEnabled });
+                if (success) {
+                  dispatch(setNimInstanceConfig({ instanceId: activeNimInstanceId, config: { enabled: newEnabled } }));
+                  if (newEnabled) dispatch(clearError());
+                }
+              }}
+              onTestConnectivity={() => {
+                void handleConnectivityTest('nim');
+              }}
+              testingPlatform={testingPlatform}
+              connectivityResults={connectivityResults}
+              language={language}
+            />
+          );
+        })()}
 
         {/* 小蜜蜂设置*/}
         {activePlatform === 'netease-bee' && (

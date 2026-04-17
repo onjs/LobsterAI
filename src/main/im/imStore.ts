@@ -3,6 +3,8 @@
  * SQLite operations for IM configuration storage
  */
 
+import { randomUUID } from 'node:crypto';
+
 import Database from 'better-sqlite3';
 
 import { PlatformRegistry } from '../../shared/platform';
@@ -15,6 +17,7 @@ import {
   DEFAULT_IM_SETTINGS,
   DEFAULT_NETEASE_BEE_CONFIG,
   DEFAULT_NIM_CONFIG,
+  DEFAULT_NIM_MULTI_INSTANCE_CONFIG,
   DEFAULT_POPO_CONFIG,
   DEFAULT_QQ_CONFIG,
   DEFAULT_QQ_MULTI_INSTANCE_CONFIG,
@@ -34,6 +37,8 @@ import {
   IMSettings,
   NeteaseBeeChanConfig,
   NimConfig,
+  NimInstanceConfig,
+  NimMultiInstanceConfig,
   Platform,
   PopoOpenClawConfig,
   QQConfig,
@@ -59,6 +64,27 @@ interface SessionMappingRow {
   agent_id: string;
   created_at: number;
   last_active_at: number;
+}
+
+function deriveNimRuntimeAccountIdForInstance(
+  inst: Pick<NimInstanceConfig, 'nimToken' | 'appKey' | 'account'>,
+): string | null {
+  const nimToken = inst.nimToken?.trim();
+  if (nimToken) {
+    const delimiter = nimToken.includes('|') ? '|' : '-';
+    const parts = nimToken.split(delimiter).map((part) => part.trim());
+    if (parts.length === 3 && parts[0] && parts[1]) {
+      return `${parts[0]}:${parts[1]}`;
+    }
+  }
+  if (inst.appKey?.trim() && inst.account?.trim()) {
+    return `${inst.appKey.trim()}:${inst.account.trim()}`;
+  }
+  return null;
+}
+
+function normalizeNimLegacyConversationPrefix(runtimeAccountId: string): string {
+  return runtimeAccountId.replace(/:/g, '-');
 }
 
 export class IMStore {
@@ -629,7 +655,7 @@ export class IMStore {
     const discord =
       this.getConfigValue<DiscordOpenClawConfig>('discordOpenClaw') ??
       DEFAULT_DISCORD_OPENCLAW_CONFIG;
-    const nimConfig = this.getConfigValue<NimConfig>('nim') ?? DEFAULT_NIM_CONFIG;
+    const nimMulti = this.getNimMultiInstanceConfig();
     const neteaseBeeChan =
       this.getConfigValue<NeteaseBeeChanConfig>('netease-bee') ?? DEFAULT_NETEASE_BEE_CONFIG;
     const qqMulti = this.getQQMultiInstanceConfig();
@@ -655,7 +681,7 @@ export class IMStore {
       feishu: feishuMulti,
       telegram: resolveEnabled(telegram, DEFAULT_TELEGRAM_OPENCLAW_CONFIG),
       discord: resolveEnabled(discord, DEFAULT_DISCORD_OPENCLAW_CONFIG),
-      nim: resolveEnabled(nimConfig, DEFAULT_NIM_CONFIG),
+      nim: nimMulti,
       'netease-bee': resolveEnabled(neteaseBeeChan, DEFAULT_NETEASE_BEE_CONFIG),
       qq: qqMulti,
       wecom: wecomMulti,
@@ -679,7 +705,7 @@ export class IMStore {
       this.setDiscordOpenClawConfig(config.discord);
     }
     if (config.nim) {
-      this.setNimConfig(config.nim);
+      this.setNimMultiInstanceConfig(config.nim);
     }
     if (config['netease-bee']) {
       this.setNeteaseBeeChanConfig(config['netease-bee']);
@@ -867,6 +893,19 @@ export class IMStore {
 
   // ==================== NIM Config ====================
 
+  private hasMeaningfulNimConfig(config: Partial<NimConfig> | null | undefined): config is NimConfig {
+    return Boolean(config && (config.nimToken || (config.appKey && config.account && config.token)));
+  }
+
+  private buildMigratedNimInstance(config: NimConfig): NimInstanceConfig {
+    return {
+      ...DEFAULT_NIM_CONFIG,
+      ...config,
+      instanceId: randomUUID(),
+      instanceName: 'NIM Bot 1',
+    };
+  }
+
   getNimConfig(): NimConfig {
     const stored = this.getConfigValue<NimConfig>('nim');
     return { ...DEFAULT_NIM_CONFIG, ...stored };
@@ -875,6 +914,85 @@ export class IMStore {
   setNimConfig(config: Partial<NimConfig>): void {
     const current = this.getNimConfig();
     this.setConfigValue('nim', { ...current, ...config });
+  }
+
+  private deleteLegacyNimConfig(): void {
+    this.db.prepare('DELETE FROM im_config WHERE key = ?').run('nim');
+  }
+
+  getNimInstances(): NimInstanceConfig[] {
+    const rows = this.db
+      .prepare('SELECT key, value FROM im_config WHERE key LIKE ?')
+      .all('nim:%') as Array<{ key: string; value: string }>;
+    if (rows.length > 0) {
+      const instances: NimInstanceConfig[] = [];
+      for (const row of rows) {
+        try {
+          const config = JSON.parse(row.value) as NimInstanceConfig;
+          instances.push({ ...DEFAULT_NIM_CONFIG, ...config });
+        } catch {
+          // Ignore parse errors
+        }
+      }
+      return instances;
+    }
+
+    const legacy = this.getConfigValue<NimConfig>('nim');
+    if (!this.hasMeaningfulNimConfig(legacy)) {
+      return [];
+    }
+
+    const migrated = this.buildMigratedNimInstance(legacy);
+    this.setNimInstanceConfig(migrated.instanceId, migrated);
+    return [migrated];
+  }
+
+  getNimInstanceConfig(instanceId: string): NimInstanceConfig | null {
+    const stored = this.getConfigValue<NimInstanceConfig>(`nim:${instanceId}`);
+    if (!stored) return null;
+    return { ...DEFAULT_NIM_CONFIG, ...stored };
+  }
+
+  setNimInstanceConfig(instanceId: string, config: Partial<NimInstanceConfig>): void {
+    this.deleteLegacyNimConfig();
+    const current = this.getNimInstanceConfig(instanceId);
+    if (current) {
+      this.setConfigValue(`nim:${instanceId}`, { ...current, ...config });
+      return;
+    }
+    this.setConfigValue(`nim:${instanceId}`, {
+      ...DEFAULT_NIM_CONFIG,
+      instanceId,
+      instanceName: config.instanceName || 'NIM Bot',
+      ...config,
+    });
+  }
+
+  deleteNimInstance(instanceId: string): void {
+    this.db.prepare('DELETE FROM im_config WHERE key = ?').run(`nim:${instanceId}`);
+    this.db.prepare('DELETE FROM im_session_mappings WHERE platform = ?').run(`nim:${instanceId}`);
+    if (this.getNimInstances().length === 0) {
+      this.deleteLegacyNimConfig();
+    }
+  }
+
+  getNimMultiInstanceConfig(): NimMultiInstanceConfig {
+    const instances = this.getNimInstances();
+    if (instances.length === 0) return DEFAULT_NIM_MULTI_INSTANCE_CONFIG;
+    return { instances };
+  }
+
+  setNimMultiInstanceConfig(config: NimMultiInstanceConfig): void {
+    this.deleteLegacyNimConfig();
+    const nextIds = new Set(config.instances.map((inst) => inst.instanceId));
+    for (const inst of this.getNimInstances()) {
+      if (!nextIds.has(inst.instanceId)) {
+        this.deleteNimInstance(inst.instanceId);
+      }
+    }
+    for (const inst of config.instances) {
+      this.setNimInstanceConfig(inst.instanceId, inst);
+    }
   }
 
   // ==================== NeteaseBee Chan Config ====================
@@ -1098,7 +1216,7 @@ export class IMStore {
     const hasFeishu = config.feishu?.instances?.some(i => !!(i.appId && i.appSecret)) ?? false;
     const hasTelegram = !!config.telegram.botToken;
     const hasDiscord = !!config.discord.botToken;
-    const hasNim = !!(config.nim.appKey && config.nim.account && config.nim.token);
+    const hasNim = config.nim?.instances?.some(i => !!(i.nimToken || (i.appKey && i.account && i.token))) ?? false;
     const hasNeteaseBeeChan = !!(config['netease-bee']?.clientId && config['netease-bee']?.secret);
     const hasQQ = config.qq?.instances?.some(i => !!(i.appId && i.appSecret)) ?? false;
     const hasWecom = config.wecom?.instances?.some(i => !!(i.botId && i.secret)) ?? false;
@@ -1277,23 +1395,40 @@ export class IMStore {
   /**
    * List all session mappings for a platform, optionally filtered by IM bot accountId.
    *
-   * The accountId is encoded as the first colon-delimited segment of im_conversation_id
-   * (e.g. "c9c41984:direct:ou_xxx" → accountId "c9c41984"). This convention is used by
-   * multi-instance platforms (Feishu, DingTalk, QQ) while single-instance platforms
-   * use "default" as the prefix. Filtering by accountId therefore requires no schema
-   * migration and is fully backward-compatible with existing rows.
+   * The accountId is encoded as the first segment of im_conversation_id before
+   * the peer subtype suffix (for example "c9c41984:direct:ou_xxx" or the legacy
+   * NIM form "appKey-account:direct:peer"). Filtering by accountId therefore
+   * requires no schema migration. NIM additionally accepts the current stable
+   * instance key and matches legacy runtime-derived prefixes for compatibility.
    */
   listSessionMappings(platform?: Platform, accountId?: string): IMSessionMapping[] {
     let query: string;
     let params: unknown[];
 
     if (platform && accountId) {
+      const directPrefixes = new Set<string>([accountId]);
+      if (platform === 'nim') {
+        for (const inst of this.getNimInstances()) {
+          const instanceKey = inst.instanceId?.slice(0, 8);
+          if (instanceKey !== accountId) continue;
+          const runtimeAccountId = deriveNimRuntimeAccountIdForInstance(inst);
+          if (runtimeAccountId) {
+            directPrefixes.add(normalizeNimLegacyConversationPrefix(runtimeAccountId));
+          }
+        }
+      }
+
       // Include direct conversations owned by this bot instance (prefix matches accountId)
       // and all group conversations for the platform, since group membership per-bot
       // is not yet stored — group: prefix is a temporary heuristic until im_account_id
       // column is introduced.
-      query = "SELECT im_conversation_id, platform, cowork_session_id, agent_id, created_at, last_active_at FROM im_session_mappings WHERE platform = ? AND (im_conversation_id LIKE ? OR im_conversation_id LIKE 'group:%') ORDER BY last_active_at DESC";
-      params = [platform, `${accountId}:%`];
+      const directClauses = Array.from(directPrefixes).map(() => 'im_conversation_id LIKE ?');
+      query = `SELECT im_conversation_id, platform, cowork_session_id, agent_id, created_at, last_active_at
+        FROM im_session_mappings
+        WHERE platform = ?
+          AND (${directClauses.join(' OR ')} OR im_conversation_id LIKE 'group:%')
+        ORDER BY last_active_at DESC`;
+      params = [platform, ...Array.from(directPrefixes).map((prefix) => `${prefix}:%`)];
     } else if (platform) {
       query = 'SELECT im_conversation_id, platform, cowork_session_id, agent_id, created_at, last_active_at FROM im_session_mappings WHERE platform = ? ORDER BY last_active_at DESC';
       params = [platform];

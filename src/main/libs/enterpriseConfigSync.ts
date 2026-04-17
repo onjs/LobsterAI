@@ -236,7 +236,17 @@ function syncIMChannels(configPath: string, imStore: IMStore): void {
       'qqbot': (cfg) => imStore.setQQConfig(cfg),
       'wecom': (cfg) => imStore.setWecomConfig(cfg),
       'moltbot-popo': (cfg) => imStore.setPopoConfig(cfg),
-      'nim': (cfg) => imStore.setNimConfig(cfg),
+      'nim': (cfg) => {
+        if (cfg && typeof cfg.accounts === 'object' && !Array.isArray(cfg.accounts)) {
+          imStore.setNimMultiInstanceConfig({ instances: Object.values(cfg.accounts) });
+          return;
+        }
+        if (cfg && Array.isArray(cfg.instances)) {
+          imStore.setNimMultiInstanceConfig(cfg);
+          return;
+        }
+        imStore.setNimConfig(cfg);
+      },
       'openclaw-weixin': (cfg) => imStore.setWeixinConfig(cfg),
       'netease-bee': (cfg) => imStore.setNeteaseBeeChanConfig(cfg),
     };
