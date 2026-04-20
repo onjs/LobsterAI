@@ -620,31 +620,26 @@ function main() {
       log('openclaw-weixin/src/channel.ts already has gatewayMethods, skipping patch');
     }
   }
-}
 
-if (require.main === module) {
-  main();
-}
+  // --- Post-install patch: openclaw-lark deferred startup loading ---
+  // The openclaw-lark plugin eagerly loads the 86K-line @larksuiteoapi/node-sdk and
+  // 186 source files at startup, adding ~8s to the 30s plugin loading phase.
+  // OpenClaw supports a `setupEntry` + `deferConfiguredChannelFullLoadUntilAfterListen`
+  // mechanism (since v2026.3.22) that loads only a lightweight setup entry during
+  // startup and defers the full module load until after the HTTP server is listening.
+  //
+  // This patch:
+  // 1. Generates a zero-dependency setup-entry.js with static channel metadata
+  // 2. Adds setupEntry + startup.deferConfiguredChannelFullLoadUntilAfterListen to package.json
+  const larkPluginDir = path.join(runtimeExtensionsDir, 'openclaw-lark');
+  const larkPackageJsonPath = path.join(larkPluginDir, 'package.json');
+  if (fs.existsSync(larkPackageJsonPath)) {
+    const larkPkg = readJsonFile(larkPackageJsonPath);
+    const needsPatch = larkPkg && larkPkg.openclaw && !larkPkg.openclaw.setupEntry;
 
-// --- Post-install patch: openclaw-lark deferred startup loading ---
-// The openclaw-lark plugin eagerly loads the 86K-line @larksuiteoapi/node-sdk and
-// 186 source files at startup, adding ~8s to the 30s plugin loading phase.
-// OpenClaw supports a `setupEntry` + `deferConfiguredChannelFullLoadUntilAfterListen`
-// mechanism (since v2026.3.22) that loads only a lightweight setup entry during
-// startup and defers the full module load until after the HTTP server is listening.
-//
-// This patch:
-// 1. Generates a zero-dependency setup-entry.js with static channel metadata
-// 2. Adds setupEntry + startup.deferConfiguredChannelFullLoadUntilAfterListen to package.json
-const larkPluginDir = path.join(runtimeExtensionsDir, 'openclaw-lark');
-const larkPackageJsonPath = path.join(larkPluginDir, 'package.json');
-if (fs.existsSync(larkPackageJsonPath)) {
-  const larkPkg = readJsonFile(larkPackageJsonPath);
-  const needsPatch = larkPkg && larkPkg.openclaw && !larkPkg.openclaw.setupEntry;
-
-  if (needsPatch) {
-    // 1. Generate lightweight setup-entry.js (zero require() calls)
-    const setupEntryContent = `"use strict";
+    if (needsPatch) {
+      // 1. Generate lightweight setup-entry.js (zero require() calls)
+      const setupEntryContent = `"use strict";
 // Lightweight setup entry for deferred loading (patched by LobsterAI).
 // Only static channel metadata — no heavy dependencies.
 // The full plugin (index.js) loads after the HTTP server starts listening.
@@ -679,22 +674,27 @@ exports.plugin = {
   reload: { configPrefixes: ['channels.feishu'] },
 };
 `;
-    const setupEntryPath = path.join(larkPluginDir, 'setup-entry.js');
-    fs.writeFileSync(setupEntryPath, setupEntryContent, 'utf-8');
+      const setupEntryPath = path.join(larkPluginDir, 'setup-entry.js');
+      fs.writeFileSync(setupEntryPath, setupEntryContent, 'utf-8');
 
-    // 2. Patch package.json to declare setupEntry and deferred startup
-    larkPkg.openclaw.setupEntry = './setup-entry.js';
-    larkPkg.openclaw.startup = {
-      deferConfiguredChannelFullLoadUntilAfterListen: true,
-    };
-    fs.writeFileSync(larkPackageJsonPath, JSON.stringify(larkPkg, null, 2) + '\n', 'utf-8');
+      // 2. Patch package.json to declare setupEntry and deferred startup
+      larkPkg.openclaw.setupEntry = './setup-entry.js';
+      larkPkg.openclaw.startup = {
+        deferConfiguredChannelFullLoadUntilAfterListen: true,
+      };
+      fs.writeFileSync(larkPackageJsonPath, JSON.stringify(larkPkg, null, 2) + '\n', 'utf-8');
 
-    log('Patched openclaw-lark: added setup-entry.js + deferred startup loading');
+      log('Patched openclaw-lark: added setup-entry.js + deferred startup loading');
+    } else {
+      log('openclaw-lark already has setupEntry, skipping deferred loading patch');
+    }
   } else {
-    log('openclaw-lark already has setupEntry, skipping deferred loading patch');
+    log('openclaw-lark not found, skipping deferred loading patch');
   }
-} else {
-  log('openclaw-lark not found, skipping deferred loading patch');
+}
+
+if (require.main === module) {
+  main();
 }
 
 module.exports = {
