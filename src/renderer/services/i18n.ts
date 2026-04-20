@@ -1079,6 +1079,14 @@ const translations: Record<LanguageType, Record<string, string>> = {
     imDingtalkGuideStep2: '从应用凭证页获取 Client ID（AppKey）与 Client Secret（AppSecret）',
     imDingtalkGuideStep3: '启用"机器人"能力，并将 Client ID 和 Client Secret 填入下方',
     imDingtalkGuideStep4: '保存后机器人将自动通过 Stream 模式建立长连接',
+    dingtalkBotCreateWizardScanBtn: '扫码配置机器人',
+    dingtalkBotCreateWizardScanHint: '使用钉钉客户端扫描二维码，一键创建并配置机器人',
+    dingtalkBotCreateWizardOrManual: '或 手动填写机器人凭证',
+    dingtalkBotCreateWizardQrcodeDesc:
+      '使用钉钉客户端扫描二维码，完成机器人创建与授权。',
+    dingtalkBotCreateWizardQrcodeExpired: '二维码已过期，请点击重新扫码',
+    dingtalkBotCreateWizardSuccessTitle: '机器人配置成功',
+    dingtalkBotCreateWizardGenerating: '正在生成二维码…',
     imFeishuGuideStep1: '在下方填写飞书机器人的 App ID 和 App Secret 即可完成配置',
     imFeishuGuideStep2: '可在飞书开放平台查看应用凭证，详情参考配置手册。',
     feishuBotCreateWizardTitle: '创建机器人',
@@ -2621,6 +2629,15 @@ const translations: Record<LanguageType, Record<string, string>> = {
     imDingtalkGuideStep3:
       'Turn on the "Bot" capability and enter Client ID and Client Secret below',
     imDingtalkGuideStep4: 'Once saved, the bot will auto-connect via Stream mode',
+    dingtalkBotCreateWizardScanBtn: 'Scan QR Code to Configure Bot',
+    dingtalkBotCreateWizardScanHint:
+      'Scan the QR code with DingTalk mobile app to create and configure a bot in one step',
+    dingtalkBotCreateWizardOrManual: 'or manually enter bot credentials',
+    dingtalkBotCreateWizardQrcodeDesc:
+      'Scan the QR code with DingTalk mobile app to complete bot creation and authorization.',
+    dingtalkBotCreateWizardQrcodeExpired: 'QR code expired, please scan again',
+    dingtalkBotCreateWizardSuccessTitle: 'Bot configured successfully',
+    dingtalkBotCreateWizardGenerating: 'Generating QR code...',
     imFeishuGuideStep1: 'Enter the Feishu bot App ID and App Secret below to complete setup',
     imFeishuGuideStep2:
       'App credentials are available on the Feishu Open Platform. See the setup manual for details.',

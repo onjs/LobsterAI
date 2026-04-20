@@ -4305,6 +4305,31 @@ if (!gotTheLock) {
     }
   });
 
+  // DingTalk bot install helpers
+  ipcMain.handle('dingtalk:install:qrcode', async () => {
+    try {
+      return await getIMGatewayManager().startDingTalkInstallQrcode();
+    } catch (error) {
+      throw new Error(error instanceof Error ? error.message : '获取二维码失败');
+    }
+  });
+
+  ipcMain.handle('dingtalk:install:poll', async (_event, { deviceCode }: { deviceCode: string }) => {
+    try {
+      return await getIMGatewayManager().pollDingTalkInstall(deviceCode);
+    } catch (error) {
+      return { done: false, error: error instanceof Error ? error.message : '轮询失败' };
+    }
+  });
+
+  ipcMain.handle('dingtalk:install:verify', async (_event, { clientId, clientSecret }: { clientId: string; clientSecret: string }) => {
+    try {
+      return await getIMGatewayManager().verifyDingTalkCredentials(clientId, clientSecret);
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : '验证失败' };
+    }
+  });
+
   // GitHub Copilot device code authentication handlers
   ipcMain.handle('github-copilot:request-device-code', async () => {
     const { requestDeviceCode } = await import('./libs/githubCopilotAuth');

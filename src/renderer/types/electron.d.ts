@@ -592,6 +592,26 @@ interface IElectronAPI {
       }>;
     };
   };
+  dingtalk: {
+    install: {
+      qrcode: () => Promise<{
+        url: string;
+        deviceCode: string;
+        interval: number;
+        expireIn: number;
+      }>;
+      poll: (deviceCode: string) => Promise<{
+        done: boolean;
+        clientId?: string;
+        clientSecret?: string;
+        error?: string;
+      }>;
+      verify: (clientId: string, clientSecret: string) => Promise<{
+        success: boolean;
+        error?: string;
+      }>;
+    };
+  };
   githubCopilot: {
     requestDeviceCode: () => Promise<{
       userCode: string;

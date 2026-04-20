@@ -547,6 +547,29 @@ contextBridge.exposeInMainWorld('electron', {
         }>,
     },
   },
+  dingtalk: {
+    install: {
+      qrcode: () =>
+        ipcRenderer.invoke('dingtalk:install:qrcode') as Promise<{
+          url: string;
+          deviceCode: string;
+          interval: number;
+          expireIn: number;
+        }>,
+      poll: (deviceCode: string) =>
+        ipcRenderer.invoke('dingtalk:install:poll', { deviceCode }) as Promise<{
+          done: boolean;
+          clientId?: string;
+          clientSecret?: string;
+          error?: string;
+        }>,
+      verify: (clientId: string, clientSecret: string) =>
+        ipcRenderer.invoke('dingtalk:install:verify', { clientId, clientSecret }) as Promise<{
+          success: boolean;
+          error?: string;
+        }>,
+    },
+  },
   githubCopilot: {
     requestDeviceCode: () =>
       ipcRenderer.invoke('github-copilot:request-device-code') as Promise<{

@@ -2605,6 +2605,124 @@ export class IMGatewayManager extends EventEmitter {
     }
   }
 
+  // ==================== DingTalk Bot Install Helpers ====================
+
+  private static readonly DINGTALK_REGISTRATION_BASE_URL = 'https://oapi.dingtalk.com';
+  private static readonly DINGTALK_REGISTRATION_SOURCE = 'DING_DWS_CLAW';
+
+  /**
+   * Start the DingTalk Device Flow onboarding: init + begin.
+   * Returns data needed to render a QR code in the UI.
+   */
+  async startDingTalkInstallQrcode(): Promise<{
+    url: string;
+    deviceCode: string;
+    interval: number;
+    expireIn: number;
+  }> {
+    const baseUrl = IMGatewayManager.DINGTALK_REGISTRATION_BASE_URL;
+    const source = IMGatewayManager.DINGTALK_REGISTRATION_SOURCE;
+
+    // Step 1: init — obtain nonce
+    const initResp = await fetch(`${baseUrl}/app/registration/init`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source }),
+    });
+    const initData = await initResp.json() as { errcode: number; errmsg?: string; nonce?: string };
+    if (initData.errcode !== 0 || !initData.nonce) {
+      throw new Error(initData.errmsg || 'DingTalk registration init failed');
+    }
+
+    // Step 2: begin — obtain device_code + QR url
+    const beginResp = await fetch(`${baseUrl}/app/registration/begin`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ nonce: initData.nonce }),
+    });
+    const beginData = await beginResp.json() as {
+      errcode: number;
+      errmsg?: string;
+      device_code?: string;
+      verification_uri_complete?: string;
+      interval?: number;
+      expires_in?: number;
+    };
+    if (beginData.errcode !== 0 || !beginData.device_code || !beginData.verification_uri_complete) {
+      throw new Error(beginData.errmsg || 'DingTalk registration begin failed');
+    }
+
+    return {
+      url: beginData.verification_uri_complete,
+      deviceCode: beginData.device_code,
+      interval: beginData.interval ?? 5,
+      expireIn: beginData.expires_in ?? 600,
+    };
+  }
+
+  /**
+   * Poll DingTalk Device Flow for the result of a QR code scan.
+   */
+  async pollDingTalkInstall(deviceCode: string): Promise<{
+    done: boolean;
+    clientId?: string;
+    clientSecret?: string;
+    error?: string;
+  }> {
+    const baseUrl = IMGatewayManager.DINGTALK_REGISTRATION_BASE_URL;
+    const pollResp = await fetch(`${baseUrl}/app/registration/poll`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ device_code: deviceCode }),
+    });
+    const pollData = await pollResp.json() as {
+      errcode: number;
+      errmsg?: string;
+      status?: string;
+      client_id?: string;
+      client_secret?: string;
+      fail_reason?: string;
+    };
+    if (pollData.errcode !== 0) {
+      return { done: false, error: pollData.errmsg || 'poll error' };
+    }
+    const status = (pollData.status ?? '').toUpperCase();
+    if (status === 'SUCCESS' && pollData.client_id && pollData.client_secret) {
+      return { done: true, clientId: pollData.client_id, clientSecret: pollData.client_secret };
+    }
+    if (status === 'FAIL') {
+      return { done: false, error: pollData.fail_reason || 'authorization failed' };
+    }
+    if (status === 'EXPIRED') {
+      return { done: false, error: 'authorization expired' };
+    }
+    // WAITING or other — keep polling
+    return { done: false };
+  }
+
+  /**
+   * Validate existing DingTalk app credentials (Client ID + Client Secret).
+   */
+  async verifyDingTalkCredentials(clientId: string, clientSecret: string): Promise<{
+    success: boolean;
+    error?: string;
+  }> {
+    try {
+      const resp = await fetch('https://api.dingtalk.com/v1.0/oauth2/accessToken', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ appKey: clientId, appSecret: clientSecret }),
+      });
+      const data = await resp.json() as { accessToken?: string; code?: string; message?: string };
+      if (data.accessToken) {
+        return { success: true };
+      }
+      return { success: false, error: data.message || t('dingtalkVerifyCredentialsFailed') };
+    } catch (err: unknown) {
+      return { success: false, error: (err instanceof Error ? err.message : undefined) || t('dingtalkVerifyFailed') };
+    }
+  }
+
   private calculateVerdict(checks: IMConnectivityCheck[]): IMConnectivityVerdict {
     if (checks.some((check) => check.level === 'fail')) {
       return 'fail';
