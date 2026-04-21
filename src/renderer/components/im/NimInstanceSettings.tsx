@@ -344,9 +344,18 @@ const NimInstanceSettings: React.FC<NimInstanceSettingsProps> = ({
                 {i18nService.t('imNimQrLoginHintSuffix')}
               </p>
               {qrStatus === 'error' && qrError && (
-                <div className="flex items-center justify-center gap-1.5 text-xs text-red-500 bg-red-500/10 px-3 py-2 rounded-lg">
-                  <XCircleIcon className="h-4 w-4 flex-shrink-0" />
-                  {qrError}
+                <div className="flex flex-col items-center gap-2">
+                  <div className="flex items-center justify-center gap-1.5 text-xs text-red-500 bg-red-500/10 px-3 py-2 rounded-lg">
+                    <XCircleIcon className="h-4 w-4 flex-shrink-0" />
+                    {qrError}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void handleStartQr()}
+                    className="px-3 py-1.5 rounded-lg text-xs font-medium bg-surface-raised text-foreground hover:bg-surface transition-colors"
+                  >
+                    {i18nService.t('imNimQrRefresh')}
+                  </button>
                 </div>
               )}
             </>
