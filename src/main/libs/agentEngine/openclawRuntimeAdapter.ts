@@ -2331,22 +2331,32 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     }
 
     const session = this.store.getSession(sessionId);
-    const lastMessage = session?.messages[session.messages.length - 1];
-    if (!lastMessage || lastMessage.type !== 'assistant') {
-      return null;
+    const messages = session?.messages ?? [];
+    // Scan backward: in normal flow the assistant message is last; after a skill switch
+    // one user message may sit between the previous assistant reply and this sync (Bug 2).
+    // Allow at most one non-assistant message before giving up.
+    let nonAssistantCount = 0;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i];
+      if (msg.type === 'assistant') {
+        if (msg.content.trim() !== normalizedContent) {
+          return null;
+        }
+        this.store.updateMessage(sessionId, msg.id, {
+          content,
+          metadata: {
+            isStreaming: false,
+            isFinal: true,
+          },
+        });
+        return msg.id;
+      }
+      nonAssistantCount++;
+      if (nonAssistantCount > 1) {
+        return null;
+      }
     }
-    if (lastMessage.content.trim() !== normalizedContent) {
-      return null;
-    }
-
-    this.store.updateMessage(sessionId, lastMessage.id, {
-      content,
-      metadata: {
-        isStreaming: false,
-        isFinal: true,
-      },
-    });
-    return lastMessage.id;
+    return null;
   }
 
   private handleAgentLifecycleEvent(sessionId: string, data: unknown): void {
@@ -2362,11 +2372,22 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
       // `phase=end` event IS reliable.  Wait a short window for handleChatFinal() to
       // run; if the turn is still active after that, complete it ourselves.
       const FALLBACK_DELAY_MS = 3000;
+      // Capture the ending run's ID now, before the timer fires. If the user sends a
+      // new message within the 3-second window, activeTurns will hold the NEW turn by
+      // the time the timer fires. Without the guard below, the timer would blindly
+      // complete the new turn — making the session appear idle while the LLM is still
+      // generating (Bug 1).
+      const endingTurn = this.activeTurns.get(sessionId);
+      const endingRunId =
+        endingTurn?.runId ??
+        (isRecord(data) && typeof data.runId === 'string' ? data.runId : null);
       setTimeout(() => {
-        const turn = this.activeTurns.get(sessionId);
-        if (!turn) return; // Already completed by handleChatFinal
+        const currentTurn = this.activeTurns.get(sessionId);
+        if (!currentTurn) return; // Already completed by handleChatFinal
+        // If a new turn started for a different run, skip — the new run manages itself.
+        if (endingRunId && !currentTurn.knownRunIds.has(endingRunId)) return;
         console.log('[OpenClawRuntime] agent lifecycle end fallback: completing turn that missed chat final, sessionId:', sessionId);
-        void this.completeChannelTurnFallback(sessionId, turn);
+        void this.completeChannelTurnFallback(sessionId, currentTurn);
       }, FALLBACK_DELAY_MS);
     }
 
