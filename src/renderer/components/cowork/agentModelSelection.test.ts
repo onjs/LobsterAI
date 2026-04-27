@@ -64,7 +64,7 @@ describe('resolveAgentModelSelection', () => {
     expect(result.hasInvalidExplicitModel).toBe(false);
   });
 
-  test('marks invalid explicit model as fallback to global model', () => {
+  test('silently falls back when agent model is invalid (not a session-level choice)', () => {
     const result = resolveAgentModelSelection({
       agentModel: 'deleted-model',
       availableModels: models,
@@ -74,12 +74,26 @@ describe('resolveAgentModelSelection', () => {
 
     expect(result.selectedModel?.id).toBe('gpt-4o');
     expect(result.usesFallback).toBe(true);
-    expect(result.hasInvalidExplicitModel).toBe(true);
+    expect(result.hasInvalidExplicitModel).toBe(false);
   });
 
-  test('treats ambiguous bare model ids as invalid instead of guessing a provider', () => {
+  test('silently falls back when agent model is an ambiguous bare id', () => {
     const result = resolveAgentModelSelection({
       agentModel: 'deepseek-v3.2',
+      availableModels: models,
+      fallbackModel: models[0],
+      engine: 'openclaw',
+    });
+
+    expect(result.selectedModel?.id).toBe('gpt-4o');
+    expect(result.usesFallback).toBe(true);
+    expect(result.hasInvalidExplicitModel).toBe(false);
+  });
+
+  test('marks invalid session model override as error', () => {
+    const result = resolveAgentModelSelection({
+      sessionModel: 'deleted-provider/deleted-model',
+      agentModel: 'anthropic/claude-sonnet-4',
       availableModels: models,
       fallbackModel: models[0],
       engine: 'openclaw',

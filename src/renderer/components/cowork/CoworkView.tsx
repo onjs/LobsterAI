@@ -241,7 +241,7 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
         updatedAt: now,
         cwd: config.workingDirectory || '',
         systemPrompt: '',
-        modelOverride: '',
+        modelOverride: headerSelectedModel ? toOpenClawModelRef(headerSelectedModel) : '',
         executionMode: config.executionMode || 'local',
         activeSkillIds: sessionSkillIds,
         agentId: currentAgentId,
@@ -284,6 +284,8 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
         .join('\n\n') || undefined;
 
       // Start the actual session immediately with fallback title
+      const sessionModelOverride = headerSelectedModel ? toOpenClawModelRef(headerSelectedModel) : '';
+      console.log('[CoworkView] creating session:', { modelId: headerSelectedModel?.id, providerKey: headerSelectedModel?.providerKey, isServerModel: headerSelectedModel?.isServerModel, sessionModelOverride, agentModel: currentAgent?.model });
       const { session: startedSession, error: startError } = await coworkService.startSession({
         prompt,
         title: fallbackTitle,
@@ -291,6 +293,7 @@ const CoworkView: React.FC<CoworkViewProps> = ({ onRequestAppSettings, onShowSki
         systemPrompt: combinedSystemPrompt,
         activeSkillIds: sessionSkillIds,
         agentId: currentAgentId,
+        modelOverride: sessionModelOverride,
         imageAttachments,
       });
 

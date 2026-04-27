@@ -9,6 +9,7 @@ import {
   type AppUpdateRuntimeState,
   AppUpdateStatus,
 } from '../shared/appUpdate/constants';
+import { OpenClawProviderId, ProviderName, ProviderRegistry } from '../shared/providers';
 import AgentsView from './components/agent/AgentsView';
 import { CoworkView } from './components/cowork';
 import CoworkPermissionModal from './components/cowork/CoworkPermissionModal';
@@ -44,6 +45,16 @@ import { setDraftPrompt } from './store/slices/coworkSlice';
 import { setAvailableModels, setSelectedModel } from './store/slices/modelSlice';
 import { clearSelection } from './store/slices/quickActionSlice';
 import type { CoworkPermissionResult } from './types/cowork';
+
+const getOpenClawProviderIdForConfig = (
+  providerName: string,
+  providerConfig: { authType?: string },
+): string => {
+  if (providerName === ProviderName.OpenAI && providerConfig.authType === 'oauth') {
+    return OpenClawProviderId.OpenAICodex;
+  }
+  return ProviderRegistry.getOpenClawProviderId(providerName);
+};
 
 const App: React.FC = () => {
   const [showSettings, setShowSettings] = useState(false);
@@ -150,16 +161,18 @@ const App: React.FC = () => {
         };
         apiService.setConfig(apiConfig);
 
-        const providerModels: { id: string; name: string; provider?: string; providerKey?: string; supportsImage?: boolean }[] = [];
+        const providerModels: { id: string; name: string; provider?: string; providerKey?: string; openClawProviderId?: string; supportsImage?: boolean }[] = [];
         if (config.providers) {
           Object.entries(config.providers).forEach(([providerName, providerConfig]) => {
             if (providerConfig.enabled && providerConfig.models) {
+              const openClawProviderId = getOpenClawProviderIdForConfig(providerName, providerConfig);
               providerConfig.models.forEach((model: { id: string; name: string; supportsImage?: boolean }) => {
                 providerModels.push({
                   id: model.id,
                   name: model.name,
                   provider: getProviderDisplayName(providerName, providerConfig),
                   providerKey: providerName,
+                  openClawProviderId,
                   supportsImage: model.supportsImage ?? false,
                 });
               });
@@ -502,15 +515,17 @@ const App: React.FC = () => {
     });
 
     if (config.providers) {
-      const allModels: { id: string; name: string; provider?: string; providerKey?: string; supportsImage?: boolean }[] = [];
+      const allModels: { id: string; name: string; provider?: string; providerKey?: string; openClawProviderId?: string; supportsImage?: boolean }[] = [];
       Object.entries(config.providers).forEach(([providerName, providerConfig]) => {
         if (providerConfig.enabled && providerConfig.models) {
+          const openClawProviderId = getOpenClawProviderIdForConfig(providerName, providerConfig);
           providerConfig.models.forEach((model: { id: string; name: string; supportsImage?: boolean }) => {
             allModels.push({
               id: model.id,
               name: model.name,
               provider: getProviderDisplayName(providerName, providerConfig),
               providerKey: providerName,
+              openClawProviderId,
               supportsImage: model.supportsImage ?? false,
             });
           });

@@ -43,6 +43,10 @@ vi.mock('./openclawTokenProxy', () => ({
   getOpenClawTokenProxyPort: () => null,
 }));
 
+vi.mock('./openaiCodexAuth', () => ({
+  readOpenAICodexAuthFile: () => ({ accountId: 'acct-test' }),
+}));
+
 describe('OpenClawConfigSync runtime config output', () => {
   let tmpDir: string;
   let configPath: string;
@@ -107,6 +111,35 @@ describe('OpenClawConfigSync runtime config output', () => {
 
     const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
     expect(config.models.providers.openai.request.proxy).toEqual({ mode: 'env-proxy' });
+  });
+
+  test('maps OpenAI OAuth mode to the OpenAI Codex provider', async () => {
+    const { AuthType, OpenClawApi, OpenClawProviderId, ProviderName } = await import('../../shared/providers');
+    const { buildProviderSelection } = await import('./openclawConfigSync');
+
+    const selection = buildProviderSelection({
+      apiKey: '',
+      baseURL: 'https://api.openai.com/v1',
+      modelId: 'gpt-5.4',
+      apiType: 'openai',
+      providerName: ProviderName.OpenAI,
+      authType: 'oauth',
+      codingPlanEnabled: false,
+      supportsImage: true,
+      modelName: 'GPT-5.4',
+    });
+
+    expect(selection.providerId).toBe(OpenClawProviderId.OpenAICodex);
+    expect(selection.primaryModel).toBe(`${OpenClawProviderId.OpenAICodex}/gpt-5.4`);
+    expect(selection.providerConfig.baseUrl).toBe('https://chatgpt.com/backend-api/codex');
+    expect(selection.providerConfig.api).toBe(OpenClawApi.OpenAICodexResponses);
+    expect(selection.providerConfig.auth).toBe(AuthType.OAuth);
+    expect(selection.providerConfig.headers).toEqual({
+      'chatgpt-account-id': 'acct-test',
+      originator: 'pi',
+      'OpenAI-Beta': 'responses=experimental',
+    });
+    expect(selection.providerConfig).not.toHaveProperty('apiKey');
   });
 
   test('adds missing array items in MCP bridge tool schemas for OpenAI compatibility', async () => {

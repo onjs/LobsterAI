@@ -659,6 +659,18 @@ interface IElectronAPI {
     }>;
     onTokenUpdated: (callback: (data: { token: string; baseUrl: string }) => void) => () => void;
   };
+  openaiCodexOAuth: {
+    start: () => Promise<
+      | { success: true; email: string | null; accountId: string | null; expiresAt: number }
+      | { success: false; error: string }
+    >;
+    cancel: () => Promise<void>;
+    logout: () => Promise<void>;
+    status: () => Promise<
+      | { loggedIn: true; email: string | null; accountId: string | null; expiresAt: number }
+      | { loggedIn: false }
+    >;
+  };
 }
 
 // IM Gateway types

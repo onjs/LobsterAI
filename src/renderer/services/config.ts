@@ -143,6 +143,9 @@ class ConfigService {
   async init() {
     try {
       const storedConfig = await localStore.getItem<AppConfig>(CONFIG_KEYS.APP_CONFIG);
+      if (!storedConfig) {
+        console.warn('[ConfigService] init: no stored config found, using defaults');
+      }
       if (storedConfig) {
         const mergedProviders = storedConfig.providers
           ? Object.fromEntries(
@@ -216,7 +219,7 @@ class ConfigService {
         });
       }
     } catch (error) {
-      console.error('Failed to load config:', error);
+      console.error('[ConfigService] init failed:', error);
     }
   }
 
@@ -226,8 +229,15 @@ class ConfigService {
 
   async updateConfig(newConfig: Partial<AppConfig>) {
     const normalizedProviders = normalizeProvidersConfig(newConfig.providers as AppConfig['providers'] | undefined);
+
+    // Read-modify-write: use the latest stored value as the base to avoid
+    // overwriting fields (e.g. providers) with stale in-memory defaults when
+    // only a subset of config is being updated.
+    const stored = await localStore.getItem<AppConfig>(CONFIG_KEYS.APP_CONFIG);
+    const base = stored ?? this.config;
+
     this.config = {
-      ...this.config,
+      ...base,
       ...newConfig,
       ...(normalizedProviders ? { providers: normalizedProviders } : {}),
     };

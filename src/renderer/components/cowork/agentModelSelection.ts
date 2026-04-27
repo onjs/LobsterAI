@@ -39,7 +39,7 @@ export function resolveAgentModelSelection({
       return { selectedModel: explicitModel, usesFallback: false, hasInvalidExplicitModel: false };
     }
 
-    return { selectedModel: fallbackModel, usesFallback: true, hasInvalidExplicitModel: true };
+    return { selectedModel: fallbackModel, usesFallback: true, hasInvalidExplicitModel: false };
   }
 
   return { selectedModel: fallbackModel, usesFallback: true, hasInvalidExplicitModel: false };

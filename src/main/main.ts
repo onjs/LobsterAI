@@ -77,6 +77,7 @@ import {
 } from './libs/openclawMemoryFile';
 import { startOpenClawTokenProxy, stopOpenClawTokenProxy } from './libs/openclawTokenProxy';
 import { ensurePythonRuntimeReady } from './libs/pythonRuntime';
+import { serializeForLog } from './libs/sanitizeForLog';
 import { SqliteBackupManager } from './libs/sqliteBackup/sqliteBackupManager';
 import {
   applySystemProxyEnv,
@@ -95,6 +96,15 @@ import { getSkillServiceManager } from './skillServices';
 import { SqliteStore } from './sqliteStore';
 import { StartupProfiler } from './startupProfiler';
 import { createTray, destroyTray, updateTrayMenu } from './trayManager';
+
+const gwDiagTs = (): string => {
+  const d = new Date();
+  const p = (n: number, w = 2) => String(n).padStart(w, '0');
+  const tz = d.getTimezoneOffset();
+  const sign = tz <= 0 ? '+' : '-';
+  const abs = Math.abs(tz);
+  return `[GW-RESTART-DIAG] ${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${p(d.getMilliseconds(), 3)}${sign}${p(Math.floor(abs / 60))}:${p(abs % 60)}`;
+};
 
 // 设置应用程序名称
 app.name = APP_NAME;
@@ -229,6 +239,18 @@ const buildAvailableOpenClawProviders = (): Record<string, { models: Array<{ id:
   }
 
   return providerMap;
+};
+
+const normalizeOpenClawModelRef = (modelRef: string): string => {
+  const normalized = modelRef.trim();
+  if (!normalized) return normalized;
+
+  const qualification = resolveQualifiedAgentModelRef({
+    agentModel: normalized,
+    availableProviders: buildAvailableOpenClawProviders(),
+  });
+
+  return qualification.status === 'qualified' ? qualification.primaryModel : normalized;
 };
 
 // Provider IDs that were renamed in past refactors. Any stored agent model ref
@@ -894,6 +916,7 @@ const bootstrapOpenClawEngine = async (options: { forceReinstall?: boolean; reas
         return syncResult.status || manager.getStatus();
       }
       if (options.forceReinstall) {
+        console.log(`${gwDiagTs()} bootstrap: forceReinstall requested, stopping gateway before reinstall`);
         await manager.stopGateway();
         console.log(`[OpenClaw] bootstrap: stopGateway done (${elapsed()})`);
       }
@@ -902,7 +925,7 @@ const bootstrapOpenClawEngine = async (options: { forceReinstall?: boolean; reas
       if (ensuredStatus.phase !== 'ready' && ensuredStatus.phase !== 'running') {
         return ensuredStatus;
       }
-      const result = await manager.startGateway();
+      const result = await manager.startGateway(`bootstrap:${reason}`);
       console.log(`[OpenClaw] bootstrap completed (${elapsed()}), phase=${result.phase}`);
       return result;
     } catch (error) {
@@ -960,7 +983,8 @@ const ensureOpenClawRunningForCowork = async () => {
     console.error('[OpenClaw] ensureRunning: config sync failed:', syncResult.error);
   }
 
-  return await manager.startGateway();
+  console.log(`${gwDiagTs()} ensureRunning: gateway not running (phase=${status.phase}), starting`);
+  return await manager.startGateway('ensure-running-for-cowork');
 };
 
 const getCoworkStore = () => {
@@ -1123,7 +1147,7 @@ const clearDeferredRestart = () => {
 
 const executeDeferredGatewayRestart = async (reason: string) => {
   clearDeferredRestart();
-  console.log(`[OpenClaw] executeDeferredGatewayRestart: performing deferred restart (reason: ${reason})`);
+  console.log(`${gwDiagTs()} executeDeferredGatewayRestart: performing deferred restart (reason: ${reason})`);
   await syncOpenClawConfig({ reason: `deferred:${reason}` });
 };
 
@@ -1131,10 +1155,11 @@ const scheduleDeferredGatewayRestart = (reason: string) => {
   // If already scheduled, the latest config is already on disk — just let
   // the existing timer handle the restart.
   if (deferredRestartTimer) {
-    console.log(`[OpenClaw] scheduleDeferredGatewayRestart: already scheduled, skipping (reason: ${reason})`);
+    console.log(`${gwDiagTs()} scheduleDeferredGatewayRestart: already scheduled, skipping (reason: ${reason})`);
     return;
   }
 
+  console.log(`${gwDiagTs()} scheduleDeferredGatewayRestart: scheduling deferred restart, polling every ${DEFERRED_RESTART_POLL_MS}ms, max wait ${DEFERRED_RESTART_MAX_WAIT_MS}ms (reason: ${reason})`);
   deferredRestartTimer = setInterval(() => {
     if (!hasActiveGatewayWorkloads()) {
       void executeDeferredGatewayRestart(reason);
@@ -1143,7 +1168,7 @@ const scheduleDeferredGatewayRestart = (reason: string) => {
 
   // Hard timeout: restart anyway after max wait to avoid config drift.
   deferredRestartTimeout = setTimeout(() => {
-    console.warn(`[OpenClaw] scheduleDeferredGatewayRestart: max wait exceeded, forcing restart (reason: ${reason})`);
+    console.warn(`${gwDiagTs()} scheduleDeferredGatewayRestart: max wait exceeded, forcing restart (reason: ${reason})`);
     void executeDeferredGatewayRestart(reason);
   }, DEFERRED_RESTART_MAX_WAIT_MS);
 };
@@ -1151,13 +1176,13 @@ const scheduleDeferredGatewayRestart = (reason: string) => {
 const syncOpenClawConfig = async (
   options: { reason: string; restartGatewayIfRunning?: boolean } = { reason: 'unknown' },
 ): Promise<{ success: boolean; changed: boolean; mcpBridgeConfigChanged?: boolean; status?: OpenClawEngineStatus; error?: string }> => {
-  const D = '[GW-RESTART-DIAG]';
-  console.log(`${D} ──── syncOpenClawConfig START reason=${options.reason} restartIfRunning=${!!options.restartGatewayIfRunning}`);
+  const D = gwDiagTs;
+  console.log(`${D()} ──── syncOpenClawConfig START reason=${options.reason} restartIfRunning=${!!options.restartGatewayIfRunning}`);
 
   const syncResult = getOpenClawConfigSync().sync(options.reason);
-  console.log(`${D} sync() ok=${syncResult.ok} changed=${syncResult.changed} bindingsChanged=${!!syncResult.bindingsChanged}`);
+  console.log(`${D()} sync() ok=${syncResult.ok} changed=${syncResult.changed} bindingsChanged=${!!syncResult.bindingsChanged}`);
   if (!syncResult.ok) {
-    console.log(`${D} sync FAILED: ${syncResult.error}`);
+    console.log(`${D()} sync FAILED: ${syncResult.error}`);
     const status = getOpenClawEngineManager().setExternalError(
       `OpenClaw config sync failed: ${syncResult.error || 'unknown error'}`,
     );
@@ -1192,16 +1217,16 @@ const syncOpenClawConfig = async (
       else if (next === undefined) { removed.push(k); }
       else { modified.push(k); }
     }
-    console.log(`${D} SECRET ENV VARS CHANGED!`);
-    if (added.length) console.log(`${D}   added: ${added.join(', ')}`);
-    if (removed.length) console.log(`${D}   removed: ${removed.join(', ')}`);
+    console.log(`${D()} SECRET ENV VARS CHANGED!`);
+    if (added.length) console.log(`${D()}   added: ${added.join(', ')}`);
+    if (removed.length) console.log(`${D()}   removed: ${removed.join(', ')}`);
     for (const k of modified) {
       const p = (prevSecretEnvVars[k] || '').slice(0, 12);
       const n = (nextSecretEnvVars[k] || '').slice(0, 12);
-      console.log(`${D}   modified: ${k} prev=${p}… next=${n}…`);
+      console.log(`${D()}   modified: ${k} prev=${p}… next=${n}…`);
     }
   } else {
-    console.log(`${D} secretEnvVars unchanged (${Object.keys(nextSecretEnvVars).length} keys)`);
+    console.log(`${D()} secretEnvVars unchanged (${Object.keys(nextSecretEnvVars).length} keys)`);
   }
 
   // Force a hard restart when the mcp-bridge callbackUrl or tools changed,
@@ -1211,10 +1236,10 @@ const syncOpenClawConfig = async (
   const mcpBridgeForceRestart = !!syncResult.mcpBridgeConfigChanged;
   const needsHardRestart = secretEnvVarsChanged || syncResult.bindingsChanged || mcpBridgeForceRestart || (syncResult.changed && options.restartGatewayIfRunning);
 
-  console.log(`${D} needsHardRestart=${needsHardRestart} (envChanged=${secretEnvVarsChanged} bindingsChanged=${!!syncResult.bindingsChanged} mcpBridgeChanged=${mcpBridgeForceRestart} configChanged=${syncResult.changed} restartFlag=${!!options.restartGatewayIfRunning})`);
+  console.log(`${D()} needsHardRestart=${needsHardRestart} (envChanged=${secretEnvVarsChanged} bindingsChanged=${!!syncResult.bindingsChanged} mcpBridgeChanged=${mcpBridgeForceRestart} configChanged=${syncResult.changed} restartFlag=${!!options.restartGatewayIfRunning})`);
 
   if (!needsHardRestart) {
-    console.log(`${D} ──── NO RESTART, hot-reload only. reason=${options.reason}`);
+    console.log(`${D()} ──── NO RESTART, hot-reload only. reason=${options.reason}`);
     return {
       success: true,
       changed: syncResult.changed,
@@ -1225,7 +1250,7 @@ const syncOpenClawConfig = async (
   const manager = getOpenClawEngineManager();
   const status = manager.getStatus();
   if (status.phase !== 'running') {
-    console.log(`${D} ──── RESTART NEEDED but gateway not running (phase=${status.phase}), skipping. reason=${options.reason}`);
+    console.log(`${D()} ──── RESTART NEEDED but gateway not running (phase=${status.phase}), skipping. reason=${options.reason}`);
     return {
       success: true,
       changed: true,
@@ -1234,7 +1259,7 @@ const syncOpenClawConfig = async (
   }
 
   if (hasActiveGatewayWorkloads()) {
-    console.log(`${D} ──── RESTART DEFERRED (active workloads). reason=${options.reason}`);
+    console.log(`${D()} ──── RESTART DEFERRED (active workloads). reason=${options.reason}`);
     scheduleDeferredGatewayRestart(options.reason);
     return {
       success: true,
@@ -1243,13 +1268,13 @@ const syncOpenClawConfig = async (
     };
   }
 
-  console.log(`${D} ──── HARD RESTART EXECUTING. reason=${options.reason}`);
+  console.log(`${D()} ──── HARD RESTART EXECUTING. reason=${options.reason}, phase=${status.phase}, port=${status.message?.match(/loopback:(\d+)/)?.[1] ?? 'unknown'}`);
   if (openClawRuntimeAdapter) {
     openClawRuntimeAdapter.disconnectGatewayClient();
   }
 
   await manager.stopGateway();
-  const restarted = await manager.startGateway();
+  const restarted = await manager.startGateway(`config-sync:${options.reason}`);
   if (restarted.phase !== 'running') {
     return {
       success: false,
@@ -1352,7 +1377,9 @@ const bindCoworkRuntimeForwarder = (): void => {
 const getCoworkEngineRouter = () => {
   if (!coworkEngineRouter) {
     if (!openClawRuntimeAdapter) {
-      openClawRuntimeAdapter = new OpenClawRuntimeAdapter(getCoworkStore(), getOpenClawEngineManager());
+      openClawRuntimeAdapter = new OpenClawRuntimeAdapter(getCoworkStore(), getOpenClawEngineManager(), {
+        normalizeModelRef: normalizeOpenClawModelRef,
+      });
       // Wire up channel session sync for IM conversations via OpenClaw
       try {
         const imManager = getIMGatewayManager();
@@ -1598,9 +1625,9 @@ const getIMGatewayManager = () => {
           }
         },
         isOpenClawEngine: () => resolveCoworkAgentEngine() === 'openclaw',
-        syncOpenClawConfig: async () => {
+        syncOpenClawConfig: async (reason?: string) => {
           await syncOpenClawConfig({
-            reason: 'im-gateway-start',
+            reason: reason || 'im-gateway-sync',
           });
         },
         ensureOpenClawGatewayConnected: async () => {
@@ -2591,13 +2618,15 @@ if (!gotTheLock) {
 
   let restartGatewayPromise: Promise<OpenClawEngineStatus> | null = null;
   ipcMain.handle('openclaw:engine:restartGateway', async () => {
+    console.log(`${gwDiagTs()} IPC openclaw:engine:restartGateway: manual restart requested from renderer`);
     if (restartGatewayPromise) {
+      console.log(`${gwDiagTs()} IPC openclaw:engine:restartGateway: restart already in progress, joining existing promise`);
       const status = await restartGatewayPromise;
       return { success: status.phase === 'running' || status.phase === 'ready', status };
     }
     try {
       const manager = getOpenClawEngineManager();
-      restartGatewayPromise = manager.restartGateway();
+      restartGatewayPromise = manager.restartGateway('ipc-manual');
       const status = await restartGatewayPromise;
       return {
         success: status.phase === 'running' || status.phase === 'ready',
@@ -2741,6 +2770,7 @@ if (!gotTheLock) {
     activeSkillIds?: string[];
     imageAttachments?: Array<{ name: string; mimeType: string; base64Data: string }>;
     agentId?: string;
+    modelOverride?: string;
   }) => {
     try {
       const activeEngine = resolveCoworkAgentEngine();
@@ -2777,8 +2807,13 @@ if (!gotTheLock) {
         systemPrompt,
         config.executionMode || 'local',
         options.activeSkillIds || [],
-        options.agentId || 'main'
+        options.agentId || 'main',
+        options.modelOverride || ''
       );
+
+      if (options.modelOverride) {
+        console.log('[Cowork:StartSession] session created with modelOverride:', session.id, options.modelOverride);
+      }
 
       // Update session status to 'running' before starting async task
       // This ensures the frontend receives the correct status immediately
@@ -3080,7 +3115,9 @@ if (!gotTheLock) {
       const agent = getAgentManager().createAgent(request, resolveDefaultAgentModelRef());
       // Sync config so workspace files (SOUL.md, IDENTITY.md) are written
       // before OpenClaw scaffolds default templates for the new agent.
-      syncOpenClawConfig({ reason: 'agent-created' }).catch(() => {});
+      syncOpenClawConfig({ reason: 'agent-created' }).catch((err) => {
+        console.error('[OpenClaw] config sync after agent-created failed:', err);
+      });
       return { success: true, agent };
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : 'Failed to create agent' };
@@ -3090,7 +3127,9 @@ if (!gotTheLock) {
   ipcMain.handle('agents:update', async (_event, id: string, updates: import('./coworkStore').UpdateAgentRequest) => {
     try {
       const agent = getAgentManager().updateAgent(id, updates);
-      syncOpenClawConfig({ reason: 'agent-updated' }).catch(() => {});
+      syncOpenClawConfig({ reason: 'agent-updated' }).catch((err) => {
+        console.error('[OpenClaw] config sync after agent-updated failed:', err);
+      });
       return { success: true, agent };
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : 'Failed to update agent' };
@@ -3125,7 +3164,9 @@ if (!gotTheLock) {
         // IM store may not be initialised yet; safe to ignore.
       }
 
-      syncOpenClawConfig({ reason: 'agent-deleted' }).catch(() => {});
+      syncOpenClawConfig({ reason: 'agent-deleted' }).catch((err) => {
+        console.error('[OpenClaw] config sync after agent-deleted failed:', err);
+      });
       return { success: true, deleted: result };
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : 'Failed to delete agent' };
@@ -3144,7 +3185,9 @@ if (!gotTheLock) {
   ipcMain.handle('agents:addPreset', async (_event, presetId: string) => {
     try {
       const agent = getAgentManager().addPresetAgent(presetId, resolveDefaultAgentModelRef());
-      syncOpenClawConfig({ reason: 'agent-preset-added' }).catch(() => {});
+      syncOpenClawConfig({ reason: 'agent-preset-added' }).catch((err) => {
+        console.error('[OpenClaw] config sync after agent-preset-added failed:', err);
+      });
       return { success: true, agent };
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : 'Failed to add preset agent' };
@@ -3364,6 +3407,9 @@ if (!gotTheLock) {
       }
 
       const patch = sanitizeOpenClawSessionPatch(request.patch);
+      if (patch.model) {
+        patch.model = normalizeOpenClawModelRef(patch.model);
+      }
       const runtime = getCoworkEngineRouter();
       await runtime.patchSession(sessionId, patch);
 
@@ -3930,8 +3976,8 @@ if (!gotTheLock) {
       if (result.connected) {
         // Restart gateway so the plugin picks up the new token and starts
         // a fresh monitor loop (the old one may be stuck in a session pause).
-        console.log('[IMGatewayManager] Weixin login succeeded, restarting OpenClaw gateway');
-        await getOpenClawEngineManager().restartGateway();
+        console.log(`${gwDiagTs()} Weixin login succeeded, restarting OpenClaw gateway`);
+        await getOpenClawEngineManager().restartGateway('weixin-qr-login');
       }
       return { success: true, ...result };
     } catch (error) {
@@ -4612,6 +4658,50 @@ if (!gotTheLock) {
     }
   });
 
+  // OpenAI ChatGPT (Codex) OAuth handlers — see src/main/libs/openaiCodexAuth.ts.
+  // The login flow opens a browser to https://auth.openai.com/oauth/authorize
+  // and listens on http://127.0.0.1:1455/auth/callback for the redirect, then
+  // writes <CODEX_HOME>/auth.json so the OpenClaw runtime can pick it up.
+  ipcMain.handle('openai-codex-oauth:start', async () => {
+    const { startOpenAICodexLogin } = await import('./libs/openaiCodexAuth');
+    try {
+      const tokens = await startOpenAICodexLogin();
+      return {
+        success: true as const,
+        email: tokens.email ?? null,
+        accountId: tokens.accountId ?? null,
+        expiresAt: tokens.expiresAt,
+      };
+    } catch (error) {
+      return {
+        success: false as const,
+        error: error instanceof Error ? error.message : 'ChatGPT login failed',
+      };
+    }
+  });
+
+  ipcMain.handle('openai-codex-oauth:cancel', async () => {
+    const { cancelOpenAICodexLogin } = await import('./libs/openaiCodexAuth');
+    cancelOpenAICodexLogin();
+  });
+
+  ipcMain.handle('openai-codex-oauth:logout', async () => {
+    const { logoutOpenAICodex } = await import('./libs/openaiCodexAuth');
+    logoutOpenAICodex();
+  });
+
+  ipcMain.handle('openai-codex-oauth:status', async () => {
+    const { readOpenAICodexAuthFile } = await import('./libs/openaiCodexAuth');
+    const tokens = readOpenAICodexAuthFile();
+    if (!tokens) return { loggedIn: false as const };
+    return {
+      loggedIn: true as const,
+      email: tokens.email ?? null,
+      accountId: tokens.accountId ?? null,
+      expiresAt: tokens.expiresAt,
+    };
+  });
+
   ipcMain.handle('generate-session-title', async (_event, userInput: string | null) => {
     return generateSessionTitle(userInput);
   });
@@ -4887,7 +4977,7 @@ if (!gotTheLock) {
     headers: Record<string, string>;
     body?: string;
   }) => {
-    console.log(`[api:fetch] ${options.method} ${options.url}, headers: ${JSON.stringify(options.headers)}, body: ${options.body}`);
+    console.log(`[api:fetch] ${options.method} ${options.url}, headers: ${serializeForLog(options.headers)}, body: ${options.body}`);
 
     const doFetch = async (headers: Record<string, string>) => {
       const response = await session.defaultSession.fetch(options.url, {
@@ -5666,6 +5756,36 @@ if (!gotTheLock) {
             const cs = getCoworkStore();
             return cs.getConfig().workingDirectory;
           },
+          (agent) => {
+            const cs = getCoworkStore();
+            const existing = cs.getAgent(agent.id);
+            const updates = {
+              name: agent.name,
+              description: agent.description,
+              systemPrompt: agent.systemPrompt,
+              identity: agent.identity,
+              model: agent.model,
+              icon: agent.icon,
+              skillIds: agent.skillIds,
+              enabled: agent.enabled,
+            };
+            if (existing) {
+              cs.updateAgent(agent.id, updates);
+            } else {
+              cs.createAgent({
+                id: agent.id,
+                name: agent.name,
+                description: agent.description,
+                systemPrompt: agent.systemPrompt,
+                identity: agent.identity,
+                model: agent.model,
+                icon: agent.icon,
+                skillIds: agent.skillIds,
+                source: 'custom',
+              });
+              cs.updateAgent(agent.id, { enabled: agent.enabled });
+            }
+          },
         );
       } catch (error) {
         console.error('[Enterprise] config sync failed:', error);
@@ -5887,9 +6007,16 @@ if (!gotTheLock) {
         : lastUseSystemProxy;
       const currentUseSystemProxy = getUseSystemProxyFromConfig(newConfig);
       if (currentUseSystemProxy !== previousUseSystemProxy) {
+        console.log(`${gwDiagTs()} proxy setting changed: ${previousUseSystemProxy} -> ${currentUseSystemProxy}, will restart gateway if running`);
         void applyProxyPreference(currentUseSystemProxy).then(() => {
           if (getOpenClawEngineManager().getStatus().phase === 'running') {
-            void getOpenClawEngineManager().restartGateway();
+            void syncOpenClawConfig({
+              reason: 'system-proxy-changed',
+              restartGatewayIfRunning: false,
+            }).finally(() => {
+              console.log(`${gwDiagTs()} restarting gateway after proxy change`);
+              void getOpenClawEngineManager().restartGateway('proxy-change');
+            });
           }
         });
       }

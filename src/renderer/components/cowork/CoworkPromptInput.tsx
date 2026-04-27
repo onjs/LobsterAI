@@ -13,6 +13,7 @@ import { RootState } from '../../store';
 import { selectDraftPrompts } from '../../store/selectors/coworkSelectors';
 import { addDraftAttachment, clearDraftAttachments, type DraftAttachment, setDraftAttachments, setDraftPrompt } from '../../store/slices/coworkSlice';
 import { setSkills, toggleActiveSkill } from '../../store/slices/skillSlice';
+import type { Model } from '../../store/slices/modelSlice';
 import { CoworkImageAttachment } from '../../types/cowork';
 import { Skill } from '../../types/skill';
 import { toOpenClawModelRef } from '../../utils/openclawModelRef';
@@ -196,6 +197,10 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
     fallbackModel: globalSelectedModel,
     engine: coworkAgentEngine,
   });
+
+  if (sessionId && currentSession) {
+    console.log('[CoworkPromptInput] model resolve:', { sessionId, currentSessionId: currentSession.id, modelOverride: currentSession.modelOverride, resolvedName: agentSelectedModel?.name, resolvedProvider: agentSelectedModel?.providerKey, resolvedIsServer: agentSelectedModel?.isServerModel });
+  }
 
   const isLarge = size === 'large';
   const minHeight = isLarge ? 60 : 24;
@@ -915,16 +920,26 @@ const CoworkPromptInput = React.forwardRef<CoworkPromptInputRef, CoworkPromptInp
                   <div className="flex flex-col items-start gap-1">
                     <ModelSelector
                       dropdownDirection="up"
-                      value={coworkAgentEngine === 'openclaw' ? agentSelectedModel : null}
+                      value={coworkAgentEngine === 'openclaw'
+                        ? (agentModelIsInvalid && currentSession?.modelOverride
+                          ? { id: '__invalid__', name: currentSession.modelOverride.split('/').pop() || currentSession.modelOverride } as Model
+                          : agentSelectedModel)
+                        : null}
                       onChange={coworkAgentEngine === 'openclaw'
                         ? async (nextModel) => {
+                            if (!nextModel) return;
+                            const modelRef = toOpenClawModelRef(nextModel);
+                            console.log('[CoworkPromptInput] model selected:', { id: nextModel.id, providerKey: nextModel.providerKey, isServerModel: nextModel.isServerModel, modelRef });
                             if (sessionId) {
-                              if (!nextModel) return;
-                              await coworkService.patchSession(sessionId, { model: toOpenClawModelRef(nextModel) });
+                              await coworkService.patchSession(sessionId, { model: modelRef });
+                              if (currentAgent && agentModelIsInvalid) {
+                                console.log('[CoworkPromptInput] auto-fixing invalid agent model:', currentAgent.id, currentAgent.model, '->', modelRef);
+                                agentService.updateAgent(currentAgent.id, { model: modelRef });
+                              }
                               return;
                             }
-                            if (!currentAgent || !nextModel) return;
-                            await agentService.updateAgent(currentAgent.id, { model: toOpenClawModelRef(nextModel) });
+                            if (!currentAgent) return;
+                            agentService.updateAgent(currentAgent.id, { model: modelRef });
                           }
                         : undefined}
                     />

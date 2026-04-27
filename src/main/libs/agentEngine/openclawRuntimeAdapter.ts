@@ -69,6 +69,10 @@ type GatewayClientLike = {
 
 type GatewayClientCtor = new (options: Record<string, unknown>) => GatewayClientLike;
 
+type OpenClawRuntimeAdapterOptions = {
+  normalizeModelRef?: (modelRef: string) => string;
+};
+
 type ChatEventState = 'delta' | 'final' | 'aborted' | 'error';
 
 type ChatEventPayload = {
@@ -690,6 +694,7 @@ const waitWithTimeout = async (promise: Promise<void>, timeoutMs: number): Promi
 export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntime {
   private readonly store: CoworkStore;
   private readonly engineManager: OpenClawEngineManager;
+  private readonly options: OpenClawRuntimeAdapterOptions;
   private readonly activeTurns = new Map<string, ActiveTurn>();
   private readonly sessionIdBySessionKey = new Map<string, string>();
   private readonly sessionIdByRunId = new Map<string, string>();
@@ -778,10 +783,21 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
   agentTimeoutSeconds = OPENCLAW_AGENT_TIMEOUT_SECONDS;
   private static readonly CLIENT_TIMEOUT_GRACE_MS = 30_000;
 
-  constructor(store: CoworkStore, engineManager: OpenClawEngineManager) {
+  constructor(
+    store: CoworkStore,
+    engineManager: OpenClawEngineManager,
+    options: OpenClawRuntimeAdapterOptions = {},
+  ) {
     super();
     this.store = store;
     this.engineManager = engineManager;
+    this.options = options;
+  }
+
+  private normalizeModelRef(modelRef: string): string {
+    const normalized = modelRef.trim();
+    if (!normalized) return normalized;
+    return this.options.normalizeModelRef?.(normalized) ?? normalized;
   }
 
   setChannelSessionSync(sync: OpenClawChannelSessionSync): void {
@@ -1186,10 +1202,17 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     this.rememberSessionKey(sessionId, sessionKey);
     await this.ensureGatewayClientReady();
 
+    const normalizedPatch: OpenClawSessionPatch = {
+      ...patch,
+      ...(patch.model !== undefined
+        ? { model: patch.model ? this.normalizeModelRef(patch.model) : patch.model }
+        : {}),
+    };
+
     const client = this.requireGatewayClient();
     await client.request('sessions.patch', {
       key: sessionKey,
-      ...patch,
+      ...normalizedPatch,
     });
   }
 
@@ -1350,7 +1373,15 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
     const turnToken = this.nextTurnToken(sessionId);
 
     const agent = this.store.getAgent(agentId);
-    const currentModel = session.modelOverride || agent?.model || '';
+    const rawCurrentModel = session.modelOverride || agent?.model || '';
+    // Normalize only agent-level model refs (may need provider migration).
+    // Session modelOverride is user-selected and must not be rewritten.
+    const currentModel = session.modelOverride
+      ? rawCurrentModel
+      : (rawCurrentModel ? this.normalizeModelRef(rawCurrentModel) : '');
+    if (!session.modelOverride && currentModel && currentModel !== rawCurrentModel && agent?.id) {
+      this.store.updateAgent(agent.id, { model: currentModel });
+    }
     if (currentModel && currentModel !== this.lastPatchedModelBySession.get(sessionId)) {
       try {
         const client = this.requireGatewayClient();
@@ -1474,7 +1505,8 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
 
     const session = this.store.getSession(sessionId);
     const agent = agentId ? this.store.getAgent(agentId) : null;
-    const currentModel = session?.modelOverride || agent?.model || '';
+    const rawCurrentModel = session?.modelOverride || agent?.model || '';
+    const currentModel = rawCurrentModel ? this.normalizeModelRef(rawCurrentModel) : '';
 
     const sections: string[] = [];
     if (shouldInjectSystemPrompt) {
@@ -1595,7 +1627,7 @@ export class OpenClawRuntimeAdapter extends EventEmitter implements CoworkRuntim
 
   private async _ensureGatewayClientReadyImpl(): Promise<void> {
     console.log('[ChannelSync] ensureGatewayClientReady: starting engine gateway...');
-    const engineStatus = await this.engineManager.startGateway();
+    const engineStatus = await this.engineManager.startGateway('channel-sync-ensure-ready');
     console.log('[ChannelSync] ensureGatewayClientReady: engine phase=', engineStatus.phase, 'message=', engineStatus.message);
     if (engineStatus.phase !== 'running') {
       const message = engineStatus.message || 'OpenClaw engine is not running.';
