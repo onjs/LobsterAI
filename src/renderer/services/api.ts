@@ -321,7 +321,7 @@ class ApiService {
       throw new ApiError('API configuration not set. Please configure your API settings in the settings menu.');
     }
 
-    const selectedModel = store.getState().model.selectedModel;
+    const selectedModel = store.getState().model.defaultSelectedModel;
     const provider = this.detectProvider(
       selectedModel.id,
       selectedModel.providerKey ?? selectedModel.provider
