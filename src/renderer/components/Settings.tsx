@@ -859,6 +859,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
   const [bootstrapUser, setBootstrapUser] = useState<string>('');
   const [bootstrapSoul, setBootstrapSoul] = useState<string>('');
   const [bootstrapLoaded, setBootstrapLoaded] = useState<boolean>(false);
+  const [bootstrapTab, setBootstrapTab] = useState<'IDENTITY.md' | 'SOUL.md' | 'USER.md'>('IDENTITY.md');
   const [openClawEngineStatus, setOpenClawEngineStatus] = useState<OpenClawEngineStatus | null>(null);
 
   useEffect(() => {
@@ -1677,37 +1678,20 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
     void loadCoworkMemoryData();
   }, [activeTab, loadCoworkMemoryData]);
 
-  /**
-   * Detect OpenClaw default template content and return empty string.
-   * Templates contain YAML frontmatter and specific marker phrases.
-   */
-  const stripDefaultTemplate = (content: string): string => {
-    if (!content.trim()) return '';
-    const TEMPLATE_MARKERS = [
-      'Fill this in during your first conversation',
-      "You're not a chatbot. You're becoming someone",
-      'Learn about the person you\'re helping',
-    ];
-    if (TEMPLATE_MARKERS.some((m) => content.includes(m))) return '';
-    return content;
-  };
-
   useEffect(() => {
     if (activeTab !== 'coworkAgent') return;
-    if (!bootstrapLoaded) {
-      void (async () => {
-        const [identity, user, soul] = await Promise.all([
-          coworkService.readBootstrapFile('IDENTITY.md'),
-          coworkService.readBootstrapFile('USER.md'),
-          coworkService.readBootstrapFile('SOUL.md'),
-        ]);
-        setBootstrapIdentity(stripDefaultTemplate(identity));
-        setBootstrapUser(stripDefaultTemplate(user));
-        setBootstrapSoul(stripDefaultTemplate(soul));
-        setBootstrapLoaded(true);
-      })();
-    }
-  }, [activeTab, bootstrapLoaded]);
+    void (async () => {
+      const [identity, user, soul] = await Promise.all([
+        coworkService.readBootstrapFile('IDENTITY.md'),
+        coworkService.readBootstrapFile('USER.md'),
+        coworkService.readBootstrapFile('SOUL.md'),
+      ]);
+      setBootstrapIdentity(identity);
+      setBootstrapUser(user);
+      setBootstrapSoul(soul);
+      setBootstrapLoaded(true);
+    })();
+  }, [activeTab]);
 
   const resetCoworkMemoryEditor = () => {
     setCoworkMemoryEditingId(null);
@@ -1988,7 +1972,7 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
         }
       }
 
-      // Save bootstrap files (IDENTITY.md, USER.md, SOUL.md) only if loaded
+      // Save bootstrap files (IDENTITY.md, USER.md, SOUL.md) only if loaded.
       if (bootstrapLoaded) {
         const results = await Promise.all([
           coworkService.writeBootstrapFile('IDENTITY.md', bootstrapIdentity),
@@ -4344,54 +4328,48 @@ const Settings: React.FC<SettingsProps> = ({ onClose, initialTab, notice, notice
           </div>
         );
 
-      case 'coworkAgent':
+      case 'coworkAgent': {
+        const bootstrapTabs = [
+          { key: 'IDENTITY.md' as const, titleKey: 'coworkBootstrapIdentityTitle', hintKey: 'coworkBootstrapIdentityHint', value: bootstrapIdentity, setter: setBootstrapIdentity },
+          { key: 'SOUL.md' as const, titleKey: 'coworkBootstrapSoulTitle', hintKey: 'coworkBootstrapSoulHint', value: bootstrapSoul, setter: setBootstrapSoul },
+          { key: 'USER.md' as const, titleKey: 'coworkBootstrapUserTitle', hintKey: 'coworkBootstrapUserHint', value: bootstrapUser, setter: setBootstrapUser },
+        ];
+        const activeItem = bootstrapTabs.find((t) => t.key === bootstrapTab) ?? bootstrapTabs[0];
         return (
-          <div className="space-y-6">
-            {/* Agent Settings (IDENTITY.md + SOUL.md) */}
-            <div className="space-y-4 rounded-xl border px-4 py-4 border-border">
-              <div className="text-sm font-medium text-foreground">
-                {i18nService.t('coworkBootstrapAgentSectionTitle')}
-              </div>
-              {[
-                { filename: 'IDENTITY.md', titleKey: 'coworkBootstrapIdentityTitle', hintKey: 'coworkBootstrapIdentityHint', value: bootstrapIdentity, setter: setBootstrapIdentity },
-                { filename: 'SOUL.md', titleKey: 'coworkBootstrapSoulTitle', hintKey: 'coworkBootstrapSoulHint', value: bootstrapSoul, setter: setBootstrapSoul },
-              ].map(({ filename, titleKey, hintKey, value, setter }) => (
-                <div key={filename} className="space-y-2">
-                  <div className="text-xs font-medium text-secondary">
-                    {i18nService.t(titleKey)}
-                    <span className="ml-1.5 font-normal opacity-60">
-                      （{i18nService.t('coworkBootstrapStoragePath')}：<span className="font-mono">{joinWorkspacePath(coworkConfig.workingDirectory, filename)}</span>）
-                    </span>
-                  </div>
-                  <textarea
-                    value={value}
-                    onChange={(e) => setter(e.target.value)}
-                    rows={3}
-                    className="w-full rounded-lg border px-3 py-2 text-sm border-border bg-surface text-foreground resize-y"
-                    placeholder={i18nService.t(hintKey)}
-                  />
-                </div>
+          <div className="space-y-4">
+            <div className="flex gap-1 border-b border-border">
+              {bootstrapTabs.map((tab) => (
+                <button
+                  type="button"
+                  key={tab.key}
+                  onClick={() => setBootstrapTab(tab.key)}
+                  className={`px-4 py-2 text-sm font-medium transition-colors rounded-t-lg ${
+                    bootstrapTab === tab.key
+                      ? 'bg-primary-muted text-primary border-b-2 border-primary'
+                      : 'text-secondary hover:text-foreground hover:bg-surface-raised'
+                  }`}
+                >
+                  {i18nService.t(tab.titleKey)}
+                </button>
               ))}
             </div>
-
-            {/* User Profile (USER.md) */}
-            <div className="space-y-3 rounded-xl border px-4 py-4 border-border">
-              <div className="text-sm font-medium text-foreground">
-                {i18nService.t('coworkBootstrapUserTitle')}
-                <span className="ml-1.5 text-xs font-normal opacity-60 text-secondary">
-                  （{i18nService.t('coworkBootstrapStoragePath')}：<span className="font-mono">{joinWorkspacePath(coworkConfig.workingDirectory, 'USER.md')}</span>）
-                </span>
+            <div className="space-y-2">
+              <p className="text-xs text-secondary">{i18nService.t(activeItem.hintKey)}</p>
+              <div className="text-xs text-secondary opacity-60">
+                {i18nService.t('coworkBootstrapStoragePath')}：<span className="font-mono">{joinWorkspacePath(coworkConfig.workingDirectory, activeItem.key)}</span>
               </div>
               <textarea
-                value={bootstrapUser}
-                onChange={(e) => setBootstrapUser(e.target.value)}
-                rows={3}
+                key={activeItem.key}
+                value={activeItem.value}
+                onChange={(e) => activeItem.setter(e.target.value)}
+                rows={8}
                 className="w-full rounded-lg border px-3 py-2 text-sm border-border bg-surface text-foreground resize-y"
-                placeholder={i18nService.t('coworkBootstrapUserHint')}
+                placeholder={i18nService.t('coworkBootstrapPlaceholder')}
               />
             </div>
           </div>
         );
+      }
 
       case 'shortcuts':
         return (
